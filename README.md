@@ -49,5 +49,8 @@ just build       # release build
 
 ## Status
 
-**Phase 0 — Project Scaffolding** complete.
-Phases 1–10 tracked in [`plan.md`](./plan.md).
+- ✅ **Phase 0** — Project scaffolding
+- ✅ **Phase 1** — Backend foundation (SurrealDB + Axum + OpenAPI + tracing)
+- ⏳ **Phase 2** — Authentication & users (next)
+
+Phases 2–10 tracked in [`plan.md`](./plan.md).

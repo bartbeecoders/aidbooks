@@ -52,6 +52,24 @@ This plan is organised into **10 phases**. Each phase contains **Goals**, **Step
 
 ---
 
+## Status Tracker
+
+| Phase | State | Commit |
+|-------|-------|--------|
+| 0 — Scaffolding                  | ✅ Complete | `f5371b0` |
+| 1 — Backend Foundation           | ✅ Complete | (current branch) |
+| 2 — Authentication & Users       | ⏳ Next     | — |
+| 3 — Content Generation           | ⏳          | — |
+| 4 — Voice Synthesis              | ⏳          | — |
+| 5 — Job Orchestration            | ⏳          | — |
+| 6 — Web Frontend                 | ⏳          | — |
+| 7 — Admin Panel                  | ⏳          | — |
+| 8 — iOS App                      | ⏳          | — |
+| 9 — Monetisation                 | ⏳          | — |
+| 10 — Polish & Launch             | ⏳          | — |
+
+---
+
 ## Phase 0 — Project Scaffolding & Tooling
 
 **Goal:** empty repo → reproducible dev environment, CI, formatters, commit hooks.
@@ -82,9 +100,22 @@ This plan is organised into **10 phases**. Each phase contains **Goals**, **Step
 
 ---
 
-## Phase 1 — Backend Foundation
+## Phase 1 — Backend Foundation ✅
 
 **Goal:** Axum server with SurrealDB embedded, observability, error model, config.
+
+> **Done.** The server boots, opens embedded SurrealDB at `./storage/db`, runs forward-only migrations, seeds five x.ai voices and two OpenRouter LLM configs, and serves `/health`, `/ready`, `/openapi.json`. JSON log lines carry the `request_id` in the span fields, and the `x-request-id` header round-trips on requests and responses.
+>
+> **What shipped that wasn't in the original plan:**
+> - `UPSERT`-based idempotent seed in Rust instead of a second SQL migration — lets us iterate on seed data without writing new migration files.
+> - `Config.toml` support via `figment` alongside env vars.
+> - JSON `/openapi.json` endpoint (utoipa), usable today with Swagger UI / Redocly / codegen.
+> - `/ready` swallows DB errors into `reachable: false` (readiness probes must never 5xx).
+>
+> **Deferred to a later phase:**
+> - Admin user seed — deferred to Phase 2 where password hashing lands.
+> - OpenTelemetry exporter — not needed until Phase 10.
+
 
 ### Steps
 1. **Crate: `core`** — domain types (`User`, `Audiobook`, `Chapter`, `Voice`, `Llm`, `Job`, `JobStatus`). Use `serde` + `utoipa` for OpenAPI schema derivation.
@@ -107,8 +138,34 @@ This plan is organised into **10 phases**. Each phase contains **Goals**, **Step
 8. **Seed script:** creates a default admin user, a handful of LLMs, and voices lifted from x.ai's catalogue (Eve, Ara, Rex, Sal, Leo).
 
 ### Done when
-- Server boots, creates DB file under `/storage/db`, runs migrations, and exposes OpenAPI JSON at `/api/openapi.json`.
+- Server boots, creates DB file under `/storage/db`, runs migrations, and exposes OpenAPI JSON at `/openapi.json` (reachable from the frontend via the dev proxy at `/api/openapi.json`).
 - Logs show structured JSON with request id propagation.
+
+### Verified
+
+```text
+cargo run -p api  →  http://127.0.0.1:8787/health   { "status": "ok", ... }
+                     http://127.0.0.1:8787/ready    { "status":"ready","db":{"reachable":true,...} }
+                     http://127.0.0.1:8787/openapi.json  (OpenAPI 3.1 doc)
+
+JSON log line example (every line within a request carries request_id):
+{ "timestamp":"...","level":"DEBUG","fields":{"message":"finished processing request","latency":"0 ms","status":200},
+  "span":{"method":"GET","request_id":"probe-xyz-789","route":"/ready","uri":"/ready","name":"http"} }
+```
+
+### Key files
+
+| File | Purpose |
+|------|---------|
+| `backend/Cargo.toml`                          | Workspace deps: surrealdb (kv-rocksdb), utoipa, figment, mimalloc |
+| `backend/core/src/domain/`                    | `User`, `Audiobook`, `Chapter`, `Voice`, `Llm`, `Job` + enums |
+| `backend/core/src/{id,error,config}.rs`       | `UserId`/`AudiobookId`/... newtypes, `Error`, `Config` via figment |
+| `backend/db/src/lib.rs`                       | Embedded SurrealDB (RocksDB) handle |
+| `backend/db/migrations/0001_init.surql`       | Forward-only schema (tables, fields, indexes) |
+| `backend/db/src/migrate.rs`                   | `_migrations`-tracked runner |
+| `backend/db/src/seed.rs`                      | Idempotent UPSERT of 5 voices + 2 LLMs |
+| `backend/api/src/{main,app,state,error}.rs`   | Custom Tokio runtime (10 MiB stack, mimalloc), middleware stack, `ApiError` → `IntoResponse` |
+| `backend/api/src/openapi.rs`                  | `#[derive(OpenApi)]` root doc served at `/openapi.json` |
 
 ---
 

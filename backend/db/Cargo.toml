@@ -11,7 +11,12 @@ path = "src/lib.rs"
 
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+
+surrealdb = { workspace = true }
+
 listenai-core = { workspace = true }
-# SurrealDB added in Phase 1 step 2:
-# surrealdb = { version = "2", features = ["allocator", "storage-rocksdb"] }

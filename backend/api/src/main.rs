@@ -1,71 +1,106 @@
-use std::net::SocketAddr;
+#![deny(clippy::unwrap_used, clippy::expect_used)]
 
-use axum::{routing::get, Json, Router};
-use serde_json::json;
-use tower_http::{
-    cors::{Any, CorsLayer},
-    trace::TraceLayer,
-};
+mod app;
+mod error;
+mod handlers;
+mod openapi;
+mod state;
+
+use std::process::ExitCode;
+
+use listenai_core::config::{Config, LogFormat};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    init_tracing();
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-    let host = std::env::var("LISTENAI_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let port: u16 = std::env::var("LISTENAI_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(8787);
-    let addr: SocketAddr = format!("{host}:{port}").parse()?;
+fn main() -> ExitCode {
+    // Load config before we init tracing so log level/format are respected.
+    let config = match Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("config error: {e}");
+            return ExitCode::from(78);
+        }
+    };
+    init_tracing(&config);
 
-    let app = Router::new()
-        .route("/health", get(health))
-        .layer(TraceLayer::new_for_http())
-        .layer(
-            CorsLayer::new()
-                .allow_origin(Any)
-                .allow_methods(Any)
-                .allow_headers(Any),
-        );
+    // Per SurrealDB performance guidance: multi-threaded runtime with an
+    // enlarged stack (RocksDB + SurrealDB are stack-hungry).
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(10 * 1024 * 1024)
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to build tokio runtime");
+            return ExitCode::FAILURE;
+        }
+    };
 
-    tracing::info!(%addr, version = env!("CARGO_PKG_VERSION"), "listenai api listening");
+    match runtime.block_on(run(config)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::error!(error = ?e, "fatal");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run(config: Config) -> anyhow::Result<()> {
+    // Storage dirs.
+    std::fs::create_dir_all(&config.storage_path)?;
+
+    // Open embedded SurrealDB and converge schema + seeds.
+    let db = listenai_db::Db::open(&config.database_path).await?;
+    listenai_db::migrate::run(&db).await?;
+    listenai_db::seed::run(&db).await?;
+
+    let app_state = state::AppState::new(config.clone(), db);
+    let router = app::build_router(app_state);
+
+    let addr: std::net::SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
+    tracing::info!(
+        %addr,
+        version = env!("CARGO_PKG_VERSION"),
+        "listenai api listening"
+    );
+
+    axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
 }
 
-async fn health() -> Json<serde_json::Value> {
-    Json(json!({
-        "status": "ok",
-        "service": "listenai-api",
-        "version": env!("CARGO_PKG_VERSION"),
-    }))
-}
-
-fn init_tracing() {
-    let filter = EnvFilter::try_from_env("LISTENAI_LOG")
+fn init_tracing(config: &Config) {
+    let filter = EnvFilter::try_new(&config.log)
         .unwrap_or_else(|_| EnvFilter::new("listenai=debug,tower_http=debug,info"));
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(fmt::layer().with_target(true))
-        .init();
+    let registry = tracing_subscriber::registry().with(filter);
+    match config.log_format {
+        LogFormat::Json => registry
+            .with(
+                fmt::layer()
+                    .json()
+                    .with_target(true)
+                    .with_current_span(true),
+            )
+            .init(),
+        LogFormat::Pretty => registry.with(fmt::layer().with_target(true)).init(),
+    }
 }
 
 async fn shutdown_signal() {
     let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("install ctrl_c handler");
+        let _ = tokio::signal::ctrl_c().await;
     };
     #[cfg(unix)]
     let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("install SIGTERM handler")
-            .recv()
-            .await;
+        if let Ok(mut s) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            s.recv().await;
+        }
     };
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();

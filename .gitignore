@@ -18,9 +18,10 @@ build/
 .env.*.local
 !.env.example
 
-# Runtime storage (audio files, embedded DB)
+# Runtime storage (audio files, embedded DB) — repo-root and per-crate copies
 /storage/
 !/storage/.gitkeep
+backend/storage/
 
 # Editors / OS
 .DS_Store
@@ -33,6 +34,9 @@ Thumbs.db
 
 # Claude Code local state
 .claude/
+
+# Dev script PIDs
+.pids/
 
 # Logs / misc
 *.log
