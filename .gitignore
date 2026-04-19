@@ -1,0 +1,41 @@
+# Rust
+/backend/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Node
+node_modules/
+.pnpm-store/
+.npm/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Runtime storage (audio files, embedded DB)
+/storage/
+!/storage/.gitkeep
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# Claude Code local state
+.claude/
+
+# Logs / misc
+*.log
+coverage/
+.nyc_output/
+.cache/

@@ -1,0 +1,17 @@
+[package]
+name = "listenai-db"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+anyhow = { workspace = true }
+listenai-core = { workspace = true }
+# SurrealDB added in Phase 1 step 2:
+# surrealdb = { version = "2", features = ["allocator", "storage-rocksdb"] }
