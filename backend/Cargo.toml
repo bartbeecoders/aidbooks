@@ -32,6 +32,16 @@ mimalloc = { version = "0.1", default-features = false }
 async-trait = "0.1"
 futures = "0.3"
 
+# added in Phase 2
+argon2 = "0.5"
+jsonwebtoken = "9"
+rand = "0.8"
+base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
+validator = { version = "0.18", features = ["derive"] }
+
 # workspace-internal
 listenai-core = { path = "core" }
 listenai-db = { path = "db" }

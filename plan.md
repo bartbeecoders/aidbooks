@@ -57,9 +57,9 @@ This plan is organised into **10 phases**. Each phase contains **Goals**, **Step
 | Phase | State | Commit |
 |-------|-------|--------|
 | 0 — Scaffolding                  | ✅ Complete | `f5371b0` |
-| 1 — Backend Foundation           | ✅ Complete | (current branch) |
-| 2 — Authentication & Users       | ⏳ Next     | — |
-| 3 — Content Generation           | ⏳          | — |
+| 1 — Backend Foundation           | ✅ Complete | `f16b66f` |
+| 2 — Authentication & Users       | ✅ Complete | (current branch) |
+| 3 — Content Generation           | ⏳ Next     | — |
 | 4 — Voice Synthesis              | ⏳          | — |
 | 5 — Job Orchestration            | ⏳          | — |
 | 6 — Web Frontend                 | ⏳          | — |
@@ -169,9 +169,25 @@ JSON log line example (every line within a request carries request_id):
 
 ---
 
-## Phase 2 — Authentication & Users
+## Phase 2 — Authentication & Users ✅
 
 **Goal:** account lifecycle, JWT auth, RBAC (user vs admin), quotas.
+
+> **Done.** Argon2id password hashing (with a server-wide pepper as Argon2's secret parameter) + HS256 access-token JWTs + rotating opaque refresh tokens with reuse detection. Six endpoints (`register`, `login`, `refresh`, `logout`, `GET /me`, `PATCH /me`), bearer-auth security scheme in OpenAPI, and a dev-only demo admin seeded at `demo@listenai.local` / `demo` when `LISTENAI_DEV_SEED=true`.
+>
+> **What shipped beyond the plan's explicit wording:**
+> - Pepper is applied via Argon2's secret parameter (not naive concat) so a leaked `password_hash` column without the pepper is un-brute-forceable.
+> - Refresh tokens are stored as HMAC-SHA256 of the raw token, keyed with the pepper — plaintext never touches the DB.
+> - Rotation-on-every-refresh with reuse detection: presenting a revoked refresh token revokes all of that user's other sessions (classic session-hijack mitigation).
+> - `/openapi.json` includes a `bearer` security scheme so Swagger UI / Redocly gives a "Try it" login UX.
+>
+> **Deferred (docs updated):**
+> - Social login (Google/Apple OAuth) — Phase 8 (needs the frontend + mobile clients first).
+> - `forgot`, `reset`, `verify-email` — wait for SMTP setup.
+> - Tier / quota enforcement — will land alongside Phase 3 where it actually gates something.
+> - Audit log — Phase 10 hardening.
+> - Login rate-limiting — Phase 10.
+
 
 ### Steps
 1. **Data model:**
@@ -189,9 +205,54 @@ JSON log line example (every line within a request carries request_id):
 8. **Audit log:** append-only `audit_event` table for security-relevant actions (login, password reset, role change, quota override).
 
 ### Done when
-- A new user can register, verify email, log in, call `/me`.
-- Refresh rotation blacklists the old token; reuse of a rotated refresh token logs the user out of all sessions (detect reuse attack).
-- Admin can list/change users through authenticated endpoints (used by admin panel in Phase 7).
+- A new user can register, log in, and call `/me`.
+- Refresh rotation blacklists the old token; reuse of a rotated refresh token logs the user out of all sessions (reuse-attack detection).
+- (Admin list/change endpoints are deferred to Phase 7 — the `RequireAdmin` extractor already exists, stubbed, for that phase to wire up.)
+
+### Verified (clean boot)
+
+| Flow | Expected | Got |
+|------|----------|-----|
+| register alice@example.com / 16-char password | 200 + token pair | ✅ |
+| register alice@example.com again | 409 conflict | ✅ |
+| register with 4-char password | 400 validation | ✅ |
+| register with malformed email | 400 validation | ✅ |
+| login demo@listenai.local / demo | 200 + token pair | ✅ |
+| login with wrong password | 401 | ✅ |
+| login with unknown email | 401 | ✅ |
+| GET /me without Bearer | 401 | ✅ |
+| GET /me with Bearer | 200 + user | ✅ |
+| PATCH /me display_name | 200 + updated user | ✅ |
+| refresh rotation | 200 + different access + refresh | ✅ |
+| reuse old refresh after rotation | 401 + all sessions revoked | ✅ |
+| next refresh after reuse alarm | 401 | ✅ |
+| logout with access + refresh | 204, session revoked | ✅ |
+
+### Key files
+
+| File | Purpose |
+|------|---------|
+| `backend/core/src/crypto.rs`                 | argon2 hash/verify, HMAC-SHA256 token hashing, CT equality |
+| `backend/core/src/config.rs`                 | `jwt_secret`, `password_pepper`, `dev_seed`, TTL knobs |
+| `backend/db/migrations/0002_session.surql`   | `session` table schema |
+| `backend/db/src/seed.rs`                     | dev-only demo admin upsert when `dev_seed=true` |
+| `backend/api/src/auth/claims.rs`             | `AccessClaims`, `AuthedUser` |
+| `backend/api/src/auth/tokens.rs`             | `issue_access_token`, `verify_access_token` |
+| `backend/api/src/auth/extractor.rs`          | `Authenticated`, `RequireAdmin` (stub for Phase 7) |
+| `backend/api/src/handlers/auth.rs`           | `register`, `login`, `refresh`, `logout` |
+| `backend/api/src/handlers/me.rs`             | `GET /me`, `PATCH /me` |
+| `backend/api/src/openapi.rs`                 | Bearer security scheme + all auth schemas |
+
+### Demo credentials (DEV ONLY)
+
+```
+email:    demo@listenai.local
+password: demo
+role:     admin
+tier:     pro
+```
+
+Active only when `LISTENAI_DEV_SEED=true`. A loud `WARN` log is emitted on every startup when dev seed is on.
 
 ---
 

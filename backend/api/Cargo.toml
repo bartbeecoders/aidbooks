@@ -30,6 +30,15 @@ futures = { workspace = true }
 http = "1"
 http-body-util = "0.1"
 hyper = "1"
+async-trait = { workspace = true }
+
+# Phase 2 auth
+jsonwebtoken = { workspace = true }
+validator = { workspace = true }
+
+# Phase 2 uses the SurrealDB types from listenai-db indirectly through helpers,
+# but we also need surrealdb directly for the db query parameter bindings.
+surrealdb = { workspace = true }
 
 listenai-core = { workspace = true }
 listenai-db = { workspace = true }

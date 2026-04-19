@@ -51,6 +51,19 @@ just build       # release build
 
 - ✅ **Phase 0** — Project scaffolding
 - ✅ **Phase 1** — Backend foundation (SurrealDB + Axum + OpenAPI + tracing)
-- ⏳ **Phase 2** — Authentication & users (next)
+- ✅ **Phase 2** — Authentication & users (argon2 + JWT + rotating refresh tokens)
+- ⏳ **Phase 3** — Content generation (OpenRouter)
 
-Phases 2–10 tracked in [`plan.md`](./plan.md).
+Phases 3–10 tracked in [`plan.md`](./plan.md).
+
+### Dev-only demo credentials
+
+When `LISTENAI_DEV_SEED=true`, the backend upserts a demo admin on every startup:
+
+```
+email:    demo@listenai.local
+password: demo
+role:     admin
+```
+
+A `WARN` log fires on boot whenever this seed is active. Never enable `LISTENAI_DEV_SEED` in production.

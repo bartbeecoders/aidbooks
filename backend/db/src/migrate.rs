@@ -16,10 +16,16 @@ struct Migration {
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    name: "0001_init",
-    sql: include_str!("../migrations/0001_init.surql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        name: "0001_init",
+        sql: include_str!("../migrations/0001_init.surql"),
+    },
+    Migration {
+        name: "0002_session",
+        sql: include_str!("../migrations/0002_session.surql"),
+    },
+];
 
 /// Run any pending migrations. Safe to call on every startup.
 pub async fn run(db: &Db) -> Result<()> {

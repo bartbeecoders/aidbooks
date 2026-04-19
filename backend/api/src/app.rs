@@ -4,7 +4,7 @@ use axum::{
     extract::MatchedPath,
     http::{HeaderName, HeaderValue, Method, Request},
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use http::{header, StatusCode};
@@ -68,6 +68,15 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(handlers::health::health))
         .route("/ready", get(handlers::health::ready))
         .route("/openapi.json", get(openapi_json))
+        // --- Phase 2: auth ---
+        .route("/auth/register", post(handlers::auth::register))
+        .route("/auth/login", post(handlers::auth::login))
+        .route("/auth/refresh", post(handlers::auth::refresh))
+        .route("/auth/logout", post(handlers::auth::logout))
+        .route(
+            "/me",
+            get(handlers::me::get_me).patch(handlers::me::patch_me),
+        )
         .fallback(not_found)
         .with_state(state)
         .layer(middleware)

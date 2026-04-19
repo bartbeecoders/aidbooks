@@ -1,6 +1,7 @@
-#![deny(clippy::unwrap_used, clippy::expect_used)]
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 mod app;
+mod auth;
 mod error;
 mod handlers;
 mod openapi;
@@ -55,7 +56,7 @@ async fn run(config: Config) -> anyhow::Result<()> {
     // Open embedded SurrealDB and converge schema + seeds.
     let db = listenai_db::Db::open(&config.database_path).await?;
     listenai_db::migrate::run(&db).await?;
-    listenai_db::seed::run(&db).await?;
+    listenai_db::seed::run(&db, config.dev_seed, &config.password_pepper).await?;
 
     let app_state = state::AppState::new(config.clone(), db);
     let router = app::build_router(app_state);

@@ -1,6 +1,7 @@
 //! Shared domain types, config, and error enum for the ListenAI backend.
 
 pub mod config;
+pub mod crypto;
 pub mod domain;
 pub mod error;
 pub mod id;

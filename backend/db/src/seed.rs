@@ -1,16 +1,60 @@
-//! Idempotent seed data: x.ai voice catalogue and two default OpenRouter
-//! LLM entries. Runs on every startup; `UPSERT` keeps it safe.
+//! Idempotent seed data.
 //!
-//! Admin-user seeding is deferred to Phase 2 (requires password hashing).
+//! Always runs on startup:
+//!   * 5 x.ai voices
+//!   * 2 default OpenRouter LLM configs
+//!
+//! Runs only when `dev_seed` is true (set via `LISTENAI_DEV_SEED=true`):
+//!   * demo admin user — email `demo@listenai.local`, password `demo`
+//!
+//! `UPSERT`/`MERGE` make every seed step safe to re-run.
 
 use crate::Db;
-use listenai_core::{Error, Result};
+use listenai_core::{crypto, Error, Result};
 use serde_json::{json, Value};
-use tracing::info;
+use tracing::{info, warn};
 
-pub async fn run(db: &Db) -> Result<()> {
+pub async fn run(db: &Db, dev_seed: bool, password_pepper: &str) -> Result<()> {
     seed_voices(db).await?;
     seed_llms(db).await?;
+    if dev_seed {
+        seed_demo_admin(db, password_pepper).await?;
+    }
+    Ok(())
+}
+
+/// Upsert a well-known admin user `demo@listenai.local` / `demo`.
+/// Loud warning on every startup so nobody leaves this on in prod.
+async fn seed_demo_admin(db: &Db, pepper: &str) -> Result<()> {
+    const EMAIL: &str = "demo@listenai.local";
+    const PW: &str = "demo";
+    const ID: &str = "demo_admin";
+
+    warn!(
+        email = EMAIL,
+        "DEV SEED: upserting demo admin — DO NOT enable in production"
+    );
+
+    let password_hash = crypto::hash_password(PW, pepper.as_bytes())?;
+
+    let sql = format!(
+        r#"UPSERT user:`{ID}` MERGE {{
+            email: $email,
+            display_name: "Demo Admin",
+            role: "admin",
+            tier: "pro",
+            password_hash: $hash,
+            email_verified_at: time::now()
+        }}"#
+    );
+    db.inner()
+        .query(&sql)
+        .bind(("email", EMAIL.to_string()))
+        .bind(("hash", password_hash))
+        .await
+        .map_err(|e| Error::Database(format!("seed demo admin: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("seed demo admin: {e}")))?;
     Ok(())
 }
 
