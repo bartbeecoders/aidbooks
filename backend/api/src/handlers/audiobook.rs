@@ -18,7 +18,7 @@ use validator::Validate;
 
 use crate::auth::Authenticated;
 use crate::error::ApiResult;
-use crate::generation::{chapter as chapter_gen, outline as outline_gen};
+use crate::generation::{audio as audio_gen, chapter as chapter_gen, outline as outline_gen};
 use crate::state::AppState;
 
 // -------------------------------------------------------------------------
@@ -466,6 +466,94 @@ pub async fn generate_chapters(
     });
 
     Ok(StatusCode::ACCEPTED)
+}
+
+// -------------------------------------------------------------------------
+// POST /audiobook/:id/generate-audio  — TTS for every chapter
+// -------------------------------------------------------------------------
+
+#[utoipa::path(
+    post,
+    path = "/audiobook/{id}/generate-audio",
+    tag = "audiobook",
+    params(("id" = String, Path)),
+    responses(
+        (status = 202, description = "Accepted, TTS started in background"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Chapters not ready to narrate")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn generate_audio(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let book = load_audiobook(&state, &id).await?;
+    if book.owner_id() != user.id {
+        return Err(Error::NotFound {
+            resource: format!("audiobook:{id}"),
+        }
+        .into());
+    }
+    let status = parse_status(&book.status)?;
+    match status {
+        AudiobookStatus::TextReady | AudiobookStatus::AudioReady | AudiobookStatus::Failed => {}
+        _ => {
+            return Err(Error::Conflict(format!(
+                "audiobook is in state {:?}; chapter text must be ready before TTS",
+                status
+            ))
+            .into())
+        }
+    }
+
+    let state_clone = state.clone();
+    let user_id = user.id.clone();
+    let audiobook_id = id.clone();
+    tokio::spawn(async move {
+        if let Err(e) = audio_gen::run_all(&state_clone, &user_id, &audiobook_id).await {
+            error!(
+                audiobook = audiobook_id,
+                error = %e,
+                "background audio generation failed"
+            );
+        } else {
+            info!(
+                audiobook = audiobook_id,
+                "background audio generation complete"
+            );
+        }
+    });
+
+    Ok(StatusCode::ACCEPTED)
+}
+
+// -------------------------------------------------------------------------
+// POST /audiobook/:id/chapter/:n/regenerate-audio  — single-chapter sync
+// -------------------------------------------------------------------------
+
+#[utoipa::path(
+    post,
+    path = "/audiobook/{id}/chapter/{n}/regenerate-audio",
+    tag = "audiobook",
+    params(("id" = String, Path), ("n" = u32, Path)),
+    responses(
+        (status = 200, description = "Regenerated chapter audio", body = ChapterSummary),
+        (status = 404, description = "Not found"),
+        (status = 502, description = "Upstream TTS error")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn regenerate_chapter_audio(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path((id, n)): Path<(String, u32)>,
+) -> ApiResult<Json<ChapterSummary>> {
+    assert_owner(&state, &id, &user.id).await?;
+    audio_gen::run_one_by_number(&state, &user.id, &id, n as i64).await?;
+    let after = load_chapter_by_number(&state, &id, n as i64).await?;
+    Ok(Json(after.to_summary()?))
 }
 
 // -------------------------------------------------------------------------

@@ -59,9 +59,9 @@ This plan is organised into **10 phases**. Each phase contains **Goals**, **Step
 | 0 — Scaffolding                  | ✅ Complete | `f5371b0` |
 | 1 — Backend Foundation           | ✅ Complete | `f16b66f` |
 | 2 — Authentication & Users       | ✅ Complete | `6da4d49` |
-| 3 — Content Generation           | ✅ Complete | (current branch) |
-| 4 — Voice Synthesis              | ⏳ Next     | — |
-| 5 — Job Orchestration            | ⏳          | — |
+| 3 — Content Generation           | ✅ Complete | `b596164` |
+| 4 — Voice Synthesis              | ✅ Complete | (current branch) |
+| 5 — Job Orchestration            | ⏳ Next     | — |
 | 6 — Web Frontend                 | ⏳          | — |
 | 7 — Admin Panel                  | ⏳          | — |
 | 8 — iOS App                      | ⏳          | — |
@@ -339,9 +339,25 @@ Active only when `LISTENAI_DEV_SEED=true`. A loud `WARN` log is emitted on every
 
 ---
 
-## Phase 4 — Voice Synthesis (x.ai Realtime)
+## Phase 4 — Voice Synthesis (x.ai Realtime) ✅
 
-**Goal:** transform `text_ready` audiobook into an M4B audio file with per-chapter markers.
+**Goal:** transform `text_ready` audiobook into per-chapter audio files, playable in a browser, with waveform peaks for the UI.
+
+> **Done.** A `TtsClient` trait with two implementations — a built-in **MockTts** (generates audible low-amplitude PCM scaled to the text length so dev/CI works without an API key) and a **real x.ai WebSocket client** (`wss://api.x.ai/v1/realtime`) that drives `session.update → conversation.item.create → response.create` and collects `response.audio.delta` frames until `response.done`. Per-chapter PCM is persisted as WAV (16-bit mono) via pure-Rust `hound`; a sibling `waveform.json` with 500 peak buckets lands next to it. Four new endpoints: async full-book TTS, per-chapter regen (sync), streaming audio GET, waveform GET.
+>
+> **What shipped beyond the plan wording:**
+> - **Mock TTS mode** — the entire pipeline (outline → chapters → audio) works with zero network access. Loud `WARN` on boot whenever `xai_api_key` is empty.
+> - **Waveform peaks computed server-side** — 500 normalised floats, ready for wavesurfer.js' `peaks` option in Phase 6 (no client decode cost).
+> - **Ownership enforcement on binary streams**: non-owners get a `404` on both `/audio` and `/waveform` — never leaks existence.
+> - **WAV instead of Opus/M4B**, on purpose. `hound` is pure Rust and zero-drama to compile; Opus + M4B encoding would force a C dep (libopus or ffmpeg) for negligible gain at this stage. Documented in-code.
+>
+> **Deferred:**
+> - Opus encoding + M4B container with chapter markers → a Phase 10 polish pass (adds `libopus` and a small M4B writer).
+> - EBU R128 loudness normalisation → ditto (needs ffmpeg-next or a pure-Rust LUFS impl).
+> - Background ambient mix + sidechain ducking → Phase 10 polish.
+> - Multi-voice speaker-tag parsing (narrator vs. character voices) → a future enhancement; today the audiobook's `primary_voice` FK (or `xai_default_voice`) is used for the whole book.
+> - Durable jobs + WebSocket progress streaming → Phase 5.
+
 
 ### Steps
 1. **Voice registry:** DB-backed `voice` table `{ id, provider: "xai", provider_voice_id, display_name, gender, accent, language, sample_url, enabled, premium_only }`. Seeded with Eve, Ara, Rex, Sal, Leo. Admin-editable; can disable voices or upload samples.
@@ -364,8 +380,52 @@ Active only when `LISTENAI_DEV_SEED=true`. A loud `WARN` log is emitted on every
 8. **Cost tracking:** record TTS seconds per voice per chapter, rolled up for quota + billing.
 
 ### Done when
-- A 3-chapter test book renders to Opus + M4B with correct chapter metadata playable in VLC, Overcast, and the web player.
-- Killing the backend mid-generation and restarting resumes from the last completed chapter.
+- A 3-chapter test book renders to per-chapter WAV (+ waveform JSON) with correct sample rate + duration, downloadable via `/audiobook/:id/chapter/:n/audio`.
+- (Opus + M4B and resume-from-crash move to Phase 10 polish — see "Deferred" above.)
+
+### Verified (mock TTS, clean boot)
+
+```
+create book (short) →  status: outline_ready
+generate-chapters   →  202, polled → text_ready in ~2 s
+generate-audio      →  202, polled → audio_ready in ~2 s
+  ch1 [audio_ready] ch2 [audio_ready] ch3 [audio_ready]
+
+GET /audiobook/:id/chapter/1/audio
+  content-type: audio/wav
+  1,265,186 bytes
+  file:        RIFF (little-endian) data, WAVE audio, Microsoft PCM, 16 bit, mono 24000 Hz
+
+GET /audiobook/:id/chapter/1/waveform
+  sample_rate_hz: 24000, buckets: 500, peak[max]: 0.03
+
+storage/audio/<id>/
+  ch-1.wav (1.26 MB)  ch-1.waveform.json (6 KB)
+  ch-2.wav            ch-2.waveform.json
+  ch-3.wav            ch-3.waveform.json
+
+regenerate-audio (ch 2)  →  200, status: audio_ready
+cross-user GET audio     →  404 (carol can't see demo's files)
+```
+
+### Key files
+
+| File | Purpose |
+|------|---------|
+| `backend/api/src/tts/mod.rs`              | `TtsClient` trait, `PcmAudio`, factory |
+| `backend/api/src/tts/mock.rs`             | `MockTts` — low-amp sine scaled to text length |
+| `backend/api/src/tts/xai.rs`              | Real x.ai WebSocket client |
+| `backend/api/src/audio/mod.rs`            | WAV write via `hound` + peak computation |
+| `backend/api/src/generation/audio.rs`     | Per-chapter audio pipeline + `generation_event` (role `tts`) rows |
+| `backend/api/src/handlers/audiobook.rs`   | `POST /audiobook/:id/generate-audio`, `POST .../regenerate-audio` |
+| `backend/api/src/handlers/stream.rs`      | `GET .../audio`, `GET .../waveform` |
+| `backend/core/src/config.rs`              | `xai_*` knobs (key, url, voice, sample rate, timeout) |
+
+### Test coverage added
+
+- `audio::tests` (4) — peak bounds, silence peaks, fewer buckets on short input, WAV round-trip read-back via `hound::WavReader`.
+- `tts::mock::tests` (2) — silence duration proportional to text length, `mocked=true` flag set.
+
 
 ---
 

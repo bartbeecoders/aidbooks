@@ -42,6 +42,14 @@ pub struct Config {
     /// Haiku-class model so dev burns through cheap tokens first).
     pub openrouter_default_model: String,
 
+    // --- x.ai voice (Phase 4) ---
+    /// x.ai API key. Empty string = mock mode.
+    pub xai_api_key: String,
+    pub xai_realtime_url: String,
+    pub xai_default_voice: String,
+    pub xai_sample_rate_hz: u32,
+    pub xai_request_timeout_secs: u64,
+
     // --- dev-only ---
     /// Seeds a throw-away admin user on startup. Must stay `false` in prod.
     pub dev_seed: bool,
@@ -77,6 +85,11 @@ impl Default for Config {
             openrouter_base_url: "https://openrouter.ai/api/v1".into(),
             openrouter_request_timeout_secs: 120,
             openrouter_default_model: "anthropic/claude-haiku-4.5".into(),
+            xai_api_key: String::new(),
+            xai_realtime_url: "wss://api.x.ai/v1/realtime".into(),
+            xai_default_voice: "eve".into(),
+            xai_sample_rate_hz: 24_000,
+            xai_request_timeout_secs: 180,
             dev_seed: false,
         }
     }

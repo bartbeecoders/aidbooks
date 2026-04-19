@@ -1,6 +1,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 mod app;
+mod audio;
 mod auth;
 mod error;
 mod generation;
@@ -8,6 +9,7 @@ mod handlers;
 mod llm;
 mod openapi;
 mod state;
+mod tts;
 
 use std::process::ExitCode;
 
@@ -71,7 +73,19 @@ async fn run(config: Config) -> anyhow::Result<()> {
         );
     }
 
-    let app_state = state::AppState::new(config.clone(), db, llm);
+    let tts = tts::build(
+        &config.xai_api_key,
+        &config.xai_realtime_url,
+        config.xai_sample_rate_hz,
+        config.xai_request_timeout_secs,
+    );
+    if tts.is_mock() {
+        tracing::warn!(
+            "TTS MOCK MODE: xai_api_key is empty — all TTS calls return a low-amplitude tone"
+        );
+    }
+
+    let app_state = state::AppState::new(config.clone(), db, llm, tts);
     let router = app::build_router(app_state);
 
     let addr: std::net::SocketAddr = format!("{}:{}", config.host, config.port).parse()?;

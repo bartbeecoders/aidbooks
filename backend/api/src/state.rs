@@ -3,6 +3,7 @@ use listenai_db::Db;
 use std::sync::Arc;
 
 use crate::llm::LlmClient;
+use crate::tts::SharedTts;
 
 /// Cheap-to-clone handle shared with every Axum handler.
 #[derive(Clone)]
@@ -14,12 +15,18 @@ struct Inner {
     config: Config,
     db: Db,
     llm: LlmClient,
+    tts: SharedTts,
 }
 
 impl AppState {
-    pub fn new(config: Config, db: Db, llm: LlmClient) -> Self {
+    pub fn new(config: Config, db: Db, llm: LlmClient, tts: SharedTts) -> Self {
         Self {
-            inner: Arc::new(Inner { config, db, llm }),
+            inner: Arc::new(Inner {
+                config,
+                db,
+                llm,
+                tts,
+            }),
         }
     }
 
@@ -33,5 +40,9 @@ impl AppState {
 
     pub fn llm(&self) -> &LlmClient {
         &self.inner.llm
+    }
+
+    pub fn tts(&self) -> &SharedTts {
+        &self.inner.tts
     }
 }

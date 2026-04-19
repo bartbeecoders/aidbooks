@@ -43,5 +43,15 @@ surrealdb = { workspace = true }
 # Phase 3 content generation
 reqwest = { workspace = true }
 
+# Phase 4 voice synthesis
+tokio-tungstenite = { workspace = true }
+hound = { workspace = true }
+futures-util = { workspace = true }
+base64 = { workspace = true }
+tokio-util = { workspace = true }
+
 listenai-core = { workspace = true }
 listenai-db = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

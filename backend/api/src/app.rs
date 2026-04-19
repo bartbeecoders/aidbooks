@@ -100,6 +100,23 @@ pub fn build_router(state: AppState) -> Router {
             "/audiobook/:id/chapter/:n/regenerate",
             post(handlers::audiobook::regenerate_chapter),
         )
+        // --- Phase 4: audio generation + streaming ---
+        .route(
+            "/audiobook/:id/generate-audio",
+            post(handlers::audiobook::generate_audio),
+        )
+        .route(
+            "/audiobook/:id/chapter/:n/regenerate-audio",
+            post(handlers::audiobook::regenerate_chapter_audio),
+        )
+        .route(
+            "/audiobook/:id/chapter/:n/audio",
+            get(handlers::stream::chapter_audio),
+        )
+        .route(
+            "/audiobook/:id/chapter/:n/waveform",
+            get(handlers::stream::chapter_waveform),
+        )
         .route("/topics/random", post(handlers::topics::random))
         .route("/voices", get(handlers::catalog::list_voices))
         .route("/llms", get(handlers::catalog::list_llms))
