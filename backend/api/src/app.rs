@@ -77,6 +77,32 @@ pub fn build_router(state: AppState) -> Router {
             "/me",
             get(handlers::me::get_me).patch(handlers::me::patch_me),
         )
+        // --- Phase 3: content generation ---
+        .route(
+            "/audiobook",
+            post(handlers::audiobook::create).get(handlers::audiobook::list),
+        )
+        .route(
+            "/audiobook/:id",
+            get(handlers::audiobook::get_one)
+                .patch(handlers::audiobook::patch)
+                .delete(handlers::audiobook::delete),
+        )
+        .route(
+            "/audiobook/:id/generate-chapters",
+            post(handlers::audiobook::generate_chapters),
+        )
+        .route(
+            "/audiobook/:id/chapter/:n",
+            axum::routing::patch(handlers::audiobook::patch_chapter),
+        )
+        .route(
+            "/audiobook/:id/chapter/:n/regenerate",
+            post(handlers::audiobook::regenerate_chapter),
+        )
+        .route("/topics/random", post(handlers::topics::random))
+        .route("/voices", get(handlers::catalog::list_voices))
+        .route("/llms", get(handlers::catalog::list_llms))
         .fallback(not_found)
         .with_state(state)
         .layer(middleware)

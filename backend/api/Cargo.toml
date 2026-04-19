@@ -40,5 +40,8 @@ validator = { workspace = true }
 # but we also need surrealdb directly for the db query parameter bindings.
 surrealdb = { workspace = true }
 
+# Phase 3 content generation
+reqwest = { workspace = true }
+
 listenai-core = { workspace = true }
 listenai-db = { workspace = true }

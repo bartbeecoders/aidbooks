@@ -42,6 +42,9 @@ sha2 = "0.10"
 subtle = "2"
 validator = { version = "0.18", features = ["derive"] }
 
+# added in Phase 3
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+
 # workspace-internal
 listenai-core = { path = "core" }
 listenai-db = { path = "db" }

@@ -11,11 +11,33 @@ pub enum AudiobookLength {
     Long,
 }
 
+impl AudiobookLength {
+    /// Number of chapters in the outline for this length preset.
+    pub fn chapter_count(self) -> u32 {
+        match self {
+            AudiobookLength::Short => 3,
+            AudiobookLength::Medium => 6,
+            AudiobookLength::Long => 12,
+        }
+    }
+
+    /// Target words per chapter. The LLM is free to deviate a little.
+    pub fn words_per_chapter(self) -> u32 {
+        match self {
+            AudiobookLength::Short => 500,
+            AudiobookLength::Medium => 1200,
+            AudiobookLength::Long => 2500,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AudiobookStatus {
     Draft,
+    OutlinePending,
     OutlineReady,
+    ChaptersRunning,
     TextReady,
     AudioReady,
     Failed,
@@ -25,6 +47,7 @@ pub enum AudiobookStatus {
 #[serde(rename_all = "snake_case")]
 pub enum ChapterStatus {
     Pending,
+    Running,
     TextReady,
     AudioReady,
     Failed,

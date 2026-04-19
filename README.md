@@ -52,9 +52,10 @@ just build       # release build
 - ✅ **Phase 0** — Project scaffolding
 - ✅ **Phase 1** — Backend foundation (SurrealDB + Axum + OpenAPI + tracing)
 - ✅ **Phase 2** — Authentication & users (argon2 + JWT + rotating refresh tokens)
-- ⏳ **Phase 3** — Content generation (OpenRouter)
+- ✅ **Phase 3** — Content generation (OpenRouter client with mock mode, outline + chapters)
+- ⏳ **Phase 4** — Voice synthesis (x.ai)
 
-Phases 3–10 tracked in [`plan.md`](./plan.md).
+Phases 4–10 tracked in [`plan.md`](./plan.md).
 
 ### Dev-only demo credentials
 

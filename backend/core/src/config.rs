@@ -32,6 +32,16 @@ pub struct Config {
     pub access_token_ttl_secs: u64,
     pub refresh_token_ttl_secs: u64,
 
+    // --- OpenRouter (Phase 3) ---
+    /// OpenRouter API key. Empty string = mock mode (useful for local dev
+    /// and CI; never enable for any real user).
+    pub openrouter_api_key: String,
+    pub openrouter_base_url: String,
+    pub openrouter_request_timeout_secs: u64,
+    /// Default model id used when no LLM row is picked (falls back to a
+    /// Haiku-class model so dev burns through cheap tokens first).
+    pub openrouter_default_model: String,
+
     // --- dev-only ---
     /// Seeds a throw-away admin user on startup. Must stay `false` in prod.
     pub dev_seed: bool,
@@ -63,6 +73,10 @@ impl Default for Config {
             password_pepper: "listenai-dev-pepper-change-in-production".into(),
             access_token_ttl_secs: 15 * 60,
             refresh_token_ttl_secs: 30 * 24 * 60 * 60,
+            openrouter_api_key: String::new(),
+            openrouter_base_url: "https://openrouter.ai/api/v1".into(),
+            openrouter_request_timeout_secs: 120,
+            openrouter_default_model: "anthropic/claude-haiku-4.5".into(),
             dev_seed: false,
         }
     }

@@ -25,6 +25,10 @@ const MIGRATIONS: &[Migration] = &[
         name: "0002_session",
         sql: include_str!("../migrations/0002_session.surql"),
     },
+    Migration {
+        name: "0003_content",
+        sql: include_str!("../migrations/0003_content.surql"),
+    },
 ];
 
 /// Run any pending migrations. Safe to call on every startup.

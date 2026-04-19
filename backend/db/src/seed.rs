@@ -17,6 +17,7 @@ use tracing::{info, warn};
 pub async fn run(db: &Db, dev_seed: bool, password_pepper: &str) -> Result<()> {
     seed_voices(db).await?;
     seed_llms(db).await?;
+    seed_prompts(db).await?;
     if dev_seed {
         seed_demo_admin(db, password_pepper).await?;
     }
@@ -55,6 +56,62 @@ async fn seed_demo_admin(db: &Db, pepper: &str) -> Result<()> {
         .map_err(|e| Error::Database(format!("seed demo admin: {e}")))?
         .check()
         .map_err(|e| Error::Database(format!("seed demo admin: {e}")))?;
+    Ok(())
+}
+
+async fn seed_prompts(db: &Db) -> Result<()> {
+    let prompts: &[Value] = &[
+        json!({
+            "id": "outline_v1",
+            "role": "outline",
+            "variables": ["topic", "length", "genre", "chapter_count", "words_per_chapter"],
+            "body": include_str!("prompts/outline_v1.md"),
+        }),
+        json!({
+            "id": "chapter_v1",
+            "role": "chapter",
+            "variables": [
+                "book_title", "chapter_number", "chapter_title",
+                "chapter_synopsis", "target_words", "genre", "previous_ending"
+            ],
+            "body": include_str!("prompts/chapter_v1.md"),
+        }),
+        json!({
+            "id": "random_topic_v1",
+            "role": "random_topic",
+            "variables": ["seed"],
+            "body": include_str!("prompts/random_topic_v1.md"),
+        }),
+    ];
+
+    for p in prompts {
+        let id = p["id"].as_str().expect("seed prompt id");
+        let variables: Vec<String> = p["variables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        let sql = format!(
+            r#"UPSERT prompt_template:`{id}` MERGE {{
+                role: $role,
+                body: $body,
+                version: 1,
+                active: true,
+                variables: $variables
+            }}"#
+        );
+        db.inner()
+            .query(&sql)
+            .bind(("role", p["role"].as_str().unwrap().to_string()))
+            .bind(("body", p["body"].as_str().unwrap().to_string()))
+            .bind(("variables", variables))
+            .await
+            .map_err(|e| Error::Database(format!("seed prompt {id}: {e}")))?
+            .check()
+            .map_err(|e| Error::Database(format!("seed prompt {id}: {e}")))?;
+    }
+    info!(count = prompts.len(), "prompts seeded");
     Ok(())
 }
 

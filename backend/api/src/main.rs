@@ -3,7 +3,9 @@
 mod app;
 mod auth;
 mod error;
+mod generation;
 mod handlers;
+mod llm;
 mod openapi;
 mod state;
 
@@ -58,7 +60,18 @@ async fn run(config: Config) -> anyhow::Result<()> {
     listenai_db::migrate::run(&db).await?;
     listenai_db::seed::run(&db, config.dev_seed, &config.password_pepper).await?;
 
-    let app_state = state::AppState::new(config.clone(), db);
+    let llm = llm::LlmClient::new(
+        &config.openrouter_api_key,
+        &config.openrouter_base_url,
+        config.openrouter_request_timeout_secs,
+    )?;
+    if llm.is_mock() {
+        tracing::warn!(
+            "LLM MOCK MODE: openrouter_api_key is empty — all LLM calls return fabricated content"
+        );
+    }
+
+    let app_state = state::AppState::new(config.clone(), db, llm);
     let router = app::build_router(app_state);
 
     let addr: std::net::SocketAddr = format!("{}:{}", config.host, config.port).parse()?;

@@ -58,9 +58,9 @@ This plan is organised into **10 phases**. Each phase contains **Goals**, **Step
 |-------|-------|--------|
 | 0 — Scaffolding                  | ✅ Complete | `f5371b0` |
 | 1 — Backend Foundation           | ✅ Complete | `f16b66f` |
-| 2 — Authentication & Users       | ✅ Complete | (current branch) |
-| 3 — Content Generation           | ⏳ Next     | — |
-| 4 — Voice Synthesis              | ⏳          | — |
+| 2 — Authentication & Users       | ✅ Complete | `6da4d49` |
+| 3 — Content Generation           | ✅ Complete | (current branch) |
+| 4 — Voice Synthesis              | ⏳ Next     | — |
 | 5 — Job Orchestration            | ⏳          | — |
 | 6 — Web Frontend                 | ⏳          | — |
 | 7 — Admin Panel                  | ⏳          | — |
@@ -256,9 +256,27 @@ Active only when `LISTENAI_DEV_SEED=true`. A loud `WARN` log is emitted on every
 
 ---
 
-## Phase 3 — Content Generation (OpenRouter)
+## Phase 3 — Content Generation (OpenRouter) ✅
 
 **Goal:** topic → structured audiobook outline → chapter prose, persisted and editable before narration.
+
+> **Done.** A typed OpenRouter client (reqwest, rustls-tls) with a built-in **mock mode** when `OPENROUTER_API_KEY` is empty, DB-backed prompt templates (seeded from markdown files at build time via `include_str!`), synchronous outline generation on `POST /audiobook`, async chapter generation via `tokio::spawn` that transitions `outline_ready → chapters_running → text_ready`, per-chapter edit/regenerate, random-topic generator, and a per-call cost log in `generation_event`.
+>
+> **What shipped that wasn't spelled out in the original plan:**
+> - **Mock mode** on the LLM client so devs (and CI) can run the whole content pipeline end-to-end without a real key. Loud `WARN` log on boot whenever it's active.
+> - **`.surql` status widening via `DEFINE FIELD OVERWRITE`** — forward-only migration pattern so the schema constraint stays in sync with the Rust enum without a DB wipe.
+> - **Markdown-file prompts** (`backend/db/src/prompts/*.md`) embedded via `include_str!` and upserted into `prompt_template` on boot — future versions bump `version` and stay loadable via the `ORDER BY version DESC` lookup.
+> - **Ownership enforcement**: `GET|PATCH|DELETE /audiobook/:id` return `404` (not `403`) to any non-owner — never leaks existence.
+> - **Tiny `{{var}}` renderer** (not Tera/Handlebars) so single-brace JSON examples inside the prompt body pass through untouched.
+>
+> **Deferred:**
+> - Durable jobs + WebSocket progress → Phase 5. Current chapter generation is `tokio::spawn` fire-and-forget with progress visible through `audiobook.status` polling.
+> - Per-tier quota enforcement → when Phase 9 billing lands.
+> - Admin CRUD on `llm` / `prompt_template` / `voice` → Phase 7.
+> - Streaming SSE from the LLM back to the client → Phase 5/6.
+> - Speaker-tagged multi-voice chapters → Phase 4.
+> - Safety moderation pass → Phase 10.
+
 
 ### Steps
 1. **Pluggable LLM registry:** DB-backed `llm` table `{ id, name, provider: "openrouter", model_id, context_window, cost_per_1k_prompt, cost_per_1k_completion, enabled, default_for: [outline|prose|title] }`. Admin-editable.
@@ -277,8 +295,47 @@ Active only when `LISTENAI_DEV_SEED=true`. A loud `WARN` log is emitted on every
 
 ### Done when
 - `POST /audiobook` with a topic returns an `audiobook` row in `status=outline_ready` with a valid chapter list.
-- `POST /audiobook/:id/generate-chapters` streams progress via WS and leaves the audiobook in `status=text_ready`.
-- Admin UI can add an OpenRouter model and immediately use it for generation.
+- `POST /audiobook/:id/generate-chapters` (now `202 Accepted` + background task; WS progress is Phase 5) leaves the audiobook in `status=text_ready`.
+- (Admin OpenRouter-model CRUD is deferred to Phase 7; LLM rows are DB-editable via direct SurrealQL today.)
+
+### Verified (clean boot, mock LLM)
+
+| Flow | Expected | Got |
+|------|----------|-----|
+| `POST /topics/random` | 200 + `{ topic, genre, length }` | ✅ |
+| `POST /audiobook` (sync outline) | 200 + `status: outline_ready` + N chapters | ✅ |
+| `POST /audiobook/:id/generate-chapters` | 202, later polls show `chapters_running → text_ready` | ✅ (2 s in mock mode) |
+| `GET /audiobook` / `GET /audiobook/:id` | owner-scoped list + detail | ✅ |
+| `PATCH /audiobook/:id` | title edited | ✅ |
+| `PATCH /audiobook/:id/chapter/:n` | title + synopsis edited | ✅ |
+| `POST /audiobook/:id/chapter/:n/regenerate` | chapter body rewritten, `status: text_ready` | ✅ |
+| `DELETE /audiobook/:id` | 204, chapters also gone | ✅ |
+| other-user GET / DELETE on owned book | 404 (never 403 — existence not leaked) | ✅ |
+| `GET /voices` / `GET /llms` | enabled rows, JSON | ✅ |
+| 1-char topic | 400 validation | ✅ |
+
+### Key files
+
+| File | Purpose |
+|------|---------|
+| `backend/core/src/domain/{prompt,generation_event}.rs` | New domain types |
+| `backend/core/src/domain/audiobook.rs`                 | Expanded `AudiobookStatus` + length helpers (`chapter_count`, `words_per_chapter`) |
+| `backend/db/migrations/0003_content.surql`             | `prompt_template`, `generation_event`, `OVERWRITE` status constraints |
+| `backend/db/src/prompts/{outline,chapter,random_topic}_v1.md` | Seeded prompt bodies |
+| `backend/db/src/seed.rs`                               | Upserts prompts every boot |
+| `backend/api/src/llm/openrouter.rs`                    | reqwest client + mock mode |
+| `backend/api/src/generation/prompts.rs`                | `{{var}}` rendering |
+| `backend/api/src/generation/outline.rs`                | Outline generation + cost log |
+| `backend/api/src/generation/chapter.rs`                | Per-chapter generation with previous-chapter ending carry-over |
+| `backend/api/src/handlers/audiobook.rs`                | Full audiobook CRUD + generate/regenerate |
+| `backend/api/src/handlers/topics.rs`                   | `POST /topics/random` |
+| `backend/api/src/handlers/catalog.rs`                  | `GET /voices`, `GET /llms` |
+
+### Test coverage added
+
+- `generation::prompts` (3 tests) — variable interpolation, unknown-marker fallthrough, JSON-brace safety.
+- `llm::openrouter` (2 tests) — mock outline returns valid JSON with correct chapter count; mock chapter returns plain prose.
+
 
 ---
 
