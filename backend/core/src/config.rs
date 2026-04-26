@@ -45,7 +45,11 @@ pub struct Config {
     // --- x.ai voice (Phase 4) ---
     /// x.ai API key. Empty string = mock mode.
     pub xai_api_key: String,
-    pub xai_realtime_url: String,
+    /// x.ai TTS endpoint. Defaults to `https://api.x.ai/v1/tts`.
+    pub xai_tts_url: String,
+    /// BCP-47 language code sent with each request. `"auto"` lets x.ai
+    /// detect the language from the text.
+    pub xai_tts_language: String,
     pub xai_default_voice: String,
     pub xai_sample_rate_hz: u32,
     pub xai_request_timeout_secs: u64,
@@ -86,7 +90,8 @@ impl Default for Config {
             openrouter_request_timeout_secs: 120,
             openrouter_default_model: "anthropic/claude-haiku-4.5".into(),
             xai_api_key: String::new(),
-            xai_realtime_url: "wss://api.x.ai/v1/realtime".into(),
+            xai_tts_url: "https://api.x.ai/v1/tts".into(),
+            xai_tts_language: "en".into(),
             xai_default_voice: "eve".into(),
             xai_sample_rate_hz: 24_000,
             xai_request_timeout_secs: 180,

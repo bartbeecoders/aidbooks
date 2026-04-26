@@ -62,6 +62,7 @@ pub async fn random(
         temperature: Some(1.1),
         max_tokens: Some(400),
         json_mode: Some(true),
+        modalities: None,
     };
 
     let response = state.llm().chat(&req).await?;

@@ -34,9 +34,7 @@ where
 }
 
 /// Extractor that passes iff the request is authenticated AND the user has
-/// the `admin` role. All other cases collapse to 401/403. Unused until
-/// admin-only routes land in Phase 7.
-#[allow(dead_code)]
+/// the `admin` role. All other cases collapse to 401/403.
 pub struct RequireAdmin(pub AuthedUser);
 
 #[async_trait]

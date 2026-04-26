@@ -17,6 +17,8 @@ pub enum LlmRole {
     Title,
     RandomTopic,
     Moderation,
+    /// Image-capable model used to render audiobook covers.
+    CoverArt,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

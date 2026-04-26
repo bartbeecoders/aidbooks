@@ -41,11 +41,20 @@ pub struct ChatRequest {
     pub max_tokens: Option<u32>,
     /// Set `Some(true)` to ask the model for a JSON object response.
     pub json_mode: Option<bool>,
+    /// Output modalities to request, e.g. `["image", "text"]` for
+    /// image-capable models like `google/gemini-2.5-flash-image`. Defaults
+    /// to text-only when `None`.
+    pub modalities: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ChatResponse {
     pub content: String,
+    /// First image returned by the model, raw base64 (no `data:` prefix).
+    /// Populated only when `modalities` requested image output and the
+    /// upstream actually returned one.
+    #[serde(default)]
+    pub image_base64: Option<String>,
     #[serde(default)]
     pub usage: ChatUsage,
     /// `true` when the response came from the mock path.
@@ -115,6 +124,9 @@ impl LlmClient {
         if req.json_mode == Some(true) {
             body["response_format"] = json!({ "type": "json_object" });
         }
+        if let Some(mods) = &req.modalities {
+            body["modalities"] = json!(mods);
+        }
 
         let resp = self
             .inner
@@ -144,17 +156,22 @@ impl LlmClient {
         let parsed: Value = serde_json::from_slice(&bytes)
             .map_err(|e| Error::Upstream(format!("openrouter json: {e}")))?;
 
-        let content = parsed
+        let message = parsed
             .get("choices")
             .and_then(Value::as_array)
             .and_then(|arr| arr.first())
             .and_then(|c| c.get("message"))
-            .and_then(|m| m.get("content"))
-            .and_then(Value::as_str)
             .ok_or_else(|| {
-                Error::Upstream("openrouter: missing choices[0].message.content".into())
-            })?
-            .to_string();
+                Error::Upstream("openrouter: missing choices[0].message".into())
+            })?;
+
+        let (content, image_base64) = extract_message(message);
+
+        if content.is_empty() && image_base64.is_none() {
+            return Err(Error::Upstream(
+                "openrouter: response had neither text nor image".into(),
+            ));
+        }
 
         let usage = parsed
             .get("usage")
@@ -163,9 +180,84 @@ impl LlmClient {
 
         Ok(ChatResponse {
             content,
+            image_base64,
             usage,
             mocked: false,
         })
+    }
+}
+
+/// Pull text + (optional) image out of an OpenRouter `choices[i].message`.
+///
+/// Image returns vary by model. We accept (in order):
+///   1. `message.images[i].image_url.url`           — Gemini image format
+///   2. `message.content[i]` array w/ `image_url`   — multi-modal block
+///   3. `message.content` plain string              — text-only fallback
+///
+/// `data:image/...;base64,...` URLs are stripped to the raw base64 payload
+/// so callers don't have to re-parse them.
+fn extract_message(message: &Value) -> (String, Option<String>) {
+    // 1. message.images
+    let from_images = message
+        .get("images")
+        .and_then(Value::as_array)
+        .and_then(|arr| {
+            arr.iter().find_map(|item| {
+                item.get("image_url")
+                    .and_then(|u| u.get("url"))
+                    .and_then(Value::as_str)
+                    .map(strip_data_url)
+            })
+        });
+
+    // 2. message.content (array form)
+    let mut text_parts = Vec::<String>::new();
+    let mut from_content_image: Option<String> = None;
+    if let Some(arr) = message.get("content").and_then(Value::as_array) {
+        for block in arr {
+            let ty = block.get("type").and_then(Value::as_str).unwrap_or("");
+            match ty {
+                "text" => {
+                    if let Some(t) = block.get("text").and_then(Value::as_str) {
+                        text_parts.push(t.to_string());
+                    }
+                }
+                "image_url" => {
+                    if from_content_image.is_none() {
+                        if let Some(url) = block
+                            .get("image_url")
+                            .and_then(|u| u.get("url"))
+                            .and_then(Value::as_str)
+                        {
+                            from_content_image = Some(strip_data_url(url));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // 3. message.content (plain string)
+    let plain = message
+        .get("content")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let text = if !text_parts.is_empty() {
+        text_parts.join("")
+    } else {
+        plain.unwrap_or_default()
+    };
+
+    (text, from_images.or(from_content_image))
+}
+
+fn strip_data_url(url: &str) -> String {
+    if let Some(idx) = url.find(";base64,") {
+        url[(idx + ";base64,".len())..].to_string()
+    } else {
+        url.to_string()
     }
 }
 
@@ -181,12 +273,20 @@ fn mock_response(req: &ChatRequest) -> ChatResponse {
         .map(|m| m.content.as_str())
         .unwrap_or("");
 
-    let content = if req.json_mode == Some(true) && last_user.contains("audiobook outline") {
-        mock_outline(last_user)
+    let wants_image = req
+        .modalities
+        .as_ref()
+        .map(|m| m.iter().any(|s| s == "image"))
+        .unwrap_or(false);
+
+    let (content, image_base64) = if wants_image {
+        ("Mock cover art.".to_string(), Some(mock_cover_png_base64()))
+    } else if req.json_mode == Some(true) && last_user.contains("audiobook outline") {
+        (mock_outline(last_user), None)
     } else if req.json_mode == Some(true) && last_user.contains("audiobook topic") {
-        mock_random_topic(last_user)
+        (mock_random_topic(last_user), None)
     } else {
-        mock_chapter(last_user)
+        (mock_chapter(last_user), None)
     };
 
     // Rough token estimates for the mock path.
@@ -195,6 +295,7 @@ fn mock_response(req: &ChatRequest) -> ChatResponse {
 
     ChatResponse {
         content,
+        image_base64,
         usage: ChatUsage {
             prompt_tokens,
             completion_tokens,
@@ -202,6 +303,12 @@ fn mock_response(req: &ChatRequest) -> ChatResponse {
         },
         mocked: true,
     }
+}
+
+/// Single-pixel transparent PNG. Just enough that the mock path returns
+/// well-formed image bytes without bundling an asset.
+fn mock_cover_png_base64() -> String {
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=".to_string()
 }
 
 fn mock_outline(prompt: &str) -> String {
@@ -289,6 +396,7 @@ mod tests {
                 temperature: Some(0.5),
                 max_tokens: Some(800),
                 json_mode: Some(true),
+                modalities: None,
             })
             .await
             .unwrap();
@@ -309,6 +417,7 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 json_mode: None,
+                modalities: None,
             })
             .await
             .unwrap();

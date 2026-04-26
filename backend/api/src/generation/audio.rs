@@ -2,17 +2,16 @@
 //!
 //! Transitions:
 //!   chapter.status: text_ready → running → audio_ready (or failed)
-//!   audiobook.status:
-//!       text_ready → chapters_running* → audio_ready (or failed)
 //!
-//!  * we reuse `chapters_running` for the audio pass too — it's accurate
-//!    enough for the UI and avoids a schema change. Phase 5's job runner
-//!    will introduce finer-grained status if the plan needs it.
+//! Audiobook-level status (`chapters_running` → `audio_ready`/`failed`) is
+//! owned by the Phase-5 Tts parent job, which fans out one `TtsChapter`
+//! child per chapter and aggregates their outcomes. The per-chapter work
+//! itself lives here and is what each child worker calls.
 
 use listenai_core::id::UserId;
 use listenai_core::{Error, Result};
 use serde::Deserialize;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::audio as audio_io;
 use crate::state::AppState;
@@ -22,7 +21,6 @@ struct ChapterRow {
     id: surrealdb::sql::Thing,
     number: i64,
     body_md: Option<String>,
-    status: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,63 +33,22 @@ struct VoiceMini {
     provider_voice_id: String,
 }
 
-/// Generate audio for every chapter in `text_ready` (or `failed`), in order.
-/// Flips the audiobook between `chapters_running` → `audio_ready` / `failed`.
-pub async fn run_all(state: &AppState, user: &UserId, audiobook_id: &str) -> Result<()> {
-    set_audiobook_status(state, audiobook_id, "chapters_running").await?;
-
-    let chapters = load_chapters(state, audiobook_id).await?;
-    let voice = resolve_voice(state, audiobook_id).await?;
-
-    let mut any_failed = false;
-    for ch in chapters {
-        if !matches!(ch.status.as_str(), "text_ready" | "failed" | "audio_ready") {
-            continue;
-        }
-        let body = match ch.body_md.as_deref() {
-            Some(s) if !s.is_empty() => s,
-            _ => {
-                error!(chapter = ch.number, "chapter body empty; skipping");
-                any_failed = true;
-                continue;
-            }
-        };
-        if let Err(e) = synth_one(state, user, audiobook_id, &ch, body, &voice).await {
-            error!(chapter = ch.number, error = %e, "audio generation failed");
-            any_failed = true;
-        }
-    }
-
-    set_audiobook_status(
-        state,
-        audiobook_id,
-        if any_failed { "failed" } else { "audio_ready" },
-    )
-    .await?;
-    Ok(())
-}
-
-/// Regenerate audio for a single chapter by number.
+/// Generate audio for a single chapter by number, in the requested language.
 pub async fn run_one_by_number(
     state: &AppState,
     user: &UserId,
     audiobook_id: &str,
     chapter_number: i64,
+    language: &str,
 ) -> Result<()> {
-    let chapters = load_chapters(state, audiobook_id).await?;
-    let ch = chapters
-        .into_iter()
-        .find(|c| c.number == chapter_number)
-        .ok_or(Error::NotFound {
-            resource: format!("audiobook:{audiobook_id} chapter {chapter_number}"),
-        })?;
+    let ch = load_chapter_for(state, audiobook_id, chapter_number, language).await?;
     let body = ch
         .body_md
         .as_deref()
         .filter(|s| !s.is_empty())
         .ok_or_else(|| Error::Validation("chapter has no text to narrate".into()))?;
     let voice = resolve_voice(state, audiobook_id).await?;
-    synth_one(state, user, audiobook_id, &ch, body, &voice).await
+    synth_one(state, user, audiobook_id, &ch, body, &voice, language).await
 }
 
 async fn synth_one(
@@ -101,12 +58,13 @@ async fn synth_one(
     ch: &ChapterRow,
     body: &str,
     voice_id: &str,
+    language: &str,
 ) -> Result<()> {
     let chapter_raw = ch.id.id.to_raw();
     set_chapter_status(state, &chapter_raw, "running").await?;
 
     let tts = state.tts().clone();
-    let audio = match tts.synthesize(body, voice_id).await {
+    let audio = match tts.synthesize(body, voice_id, language).await {
         Ok(a) => a,
         Err(e) => {
             set_chapter_status(state, &chapter_raw, "failed").await.ok();
@@ -120,6 +78,7 @@ async fn synth_one(
         &storage,
         audiobook_id,
         ch.number as u32,
+        language,
         &audio.samples,
         audio.sample_rate_hz,
     )?;
@@ -163,23 +122,33 @@ async fn synth_one(
     Ok(())
 }
 
-async fn load_chapters(state: &AppState, audiobook_id: &str) -> Result<Vec<ChapterRow>> {
+async fn load_chapter_for(
+    state: &AppState,
+    audiobook_id: &str,
+    number: i64,
+    language: &str,
+) -> Result<ChapterRow> {
     let rows: Vec<ChapterRow> = state
         .db()
         .inner()
         .query(format!(
             "SELECT id, number, body_md, status FROM chapter \
-             WHERE audiobook = audiobook:`{audiobook_id}` ORDER BY number ASC"
+             WHERE audiobook = audiobook:`{audiobook_id}` \
+               AND number = $n AND language = $lang LIMIT 1"
         ))
+        .bind(("n", number))
+        .bind(("lang", language.to_string()))
         .await
-        .map_err(|e| Error::Database(format!("load chapters: {e}")))?
+        .map_err(|e| Error::Database(format!("load chapter: {e}")))?
         .take(0)
-        .map_err(|e| Error::Database(format!("load chapters (decode): {e}")))?;
-    Ok(rows)
+        .map_err(|e| Error::Database(format!("load chapter (decode): {e}")))?;
+    rows.into_iter().next().ok_or(Error::NotFound {
+        resource: format!("audiobook:{audiobook_id} chapter {number} ({language})"),
+    })
 }
 
-/// Pick the voice for this audiobook: use the audiobook's `primary_voice`
-/// if set, otherwise fall back to `Config.xai_default_voice`.
+/// Pick the voice for this audiobook. Falls back to
+/// `Config.xai_default_voice` when no `primary_voice` is set.
 async fn resolve_voice(state: &AppState, audiobook_id: &str) -> Result<String> {
     let rows: Vec<AudiobookMini> = state
         .db()
@@ -192,7 +161,7 @@ async fn resolve_voice(state: &AppState, audiobook_id: &str) -> Result<String> {
         .take(0)
         .map_err(|e| Error::Database(format!("resolve voice (decode): {e}")))?;
     let voice_ref = rows.into_iter().next().and_then(|m| m.primary_voice);
-    match voice_ref {
+    Ok(match voice_ref {
         Some(thing) => {
             let raw = thing.id.to_raw();
             let rows: Vec<VoiceMini> = state
@@ -203,29 +172,13 @@ async fn resolve_voice(state: &AppState, audiobook_id: &str) -> Result<String> {
                 .map_err(|e| Error::Database(format!("load voice: {e}")))?
                 .take(0)
                 .map_err(|e| Error::Database(format!("load voice (decode): {e}")))?;
-            Ok(rows
-                .into_iter()
+            rows.into_iter()
                 .next()
                 .map(|v| v.provider_voice_id)
-                .unwrap_or_else(|| state.config().xai_default_voice.clone()))
+                .unwrap_or_else(|| state.config().xai_default_voice.clone())
         }
-        None => Ok(state.config().xai_default_voice.clone()),
-    }
-}
-
-async fn set_audiobook_status(state: &AppState, audiobook_id: &str, status: &str) -> Result<()> {
-    state
-        .db()
-        .inner()
-        .query(format!(
-            "UPDATE audiobook:`{audiobook_id}` SET status = $status"
-        ))
-        .bind(("status", status.to_string()))
-        .await
-        .map_err(|e| Error::Database(format!("set audiobook status: {e}")))?
-        .check()
-        .map_err(|e| Error::Database(format!("set audiobook status: {e}")))?;
-    Ok(())
+        None => state.config().xai_default_voice.clone(),
+    })
 }
 
 async fn set_chapter_status(state: &AppState, chapter_raw: &str, status: &str) -> Result<()> {

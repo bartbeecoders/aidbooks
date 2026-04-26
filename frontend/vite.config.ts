@@ -12,6 +12,9 @@ export default defineConfig(({ mode }) => {
         "/api": {
           target: apiTarget,
           changeOrigin: true,
+          // `ws: true` tunnels `ws://…/api/ws/…` through the dev proxy so the
+          // WebSocket progress hub works without talking directly to :8787.
+          ws: true,
           rewrite: (path) => path.replace(/^\/api/, ""),
         },
       },

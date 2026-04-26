@@ -8,6 +8,19 @@ FRONTEND_PID_FILE="$PID_DIR/frontend.pid"
 
 mkdir -p "$PID_DIR"
 
+# Load .env into this shell so LISTENAI_* vars reach `cargo run` below.
+# `set -a` auto-exports every assignment until `set +a`. Without this the
+# backend falls back to mock mode for LLM + TTS even when keys are present.
+if [[ -f "$ROOT/.env" ]]; then
+    echo "Loading $ROOT/.env"
+    set -a
+    # shellcheck disable=SC1091
+    source "$ROOT/.env"
+    set +a
+else
+    echo "No .env found at $ROOT/.env (backend will use defaults / mock mode)."
+fi
+
 stop_server() {
     local name="$1"
     local pid_file="$2"
@@ -21,7 +34,7 @@ stop_server() {
             local waited=0
             while kill -0 "$pid" 2>/dev/null && (( waited < 10 )); do
                 sleep 1
-                (( waited++ ))
+                waited=$(( waited + 1 ))
             done
             if kill -0 "$pid" 2>/dev/null; then
                 echo "Force-killing $name (PID $pid)..."

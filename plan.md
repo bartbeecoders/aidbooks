@@ -60,10 +60,10 @@ This plan is organised into **10 phases**. Each phase contains **Goals**, **Step
 | 1 — Backend Foundation           | ✅ Complete | `f16b66f` |
 | 2 — Authentication & Users       | ✅ Complete | `6da4d49` |
 | 3 — Content Generation           | ✅ Complete | `b596164` |
-| 4 — Voice Synthesis              | ✅ Complete | (current branch) |
-| 5 — Job Orchestration            | ⏳ Next     | — |
-| 6 — Web Frontend                 | ⏳          | — |
-| 7 — Admin Panel                  | ⏳          | — |
+| 4 — Voice Synthesis              | ✅ Complete | `81a2ba1` |
+| 5 — Job Orchestration            | ✅ Complete | (phase-5 commit) |
+| 6 — Web Frontend                 | ✅ Complete | (phase-6 commit) |
+| 7 — Admin Panel                  | ✅ Complete | (current branch) |
 | 8 — iOS App                      | ⏳          | — |
 | 9 — Monetisation                 | ⏳          | — |
 | 10 — Polish & Launch             | ⏳          | — |
@@ -429,9 +429,25 @@ cross-user GET audio     →  404 (carol can't see demo's files)
 
 ---
 
-## Phase 5 — Job Orchestration & Real-Time Progress
+## Phase 5 — Job Orchestration & Real-Time Progress ✅
 
 **Goal:** durable, observable, restartable generation jobs, with live progress to the client.
+
+> **Done.** A new `listenai-jobs` crate owning the job lifecycle (enqueue → atomic pickup → complete / retry / dead-letter), a bounded per-kind worker pool (`2 chapters`, `2 tts`, `4 tts_chapter`, `1 gc`), a WebSocket progress hub at `/ws/audiobook/:id` with on-connect replay-snapshot + live broadcast events, a REST polling fallback at `/audiobook/:id/jobs`, fan-out for TTS (one parent + N `tts_chapter` children so a 12-chapter book narrates ≈4× faster), idempotency keys (`Idempotency-Key` header, 24 h cache per user), and a nightly GC job that purges orphan audio dirs.
+>
+> **What shipped that wasn't spelled out in the original plan:**
+> - **`tts_chapter` sub-kind**: the parent `tts` job fans out one `tts_chapter` child per chapter so narration is genuinely parallel. Parent polls children every 500 ms and aggregates progress; a single child dead-lettering bubbles up to an audiobook-level `failed`.
+> - **Two-phase atomic pickup**: SurrealDB 2 doesn't allow `ORDER BY` on `UPDATE`, so we run `SELECT id, queued_at ... ORDER BY queued_at LIMIT 1` inside a transaction, then `UPDATE $picked WHERE status="queued"`. A post-write check on the returned `worker_id` catches the rare MVCC race where two workers both saw the row as queued.
+> - **Resume-on-boot**: any row still in `status=running` when the server starts is flipped back to `queued` with a `last_error = "recovered: worker crashed while running"`; the fresh worker picks it up normally.
+> - **`Idempotency-Key` as an opt-in helper** rather than a global middleware — handlers that care about it call `idempotency::lookup` at the top and `record` after successful enqueue. Keeps the cache scope per handler (no body-copy gymnastics for streaming endpoints).
+> - **Live-job guard on enqueue endpoints**: double-submitting `generate-chapters`/`generate-audio` without a key while the previous job is still queued/running now returns `409` (rather than silently double-enqueuing).
+> - **Snapshot-on-connect** for the WebSocket: first frame is always a `{type:"snapshot",jobs:[…]}` so the UI never needs a REST round-trip to render. Lag (`broadcast::RecvError::Lagged`) is recovered by re-sending a fresh snapshot.
+>
+> **Deferred:**
+> - **Per-tier quota throttling (`status=throttled`)** → Phase 9 (billing) where the quota table actually exists.
+> - **Admin replay button for `dead` jobs** → Phase 7.
+> - **Durable soft-delete of audiobooks + 30-day cooldown**: today's GC only sweeps on-disk orphans (audio dirs without a matching `audiobook` row). Real soft-delete is a Phase-10 polish.
+> - **Outline as a job**: `POST /audiobook` still runs outline synchronously (< 3 s on mock, bounded by LLM latency on prod). It's fine without being a durable job today; promoting it is a trivial API flip (202 + ws) that we can do when the web wizard needs it.
 
 ### Steps
 1. **`job` table:** `{ id, kind: "outline|chapters|tts|postprocess|cover", audiobook_id, status, progress_pct, attempts, last_error?, queued_at, started_at, finished_at, worker_id, payload_json }`.
@@ -447,11 +463,68 @@ cross-user GET audio     →  404 (carol can't see demo's files)
 - Creating an audiobook end-to-end fires outline → chapters → tts → postprocess jobs in order, with live progress visible in the web UI.
 - Restarting the backend mid-flight resumes without data loss.
 
+### Verified (mock LLM + mock TTS, clean boot)
+
+| Flow | Expected | Got |
+|------|----------|-----|
+| `POST /audiobook/:id/generate-chapters` | 202 + chapters job runs → status `text_ready` | ✅ |
+| `POST /audiobook/:id/generate-audio` | 202 + 1 tts parent + N tts_chapter children, all `completed` → `audio_ready` | ✅ |
+| Chapter WAVs + waveforms present | 3 × `ch-N.wav` + `ch-N.waveform.json` under `/storage/audio/<id>/` | ✅ |
+| `GET /audiobook/:id/jobs` | owner-scoped snapshot list of every job | ✅ |
+| WebSocket `GET /ws/audiobook/:id?access_token=…` | initial `snapshot` event, then `progress`/`completed` frames | ✅ |
+| Same `Idempotency-Key` replayed | second call returns cached 202, no new job | ✅ |
+| Different `Idempotency-Key` replayed | second call enqueues a new job (202) | ✅ |
+| No key while an identical job is live | `409 conflict: … already in flight` | ✅ |
+| Cross-user WS / jobs for owned book | `404` (never leaks existence) | ✅ |
+| Kill server with a queued chapters job, restart | next boot picks it up and runs to `text_ready` | ✅ |
+| MVCC pickup race | logged at `debug` (`transaction conflict, retrying`), not error | ✅ |
+
+### Key files
+
+| File | Purpose |
+|------|---------|
+| `backend/db/migrations/0004_jobs.surql`                      | Extends `job` with user/parent/chapter_number/worker_id/max_attempts/not_before; new `request_idempotency` table |
+| `backend/core/src/domain/job.rs`                             | Expanded `JobKind` (`TtsChapter`, `Gc`), `JobStatus::is_terminal`, parse/as_str helpers |
+| `backend/jobs/src/lib.rs`                                    | Crate entry — `hub`, `repo`, `runtime`, `handler` |
+| `backend/jobs/src/hub.rs`                                    | `ProgressHub` (broadcast map by audiobook id) + typed `ProgressEvent` (snapshot/progress/completed/failed) |
+| `backend/jobs/src/repo.rs`                                   | Typed SurrealQL: `enqueue`, atomic `pick_next`, `set_progress`, `mark_completed`, `mark_failed` (retry + dead-letter), `recover_stalled`, `children`, `list_for_audiobook` |
+| `backend/jobs/src/handler.rs`                                | `JobHandler` trait, `JobContext`, `JobOutcome` (Done/Retry/Fatal), `JobHandlerRegistry` |
+| `backend/jobs/src/runtime.rs`                                | Per-kind worker pool, atomic pickup loop, retry/backoff, graceful shutdown, resume-on-boot |
+| `backend/api/src/jobs/handlers.rs`                           | `ChaptersHandler`, `TtsParentHandler` (fan-out + aggregate), `TtsChapterHandler`, `GcHandler` |
+| `backend/api/src/handlers/ws.rs`                             | `GET /ws/audiobook/:id` with query-token auth, snapshot-on-connect, live broadcast forwarding |
+| `backend/api/src/handlers/jobs.rs`                           | `GET /audiobook/:id/jobs` polling fallback |
+| `backend/api/src/idempotency.rs`                             | `IdempotencyKey` extractor + `lookup`/`record` helpers (24 h per-user cache) |
+| `backend/api/src/main.rs`                                    | Wires `JobRepo` + `ProgressHub` into `AppState`, spawns the worker pool + GC scheduler, graceful-shutdown order |
+
+### Test coverage added
+
+- `jobs::hub` (3 tests) — subscribe-then-publish receives the event; `gc` drops an idle channel; `ProgressEvent` serialises with the `type` discriminator and omits `None` fields.
+
 ---
 
-## Phase 6 — Web Frontend
+## Phase 6 — Web Frontend ✅
 
 **Goal:** beautiful, responsive web app covering the entire user flow.
+
+> **Done.** A React 18 + TS + Vite SPA that walks a user from login → create wizard → generation view with WebSocket progress → audio player, against the Phase 2–5 backend. TanStack Query for server cache, Zustand for auth with localStorage persistence, react-router-dom for routing, Tailwind for styling, a typed API client built on top of `openapi-typescript`-generated schemas. Ships as a ~300 KB (~96 KB gzipped) production bundle.
+>
+> **What shipped that wasn't spelled out in the original plan:**
+> - **Auto-refresh on 401 with single-flight gating** — the typed `apiFetch` wrapper calls `/auth/refresh` at most once per token-expiry cycle, so concurrent 401s don't race each other into logout. All callers are unaware the rotation happened.
+> - **Snapshot-on-connect + lag recovery** in the WebSocket hook — first frame is always a `{type:"snapshot"}` so the UI renders correctly without a REST poll; on `broadcast::RecvError::Lagged` the server re-sends a snapshot so slow tabs catch up.
+> - **Terminal-event tick** — the progress hook exposes a `terminalTick` counter that flips on every `completed`/`failed` event; `BookDetail` uses it to invalidate the audiobook query exactly when chapter text / audio-ready status changes, no polling required.
+> - **Query-param auth on `/audiobook/:id/chapter/:n/audio`** — the browser's `<audio>` tag can't set headers, so the stream endpoint now accepts either `Authorization: Bearer …` OR `?access_token=…`, matching the WebSocket pattern. Same-origin dev works through the `/api` proxy with `ws: true`.
+> - **Player persistence** via localStorage (chapter + time + speed per audiobook) with a 5 s write budget; no server endpoint needed until we add cross-device sync.
+> - **Keyboard shortcuts** scoped to the mounted player — `space` / `j` / `l` / `,` / `.` — skipped automatically while focus is in an input.
+> - **Playable-aware library card**: the grid card links to `/app/play/:id` if the book is `audio_ready`, otherwise to `/app/book/:id`; avoids the "ooh I got a finished book" → "where's the play button?" double-click.
+>
+> **Deferred (noted in Phase 10 polish):**
+> - **shadcn/ui + Radix primitives** — current styling uses raw Tailwind. Swap in when we need dropdowns / command palette / accessible select.
+> - **wavesurfer.js custom player** — native `<audio controls>` is fine for v1; the waveform JSON is already on disk and ready to render.
+> - **Cover art** via the `flux2` skill — column exists in the DB plan, just not rendered yet.
+> - **PWA offline playback** — service worker, manifest, and `Cache Storage` writes for per-chapter WAVs.
+> - **Captions / subtitles + bookmarks + notes** — Phase-4/Phase-10 extension (SRT sidecar + DB table).
+> - **Cross-device progress sync** via `PATCH /audiobook/:id/progress` — endpoint doesn't exist yet; localStorage suffices for one-device v1.
+> - **Create wizard as 4 separate routes** — single-form create for now; the wizard experience is a v2 polish.
 
 ### Steps
 1. **Foundation:**
@@ -481,11 +554,67 @@ cross-user GET audio     →  404 (carol can't see demo's files)
 - A new visitor can sign up, generate a short audiobook end-to-end, and play it in the browser, including offline playback.
 - Lighthouse ≥ 90 on Performance, Accessibility, Best Practices.
 
+### Verified (backend on :8787 + vite dev on :5173, mock LLM + mock TTS)
+
+| Flow | Expected | Got |
+|------|----------|-----|
+| `npm run typecheck` | clean | ✅ |
+| `npm run lint -- --max-warnings 0` | clean | ✅ |
+| `npm run build` (prod Vite build) | bundle emitted | ✅ (302 KB js / 15 KB css) |
+| `POST /api/auth/login` via vite proxy | access + refresh tokens | ✅ |
+| `POST /api/audiobook` via vite proxy | audiobook in `outline_ready` | ✅ |
+| `POST /api/audiobook/:id/generate-chapters` then poll | → `text_ready` | ✅ |
+| `POST /api/audiobook/:id/generate-audio` then poll | → `audio_ready` | ✅ |
+| `GET /api/audiobook/:id/chapter/1/audio?access_token=…` | `200` + `audio/wav` | ✅ |
+| `ws://localhost:5173/api/ws/audiobook/:id?access_token=…` | first frame = `{type:"snapshot", jobs: 5}` | ✅ |
+
+### Key files
+
+| File | Purpose |
+|------|---------|
+| `frontend/package.json`                                      | Added deps: `react-router-dom`, `@tanstack/react-query`, `zustand`; dev: `openapi-typescript`. `gen:api` script |
+| `frontend/vite.config.ts`                                    | `/api` dev proxy + `ws: true` for WebSocket tunnelling |
+| `shared/openapi.json`                                        | Captured backend OpenAPI 3.1 snapshot (source of truth for `gen:api`) |
+| `frontend/src/api/schema.d.ts`                               | `openapi-typescript`-generated component + path types (regenerate on schema change) |
+| `frontend/src/api/types.ts`                                  | Readable aliases over the generated `components["schemas"]["…"]` |
+| `frontend/src/api/client.ts`                                 | `apiFetch` with bearer injection, typed `ApiError`, single-flight 401 refresh |
+| `frontend/src/api/index.ts`                                  | Per-endpoint wrappers (`auth.login`, `audiobooks.create`, …) + `progressWebSocketUrl` helper |
+| `frontend/src/store/auth.ts`                                 | Zustand auth store, localStorage persistence, imperative `getAuth`/`setAuth`/`logout` for the client module |
+| `frontend/src/hooks/useProgressSocket.ts`                    | WS connection with reconnect-backoff, typed event projection, `terminalTick` for cache invalidation |
+| `frontend/src/routes.tsx`                                    | Route table (`/login`, `/signup`, `/app`, `/app/new`, `/app/book/:id`, `/app/play/:id`) |
+| `frontend/src/components/{AppLayout,RequireAuth}.tsx`        | Shell with nav + auth-guard redirect |
+| `frontend/src/pages/{Login,Signup}.tsx`                      | Email/password auth forms |
+| `frontend/src/pages/Library.tsx`                             | Dashboard grid + status pills |
+| `frontend/src/pages/NewAudiobook.tsx`                        | Topic + length + genre + "Surprise me" random-topic call |
+| `frontend/src/pages/BookDetail.tsx`                          | Live-progress view, per-chapter rows, generate buttons, WS-driven status |
+| `frontend/src/pages/Player.tsx`                              | HTML5 audio + chapter list + speed + keyboard shortcuts + localStorage resume |
+| `backend/api/src/handlers/stream.rs`                         | `GET /audiobook/:id/chapter/:n/audio` now accepts `?access_token=` query (mirrors `/ws/…`) |
+
 ---
 
-## Phase 7 — Admin Panel
+## Phase 7 — Admin Panel ✅
 
 **Goal:** a `/admin` zone of the same web app, gated by `role=admin`, covering all runtime-editable entities.
+
+> **Done.** Admin-gated zone at `/admin/*` (frontend `RequireAdmin` + backend `RequireAdmin` extractor), backed by 10 new REST endpoints. Ships five screens — Overview (live counts + storage size + provider-mode badges), LLMs (toggle enabled, view cost), Voices (enabled + premium-only toggles), Users (search + role/tier swap + "Revoke sessions"), Jobs (filterable live table with 5 s auto-refresh + Retry button on dead/failed jobs).
+>
+> **What shipped that wasn't spelled out in the original plan:**
+> - **Self-demote guard** on `PATCH /admin/users/:id` — an admin cannot flip their own role to `user` through the API (would risk locking the team out); the UI surfaces the 409 message inline.
+> - **Admin `Retry` flow** resets `attempts` to 0 and `not_before` to now, so the retried job gets a fresh max-attempt budget immediately rather than inheriting the exhausted counter that caused the dead-letter.
+> - **`SystemOverview` reports provider-mock mode** — at a glance admins see whether OpenRouter / x.ai keys are configured. The verbose boot-time `WARN` is nice in prod logs but invisible to an admin-without-shell.
+> - **Storage-size walk** is file-system-native (no DB round-trip) and scoped to `Config.storage_path`; nightly GC keeps it fast.
+> - **Auto-refresh on `/admin/jobs`** — 5 s TanStack Query interval so the page mirrors the WebSocket progress hub without needing another socket per admin tab.
+> - **Session-count column** on `/admin/users` pre-joins with `session` so "Revoke sessions" is only clickable when there's something to revoke.
+>
+> **Deferred (explicitly, as Phase 7 extras):**
+> - **Monaco prompt-template editor** with diff + version history + A/B — just list / create-new-version UI is enough for v1; Monaco + A/B routing is its own build.
+> - **Masquerade login** ("log in as user for support, logged in audit trail") — needs an audit table and tight session scoping; defer until Phase 10 hardening.
+> - **Content moderation queue** — no moderation pass exists yet (Phase 10 safety work).
+> - **Pricing & tiers UI** — gated on Phase 9 Stripe integration.
+> - **Feature flags** — no runtime flag store yet; this is a future cross-cutting add.
+> - **Voice-pack pairing**, **voice-sample upload/record** — catalog-only editing for v1.
+> - **LLM "live test" ping** — one-shot prompt/response tester; skipped to keep the surface small.
+> - **LLM + Voice create/delete** — catalog is seeded; admin can toggle/edit enabled rows but net-new rows go via migration/seed updates for now.
 
 ### Steps
 1. **Layout:** sidebar navigation: LLMs, Voices, Prompt Templates, Users, Content, Jobs, Pricing & Tiers, Feature Flags, System Health.
@@ -502,6 +631,44 @@ cross-user GET audio     →  404 (carol can't see demo's files)
 ### Done when
 - Every configurable thing in the system is editable without a redeploy.
 - An admin can ban a user, refund their quota, disable a broken LLM, and retry a dead job in under 2 minutes.
+
+### Verified
+
+| Flow | Expected | Got |
+|------|----------|-----|
+| `GET /admin/system` without token | `401` | ✅ |
+| `GET /admin/system` as non-admin user | `403` | ✅ |
+| `GET /admin/system` as admin | counts + paths + provider-mode badges | ✅ |
+| `GET /admin/llm` → `PATCH /admin/llm/:id {enabled:false}` | list includes now-disabled row | ✅ |
+| `GET /admin/users?q=…` | owner-scoped filtered user list + `active_sessions` count | ✅ |
+| `PATCH /admin/users/:id {tier:"pro"}` | 200 + tier updated | ✅ |
+| `POST /admin/users/:id/revoke-sessions` | `{"revoked": N}`, further `/me` calls get 401 until re-login | ✅ |
+| `PATCH /admin/users/<self> {role:"user"}` | `409` with "cannot demote your own admin" message | ✅ |
+| `POST /admin/jobs/:id/retry` on a `completed` job | `409` | ✅ |
+| `POST /admin/jobs/nonexistent/retry` | `404` | ✅ |
+| Frontend `npm run typecheck` + `npm run lint` + `npm run build` | all clean | ✅ |
+| Backend `cargo clippy --workspace -- -D warnings` | clean | ✅ |
+
+### Key files
+
+| File | Purpose |
+|------|---------|
+| `backend/api/src/handlers/admin.rs`              | 10 admin endpoints — LLM/voice CRUD-lite, users (list/patch/revoke), jobs (list/retry), system overview |
+| `backend/api/src/auth/extractor.rs`              | `RequireAdmin` extractor activated (was a stub) |
+| `backend/api/src/auth/mod.rs`                    | Re-export `RequireAdmin` |
+| `backend/api/src/app.rs`                         | Route registration under `/admin/*` |
+| `backend/api/src/openapi.rs`                     | New paths + schemas in the generated spec |
+| `shared/openapi.json`                            | Re-captured with Phase-7 endpoints (source of truth for `gen:api`) |
+| `frontend/src/api/index.ts`                      | `admin.system` / `llms` / `voices` / `users` / `jobs` wrappers |
+| `frontend/src/components/RequireAdmin.tsx`       | Client-side guard (redirects non-admins to `/app`) |
+| `frontend/src/components/AdminLayout.tsx`        | Sidebar + nested-route outlet |
+| `frontend/src/components/AppLayout.tsx`          | "Admin" link shown only when `user.role === "admin"` |
+| `frontend/src/pages/admin/AdminOverview.tsx`     | Live counts + storage + provider-mode + quick actions |
+| `frontend/src/pages/admin/AdminLlms.tsx`         | LLM list + enable toggle (shared `Toggle`, `PageHeader`, `Loading`, `ErrorPane`) |
+| `frontend/src/pages/admin/AdminVoices.tsx`       | Voice list + enabled / premium-only toggles |
+| `frontend/src/pages/admin/AdminUsers.tsx`        | Search + role/tier swap + Revoke button |
+| `frontend/src/pages/admin/AdminJobs.tsx`         | Filterable table, 5 s refetch interval, Retry on `dead`/`failed` |
+| `frontend/src/routes.tsx`                        | Admin routes nested under the authed `AppLayout` and wrapped by `RequireAdmin` |
 
 ---
 

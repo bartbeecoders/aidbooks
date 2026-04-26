@@ -6,18 +6,28 @@ mod auth;
 mod error;
 mod generation;
 mod handlers;
+mod i18n;
+mod idempotency;
+mod jobs;
 mod llm;
 mod openapi;
 mod state;
 mod tts;
 
 use std::process::ExitCode;
+use std::time::Duration;
 
 use listenai_core::config::{Config, LogFormat};
+use listenai_core::domain::JobKind;
+use listenai_jobs::{repo::EnqueueRequest, runtime, JobContext, JobRepo, ProgressHub, WorkerConfig};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+/// Nightly cadence for enqueuing the orphan-audio GC sweep. Kept tight in
+/// dev (24 h); a prod override can come from config later.
+const GC_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 fn main() -> ExitCode {
     // Load config before we init tracing so log level/format are respected.
@@ -75,7 +85,7 @@ async fn run(config: Config) -> anyhow::Result<()> {
 
     let tts = tts::build(
         &config.xai_api_key,
-        &config.xai_realtime_url,
+        &config.xai_tts_url,
         config.xai_sample_rate_hz,
         config.xai_request_timeout_secs,
     );
@@ -85,7 +95,25 @@ async fn run(config: Config) -> anyhow::Result<()> {
         );
     }
 
-    let app_state = state::AppState::new(config.clone(), db, llm, tts);
+    // Phase 5: job infra.
+    let job_repo = JobRepo::new(db.clone());
+    let hub = ProgressHub::new();
+
+    let app_state = state::AppState::new(
+        config.clone(),
+        db,
+        llm,
+        tts,
+        job_repo.clone(),
+        hub.clone(),
+    );
+
+    let registry = jobs::registry(app_state.clone());
+    let worker_ctx = JobContext::new(job_repo.clone(), hub.clone());
+    let worker_handle =
+        runtime::spawn(worker_ctx, registry, WorkerConfig::default()).await;
+    let gc_scheduler = spawn_gc_scheduler(job_repo.clone());
+
     let router = app::build_router(app_state);
 
     let addr: std::net::SocketAddr = format!("{}:{}", config.host, config.port).parse()?;
@@ -99,7 +127,32 @@ async fn run(config: Config) -> anyhow::Result<()> {
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    tracing::info!("draining jobs...");
+    gc_scheduler.abort();
+    worker_handle.shutdown().await;
     Ok(())
+}
+
+/// Periodic task that enqueues one GC job every `GC_INTERVAL`. The first
+/// tick fires after the interval — the startup path is deliberately clean.
+fn spawn_gc_scheduler(repo: JobRepo) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(GC_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Consume the immediate first tick — we want to enqueue on the
+        // schedule, not on boot.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let req = EnqueueRequest::new(JobKind::Gc).with_max_attempts(1);
+            if let Err(e) = repo.enqueue(req).await {
+                tracing::warn!(error = %e, "gc enqueue failed");
+            } else {
+                tracing::info!("gc enqueued");
+            }
+        }
+    })
 }
 
 fn init_tracing(config: &Config) {

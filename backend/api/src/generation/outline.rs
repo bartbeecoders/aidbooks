@@ -47,6 +47,7 @@ pub async fn run(
     topic: &str,
     length: AudiobookLength,
     genre: &str,
+    language: &str,
 ) -> Result<()> {
     set_audiobook_status(state, audiobook_id, "outline_pending").await?;
 
@@ -56,6 +57,7 @@ pub async fn run(
     vars.insert("genre", genre.to_string());
     vars.insert("chapter_count", length.chapter_count().to_string());
     vars.insert("words_per_chapter", length.words_per_chapter().to_string());
+    vars.insert("language", crate::i18n::label(language).to_string());
 
     let rendered = prompts::render(state, PromptRole::Outline, &vars).await?;
     let model = state.config().openrouter_default_model.clone();
@@ -69,6 +71,7 @@ pub async fn run(
         temperature: Some(0.7),
         max_tokens: Some(2_000),
         json_mode: Some(true),
+        modalities: None,
     };
 
     let response = match state.llm().chat(&req).await {

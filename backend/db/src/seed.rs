@@ -64,7 +64,10 @@ async fn seed_prompts(db: &Db) -> Result<()> {
         json!({
             "id": "outline_v1",
             "role": "outline",
-            "variables": ["topic", "length", "genre", "chapter_count", "words_per_chapter"],
+            "variables": [
+                "topic", "length", "genre", "chapter_count",
+                "words_per_chapter", "language"
+            ],
             "body": include_str!("prompts/outline_v1.md"),
         }),
         json!({
@@ -72,7 +75,8 @@ async fn seed_prompts(db: &Db) -> Result<()> {
             "role": "chapter",
             "variables": [
                 "book_title", "chapter_number", "chapter_title",
-                "chapter_synopsis", "target_words", "genre", "previous_ending"
+                "chapter_synopsis", "target_words", "genre",
+                "previous_ending", "language"
             ],
             "body": include_str!("prompts/chapter_v1.md"),
         }),

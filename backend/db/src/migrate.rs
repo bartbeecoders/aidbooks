@@ -29,6 +29,30 @@ const MIGRATIONS: &[Migration] = &[
         name: "0003_content",
         sql: include_str!("../migrations/0003_content.surql"),
     },
+    Migration {
+        name: "0004_jobs",
+        sql: include_str!("../migrations/0004_jobs.surql"),
+    },
+    Migration {
+        name: "0005_cover",
+        sql: include_str!("../migrations/0005_cover.surql"),
+    },
+    Migration {
+        name: "0006_language",
+        sql: include_str!("../migrations/0006_language.surql"),
+    },
+    Migration {
+        name: "0007_chapter_lang",
+        sql: include_str!("../migrations/0007_chapter_lang.surql"),
+    },
+    Migration {
+        name: "0008_job_lang",
+        sql: include_str!("../migrations/0008_job_lang.surql"),
+    },
+    Migration {
+        name: "0009_translate_kind",
+        sql: include_str!("../migrations/0009_translate_kind.surql"),
+    },
 ];
 
 /// Run any pending migrations. Safe to call on every startup.

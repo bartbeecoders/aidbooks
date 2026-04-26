@@ -2,9 +2,12 @@ You are an audiobook narrator-writer. Write the full body of a single chapter th
 
 Book: {{book_title}}
 Genre: {{genre}}
+Language: {{language}}
 Chapter {{chapter_number}}: {{chapter_title}}
 Synopsis: {{chapter_synopsis}}
 Target length: ~{{target_words}} words
+
+Write the entire chapter in {{language}}. The target word count refers to {{language}} words.
 
 Previous chapter ended with:
 {{previous_ending}}

@@ -11,8 +11,14 @@ path = "src/lib.rs"
 
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+surrealdb = { workspace = true }
+async-trait = { workspace = true }
+utoipa = { workspace = true }
 listenai-core = { workspace = true }
 listenai-db = { workspace = true }

@@ -3,14 +3,15 @@
 //! A tiny `TtsClient` trait with two implementations:
 //!   * `MockTts` — fabricates audible-at-low-level PCM scaled to the text
 //!     length; always available, used when no x.ai key is configured.
-//!   * `XaiTts` — real WebSocket client against `wss://api.x.ai/v1/realtime`.
+//!   * `XaiRestTts` — OpenAI-compatible REST client against
+//!     `https://api.x.ai/v1/audio/speech` (or any compatible vendor).
 //!
 //! The trait returns raw PCM i16 mono at the configured sample rate so
 //! the downstream audio module doesn't need to know which provider
 //! produced the bytes.
 
 pub mod mock;
-pub mod xai;
+pub mod xai_rest;
 
 use async_trait::async_trait;
 use listenai_core::Result;
@@ -39,7 +40,10 @@ impl PcmAudio {
 
 #[async_trait]
 pub trait TtsClient: Send + Sync {
-    async fn synthesize(&self, text: &str, voice: &str) -> Result<PcmAudio>;
+    /// Render `text` with `voice` in `language` (BCP-47, e.g. `"en"`, `"nl"`).
+    /// `"auto"` is also accepted by some providers and lets the upstream
+    /// detect the language from the text.
+    async fn synthesize(&self, text: &str, voice: &str, language: &str) -> Result<PcmAudio>;
     fn is_mock(&self) -> bool;
 }
 
@@ -47,21 +51,27 @@ pub trait TtsClient: Send + Sync {
 pub type SharedTts = std::sync::Arc<dyn TtsClient>;
 
 /// Factory: pick the right implementation based on whether `xai_api_key`
-/// is set. Never panics — falls back to the mock on any construction error.
+/// is set. Falls back to the mock on any construction error. Language is
+/// passed per call (see `TtsClient::synthesize`), not at construction.
 pub fn build(
     api_key: &str,
-    realtime_url: &str,
+    tts_url: &str,
     sample_rate_hz: u32,
     timeout_secs: u64,
 ) -> SharedTts {
     if api_key.trim().is_empty() {
-        std::sync::Arc::new(mock::MockTts::new(sample_rate_hz))
-    } else {
-        std::sync::Arc::new(xai::XaiTts::new(
-            api_key.to_string(),
-            realtime_url.to_string(),
-            sample_rate_hz,
-            timeout_secs,
-        ))
+        return std::sync::Arc::new(mock::MockTts::new(sample_rate_hz));
+    }
+    match xai_rest::XaiRestTts::new(
+        api_key.to_string(),
+        tts_url.to_string(),
+        sample_rate_hz,
+        timeout_secs,
+    ) {
+        Ok(c) => std::sync::Arc::new(c),
+        Err(e) => {
+            tracing::warn!(error = %e, "tts: failed to build REST client; falling back to mock");
+            std::sync::Arc::new(mock::MockTts::new(sample_rate_hz))
+        }
     }
 }

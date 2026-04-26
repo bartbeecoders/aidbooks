@@ -26,7 +26,7 @@ impl MockTts {
 
 #[async_trait]
 impl TtsClient for MockTts {
-    async fn synthesize(&self, text: &str, _voice: &str) -> Result<PcmAudio> {
+    async fn synthesize(&self, text: &str, _voice: &str, _language: &str) -> Result<PcmAudio> {
         let chars = text.chars().count().max(1) as f64;
         let duration_secs = (chars / CHARS_PER_SECOND).max(0.4);
         let sample_count = (duration_secs * self.sample_rate_hz as f64).round() as usize;
@@ -57,8 +57,11 @@ mod tests {
     #[tokio::test]
     async fn silence_is_proportional_to_text() {
         let m = MockTts::new(24_000);
-        let short = m.synthesize("hello", "eve").await.unwrap();
-        let long = m.synthesize(&"hello ".repeat(50), "eve").await.unwrap();
+        let short = m.synthesize("hello", "eve", "en").await.unwrap();
+        let long = m
+            .synthesize(&"hello ".repeat(50), "eve", "en")
+            .await
+            .unwrap();
         assert!(long.samples.len() > short.samples.len() * 5);
         assert!(short.duration_ms() >= 350);
     }
@@ -66,7 +69,7 @@ mod tests {
     #[tokio::test]
     async fn mock_flag_is_true() {
         let m = MockTts::new(24_000);
-        let a = m.synthesize("hi", "eve").await.unwrap();
+        let a = m.synthesize("hi", "eve", "en").await.unwrap();
         assert!(a.mocked);
         assert_eq!(a.sample_rate_hz, 24_000);
     }

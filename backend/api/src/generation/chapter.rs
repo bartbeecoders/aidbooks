@@ -30,6 +30,8 @@ struct ChapterRow {
 struct AudiobookMini {
     title: String,
     genre: Option<String>,
+    #[serde(default)]
+    language: Option<String>,
 }
 
 /// Generate every `pending` (or failed) chapter in order. Updates each
@@ -117,6 +119,10 @@ async fn run_one(
     vars.insert("chapter_synopsis", ch.synopsis.clone().unwrap_or_default());
     vars.insert("target_words", ch.target_words.unwrap_or(1200).to_string());
     vars.insert(
+        "language",
+        crate::i18n::label(book.language.as_deref().unwrap_or("en")).to_string(),
+    );
+    vars.insert(
         "previous_ending",
         if previous_ending.is_empty() {
             "(this is the first chapter)".into()
@@ -139,6 +145,7 @@ async fn run_one(
         temperature: Some(0.8),
         max_tokens: Some(4_000),
         json_mode: Some(false),
+        modalities: None,
     };
 
     let response = match state.llm().chat(&req).await {
@@ -155,6 +162,7 @@ async fn run_one(
                 PromptRole::Chapter,
                 &crate::llm::ChatResponse {
                     content: String::new(),
+                    image_base64: None,
                     usage: Default::default(),
                     mocked: false,
                 },
@@ -205,7 +213,7 @@ async fn load_audiobook(state: &AppState, audiobook_id: &str) -> Result<Audioboo
         .db()
         .inner()
         .query(format!(
-            "SELECT title, genre FROM audiobook:`{audiobook_id}`"
+            "SELECT title, genre, language FROM audiobook:`{audiobook_id}`"
         ))
         .await
         .map_err(|e| Error::Database(format!("load audiobook: {e}")))?

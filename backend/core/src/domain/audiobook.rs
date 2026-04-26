@@ -63,6 +63,12 @@ pub struct Audiobook {
     pub length: AudiobookLength,
     pub primary_voice: Option<VoiceId>,
     pub status: AudiobookStatus,
+    /// Relative path under `Config.storage_path` to the cover image, when one
+    /// has been generated. Served via `GET /audiobook/:id/cover`.
+    pub cover_path: Option<String>,
+    /// BCP-47 language code, e.g. `"en"`, `"nl"`, `"de"`. Drives both LLM
+    /// content generation and TTS narration.
+    pub language: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

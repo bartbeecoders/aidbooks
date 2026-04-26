@@ -1,7 +1,11 @@
+pub mod admin;
 pub mod audiobook;
 pub mod auth;
 pub mod catalog;
+pub mod cover;
 pub mod health;
+pub mod jobs;
 pub mod me;
 pub mod stream;
 pub mod topics;
+pub mod ws;

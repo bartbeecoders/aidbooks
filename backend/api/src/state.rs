@@ -1,5 +1,6 @@
 use listenai_core::config::Config;
 use listenai_db::Db;
+use listenai_jobs::{JobRepo, ProgressHub};
 use std::sync::Arc;
 
 use crate::llm::LlmClient;
@@ -16,16 +17,27 @@ struct Inner {
     db: Db,
     llm: LlmClient,
     tts: SharedTts,
+    job_repo: JobRepo,
+    hub: ProgressHub,
 }
 
 impl AppState {
-    pub fn new(config: Config, db: Db, llm: LlmClient, tts: SharedTts) -> Self {
+    pub fn new(
+        config: Config,
+        db: Db,
+        llm: LlmClient,
+        tts: SharedTts,
+        job_repo: JobRepo,
+        hub: ProgressHub,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 config,
                 db,
                 llm,
                 tts,
+                job_repo,
+                hub,
             }),
         }
     }
@@ -44,5 +56,13 @@ impl AppState {
 
     pub fn tts(&self) -> &SharedTts {
         &self.inner.tts
+    }
+
+    pub fn jobs(&self) -> &JobRepo {
+        &self.inner.job_repo
+    }
+
+    pub fn hub(&self) -> &ProgressHub {
+        &self.inner.hub
     }
 }

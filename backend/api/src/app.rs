@@ -117,9 +117,59 @@ pub fn build_router(state: AppState) -> Router {
             "/audiobook/:id/chapter/:n/waveform",
             get(handlers::stream::chapter_waveform),
         )
+        // --- Phase 6: cover art ---
+        .route("/cover-art/preview", post(handlers::cover::preview))
+        .route(
+            "/audiobook/:id/cover",
+            get(handlers::stream::cover).post(handlers::audiobook::regenerate_cover),
+        )
+        .route(
+            "/audiobook/:id/translate",
+            post(handlers::audiobook::translate),
+        )
+        // --- Phase 5: jobs + real-time progress ---
+        .route(
+            "/audiobook/:id/jobs",
+            get(handlers::jobs::list_for_audiobook),
+        )
+        .route(
+            "/ws/audiobook/:id",
+            get(handlers::ws::audiobook_progress),
+        )
         .route("/topics/random", post(handlers::topics::random))
         .route("/voices", get(handlers::catalog::list_voices))
         .route("/llms", get(handlers::catalog::list_llms))
+        // --- Phase 7: admin ---
+        .route("/admin/system", get(handlers::admin::system_overview))
+        .route(
+            "/admin/llm",
+            get(handlers::admin::list_llms).post(handlers::admin::create_llm),
+        )
+        .route(
+            "/admin/llm/:id",
+            axum::routing::patch(handlers::admin::patch_llm),
+        )
+        .route("/admin/voice", get(handlers::admin::list_voices))
+        .route(
+            "/admin/voice/:id",
+            axum::routing::patch(handlers::admin::patch_voice),
+        )
+        .route("/admin/users", get(handlers::admin::list_users))
+        .route(
+            "/admin/users/:id",
+            axum::routing::patch(handlers::admin::patch_user),
+        )
+        .route(
+            "/admin/users/:id/revoke-sessions",
+            post(handlers::admin::revoke_sessions),
+        )
+        .route("/admin/jobs", get(handlers::admin::list_jobs))
+        .route(
+            "/admin/jobs/:id/retry",
+            post(handlers::admin::retry_job),
+        )
+        .route("/admin/test/llm", post(handlers::admin::test_llm))
+        .route("/admin/test/voice", post(handlers::admin::test_voice))
         .fallback(not_found)
         .with_state(state)
         .layer(middleware)
@@ -161,6 +211,7 @@ fn build_cors(state: &AppState) -> CorsLayer {
             header::CONTENT_TYPE,
             header::AUTHORIZATION,
             REQUEST_ID_HEADER.clone(),
+            HeaderName::from_static("idempotency-key"),
         ])
         .expose_headers([REQUEST_ID_HEADER.clone()])
         .allow_credentials(true)

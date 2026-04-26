@@ -32,14 +32,18 @@ pub struct ChapterAudioFiles {
 
 /// Write the given PCM samples to WAV and compute + persist a waveform
 /// peaks file alongside it. Overwrites any previous files for this chapter.
+///
+/// Layout: `<storage>/<audiobook>/<language>/ch-<n>.wav`. Per-language
+/// subdirs keep parallel narrations from clobbering each other.
 pub fn write_chapter(
     storage_root: &Path,
     audiobook_id: &str,
     chapter_number: u32,
+    language: &str,
     samples: &[i16],
     sample_rate_hz: u32,
 ) -> Result<ChapterAudioFiles> {
-    let dir = storage_root.join(audiobook_id);
+    let dir = storage_root.join(audiobook_id).join(language);
     fs::create_dir_all(&dir)
         .map_err(|e| Error::Other(anyhow::anyhow!("create audio dir {dir:?}: {e}")))?;
 
@@ -158,7 +162,7 @@ mod tests {
         use tempfile::tempdir;
         let dir = tempdir().unwrap();
         let samples: Vec<i16> = (0..24_000).map(|i| (i as i16).wrapping_mul(3)).collect();
-        let files = write_chapter(dir.path(), "abc", 1, &samples, 24_000).unwrap();
+        let files = write_chapter(dir.path(), "abc", 1, "en", &samples, 24_000).unwrap();
         assert!(files.wav_path.exists());
         assert!(files.waveform_path.exists());
         assert_eq!(files.duration_ms, 1000);
