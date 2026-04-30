@@ -11,6 +11,8 @@ import type {
   AdminUserRow,
   AdminVoiceList,
   AdminVoiceRow,
+  ApprovePublicationResponse,
+  AudiobookCostSummary,
   AudiobookDetail,
   AudiobookJobList,
   AudiobookList,
@@ -21,6 +23,19 @@ import type {
   CoverPreviewResponse,
   CreateAudiobookRequest,
   CreateLlmRequest,
+  CreateTopicTemplateRequest,
+  OauthStartResponse,
+  OpenRouterModelList,
+  UpsertYoutubeFooterRequest,
+  XaiImageModelList,
+  XaiModelList,
+  YoutubeFooterList,
+  YoutubeFooterRow,
+  PublicationList,
+  PublishYoutubeRequest,
+  PublishYoutubeResponse,
+  TopicTemplate,
+  TopicTemplateList,
   TranslateRequest,
   TranslateResponse,
   LoginRequest,
@@ -37,9 +52,11 @@ import type {
   UpdateAudiobookRequest,
   UpdateChapterRequest,
   UpdateLlmRequest,
+  UpdateTopicTemplateRequest,
   UpdateUserRequest,
   UpdateVoiceRequest,
   VoiceList,
+  YoutubeAccountStatus,
 } from "./types";
 
 export { ApiError } from "./client";
@@ -83,6 +100,8 @@ export const audiobooks = {
   remove: (id: string) => apiFetch<void>(`/audiobook/${id}`, { method: "DELETE" }),
   regenerateCover: (id: string) =>
     apiFetch<AudiobookDetail>(`/audiobook/${id}/cover`, { method: "POST" }),
+  costs: (id: string) =>
+    apiFetch<AudiobookCostSummary>(`/audiobook/${id}/costs`),
   translate: (id: string, body: TranslateRequest) =>
     apiFetch<TranslateResponse>(`/audiobook/${id}/translate`, {
       method: "POST",
@@ -109,6 +128,12 @@ export const audiobooks = {
     apiFetch<ChapterSummary>(`/audiobook/${id}/chapter/${n}/regenerate-audio`, {
       method: "POST",
     }),
+  regenerateChapterArt: (id: string, n: number) =>
+    apiFetch<ChapterSummary>(`/audiobook/${id}/chapter/${n}/art`, {
+      method: "POST",
+    }),
+  cancelPipeline: (id: string) =>
+    apiFetch<void>(`/audiobook/${id}/cancel-pipeline`, { method: "POST" }),
 };
 
 // --- catalog + topics ----------------------------------------------------
@@ -120,6 +145,7 @@ export const catalog = {
 export const topics = {
   random: (body: RandomTopicRequest) =>
     apiFetch<RandomTopicResponse>("/topics/random", { method: "POST", body }),
+  templates: () => apiFetch<TopicTemplateList>("/topic-templates"),
 };
 
 // --- cover art ---------------------------------------------------------
@@ -133,10 +159,84 @@ export function coverImageUrl(audiobookId: string, accessToken: string): string 
   return `/api/audiobook/${audiobookId}/cover?access_token=${encodeURIComponent(accessToken)}`;
 }
 
+export function chapterArtUrl(
+  audiobookId: string,
+  chapter: number,
+  accessToken: string,
+  language?: string,
+): string {
+  const qs = new URLSearchParams({ access_token: accessToken });
+  if (language) qs.set("language", language);
+  return `/api/audiobook/${audiobookId}/chapter/${chapter}/art?${qs.toString()}`;
+}
+
+/**
+ * URL for a paragraph illustration tile.
+ * `paragraphIndex` matches `chapter.paragraphs[].index`; `ordinal` is
+ * the 1-based tile slot (1..=images_per_paragraph).
+ */
+export function paragraphImageUrl(
+  audiobookId: string,
+  chapter: number,
+  paragraphIndex: number,
+  ordinal: number,
+  accessToken: string,
+  language?: string,
+): string {
+  const qs = new URLSearchParams({ access_token: accessToken });
+  if (language) qs.set("language", language);
+  return `/api/audiobook/${audiobookId}/chapter/${chapter}/paragraph/${paragraphIndex}/image/${ordinal}?${qs.toString()}`;
+}
+
 // --- jobs ----------------------------------------------------------------
 export const jobs = {
   listForAudiobook: (id: string) => apiFetch<AudiobookJobList>(`/audiobook/${id}/jobs`),
 };
+
+// --- integrations (YouTube) ---------------------------------------------
+export const integrations = {
+  youtube: {
+    /** Start the consent dance. Caller is expected to set
+     *  `window.location = res.url` to actually navigate. */
+    oauthStart: () =>
+      apiFetch<OauthStartResponse>("/integrations/youtube/oauth/start"),
+    /** Whether the calling user has connected a YouTube channel. */
+    account: () =>
+      apiFetch<YoutubeAccountStatus>("/integrations/youtube/account"),
+    /** Revoke at Google + delete the local row. */
+    disconnect: () =>
+      apiFetch<void>("/integrations/youtube/account", { method: "DELETE" }),
+    publish: (audiobookId: string, body: PublishYoutubeRequest) =>
+      apiFetch<PublishYoutubeResponse>(
+        `/audiobook/${audiobookId}/publish/youtube`,
+        { method: "POST", body },
+      ),
+    listPublications: (audiobookId: string) =>
+      apiFetch<PublicationList>(`/audiobook/${audiobookId}/publications`),
+    approve: (audiobookId: string, publicationId: string) =>
+      apiFetch<ApprovePublicationResponse>(
+        `/audiobook/${audiobookId}/publications/${publicationId}/approve`,
+        { method: "POST" },
+      ),
+    cancel: (audiobookId: string, publicationId: string) =>
+      apiFetch<void>(
+        `/audiobook/${audiobookId}/publications/${publicationId}/cancel`,
+        { method: "POST" },
+      ),
+  },
+};
+
+/** Streaming URL for the encoded MP4 preview. Pass to a `<video>` tag. */
+export function publicationPreviewUrl(
+  audiobookId: string,
+  publicationId: string,
+  accessToken: string,
+  chapter?: number,
+): string {
+  const qs = new URLSearchParams({ access_token: accessToken });
+  if (chapter != null) qs.set("chapter", String(chapter));
+  return `/api/audiobook/${audiobookId}/publications/${publicationId}/preview?${qs.toString()}`;
+}
 
 // --- admin ---------------------------------------------------------------
 export const admin = {
@@ -147,6 +247,8 @@ export const admin = {
       apiFetch<AdminLlmRow>("/admin/llm", { method: "POST", body }),
     patch: (id: string, body: UpdateLlmRequest) =>
       apiFetch<AdminLlmRow>(`/admin/llm/${id}`, { method: "PATCH", body }),
+    remove: (id: string) =>
+      apiFetch<void>(`/admin/llm/${id}`, { method: "DELETE" }),
   },
   voices: {
     list: () => apiFetch<AdminVoiceList>("/admin/voice"),
@@ -179,12 +281,68 @@ export const admin = {
     },
     retry: (id: string) =>
       apiFetch<void>(`/admin/jobs/${id}/retry`, { method: "POST" }),
+    cancel: (id: string) =>
+      apiFetch<void>(`/admin/jobs/${id}/cancel`, { method: "POST" }),
+    remove: (id: string) =>
+      apiFetch<void>(`/admin/jobs/${id}`, { method: "DELETE" }),
   },
   test: {
     llm: (body: TestLlmRequest) =>
       apiFetch<TestLlmResponse>("/admin/test/llm", { method: "POST", body }),
     voice: (body: TestVoiceRequest) =>
       apiFetch<TestVoiceResponse>("/admin/test/voice", { method: "POST", body }),
+  },
+  openrouter: {
+    /**
+     * Public OpenRouter catalog used by the LLM-add picker.
+     *
+     * `outputModalities` is forwarded to OpenRouter — pass `"image"` for the
+     * full image-generation catalog, since the unfiltered endpoint hides
+     * most image-only providers.
+     */
+    models: (outputModalities?: string) => {
+      const qs = outputModalities
+        ? `?output_modalities=${encodeURIComponent(outputModalities)}`
+        : "";
+      return apiFetch<OpenRouterModelList>(`/admin/openrouter/models${qs}`);
+    },
+  },
+  xai: {
+    /**
+     * xAI's `/language-models` catalog. Requires the server to have
+     * `xai_api_key` configured — returns 400 otherwise.
+     */
+    models: () => apiFetch<XaiModelList>("/admin/xai/models"),
+    /** xAI's `/image-generation-models` catalog (Grok-2-Image et al). */
+    imageModels: () => apiFetch<XaiImageModelList>("/admin/xai/image-models"),
+  },
+  youtubeSettings: {
+    list: () => apiFetch<YoutubeFooterList>("/admin/youtube-settings"),
+    upsert: (language: string, body: UpsertYoutubeFooterRequest) =>
+      apiFetch<YoutubeFooterRow>(
+        `/admin/youtube-settings/${encodeURIComponent(language)}`,
+        { method: "PUT", body },
+      ),
+    remove: (language: string) =>
+      apiFetch<void>(
+        `/admin/youtube-settings/${encodeURIComponent(language)}`,
+        { method: "DELETE" },
+      ),
+  },
+  topicTemplates: {
+    list: () => apiFetch<TopicTemplateList>("/admin/topic-templates"),
+    create: (body: CreateTopicTemplateRequest) =>
+      apiFetch<TopicTemplate>("/admin/topic-templates", {
+        method: "POST",
+        body,
+      }),
+    patch: (id: string, body: UpdateTopicTemplateRequest) =>
+      apiFetch<TopicTemplate>(`/admin/topic-templates/${id}`, {
+        method: "PATCH",
+        body,
+      }),
+    remove: (id: string) =>
+      apiFetch<void>(`/admin/topic-templates/${id}`, { method: "DELETE" }),
   },
 };
 

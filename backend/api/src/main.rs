@@ -13,6 +13,7 @@ mod llm;
 mod openapi;
 mod state;
 mod tts;
+mod youtube;
 
 use std::process::ExitCode;
 use std::time::Duration;
@@ -75,11 +76,18 @@ async fn run(config: Config) -> anyhow::Result<()> {
     let llm = llm::LlmClient::new(
         &config.openrouter_api_key,
         &config.openrouter_base_url,
+        &config.xai_api_key,
+        &config.xai_base_url,
         config.openrouter_request_timeout_secs,
     )?;
     if llm.is_mock() {
         tracing::warn!(
             "LLM MOCK MODE: openrouter_api_key is empty — all LLM calls return fabricated content"
+        );
+    }
+    if llm.is_xai_mock() {
+        tracing::info!(
+            "xai_api_key is empty — xAI-provider chat calls will use mock content"
         );
     }
 

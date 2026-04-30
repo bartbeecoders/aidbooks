@@ -10,6 +10,14 @@ pub enum PromptRole {
     RandomTopic,
     Moderation,
     Title,
+    /// Cover-art generation (book + chapter covers).
+    Cover,
+    /// Per-paragraph illustration tile.
+    ParagraphImage,
+    /// Cross-language prose rewrite.
+    Translate,
+    /// Visual-paragraph scene-extract pass (text in, JSON out).
+    SceneExtract,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

@@ -3,7 +3,10 @@ import { NavLink, Outlet } from "react-router-dom";
 const SECTIONS: Array<{ to: string; label: string }> = [
   { to: "/admin", label: "Overview" },
   { to: "/admin/llm", label: "LLMs" },
+  { to: "/admin/image-llm", label: "Image LLMs" },
   { to: "/admin/voice", label: "Voices" },
+  { to: "/admin/topic-templates", label: "Topic templates" },
+  { to: "/admin/youtube-settings", label: "YouTube settings" },
   { to: "/admin/test-llm", label: "Test LLM" },
   { to: "/admin/test-voice", label: "Test voice" },
   { to: "/admin/users", label: "Users" },

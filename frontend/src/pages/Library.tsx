@@ -93,12 +93,9 @@ function Card({
     onSuccess: () => qc.invalidateQueries({ queryKey: ["audiobooks"] }),
   });
 
-  const playable = book.status === "audio_ready";
-  const target = playable ? `/app/play/${book.id}` : `/app/book/${book.id}`;
-
   const goTo = (): void => {
     if (remove.isPending) return;
-    navigate(target);
+    navigate(`/app/book/${book.id}`);
   };
 
   const onDelete = (): void => {

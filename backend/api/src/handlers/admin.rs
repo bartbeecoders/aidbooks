@@ -24,6 +24,209 @@ use crate::llm::{ChatMessage, ChatRequest};
 use crate::state::AppState;
 
 // =========================================================================
+// OpenRouter model catalog (used by the LLM admin picker)
+// =========================================================================
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpenRouterModelRow {
+    pub id: String,
+    pub name: String,
+    /// Optional one-line description; trimmed to 200 chars on the frontend.
+    pub description: Option<String>,
+    pub context_length: Option<u32>,
+    pub input_modalities: Vec<String>,
+    pub output_modalities: Vec<String>,
+    /// USD per 1k prompt tokens (converted from OpenRouter's per-token).
+    pub cost_prompt_per_1k: f64,
+    /// USD per 1k completion tokens.
+    pub cost_completion_per_1k: f64,
+    /// USD per generated image (only set on image-output models). Most
+    /// providers price one ~1MP frame, so the admin UI uses this directly
+    /// as the `$ / megapixel` default.
+    pub cost_per_image: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpenRouterModelList {
+    pub items: Vec<OpenRouterModelRow>,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct OpenRouterModelsQuery {
+    /// Filter forwarded as `?output_modalities=` to OpenRouter. Pass
+    /// `image` to get the full image-generation catalog — the unfiltered
+    /// endpoint hides most image-only providers.
+    #[serde(default)]
+    pub output_modalities: Option<String>,
+}
+
+// =========================================================================
+// xAI model catalog (used by the LLM admin picker, xAI tab)
+// =========================================================================
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct XaiModelRow {
+    /// Upstream model id (e.g. `grok-4`).
+    pub id: String,
+    pub aliases: Vec<String>,
+    pub input_modalities: Vec<String>,
+    pub output_modalities: Vec<String>,
+    /// USD per 1k prompt tokens — converted from xAI's
+    /// microdollars-per-million-tokens encoding.
+    pub cost_prompt_per_1k: f64,
+    pub cost_completion_per_1k: f64,
+    /// Max prompt window in tokens, when reported by xAI.
+    pub context_length: Option<u32>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct XaiModelList {
+    pub items: Vec<XaiModelRow>,
+}
+
+#[utoipa::path(
+    get, path = "/admin/xai/models", tag = "admin",
+    responses(
+        (status = 200, body = XaiModelList),
+        (status = 400, description = "xai_api_key not configured"),
+        (status = 403),
+        (status = 502, description = "xAI unreachable")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_xai_models(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+) -> ApiResult<Json<XaiModelList>> {
+    let models = state.llm().list_xai_models().await?;
+    let items = models
+        .into_iter()
+        .map(|m| {
+            // xAI: integer microdollars per million tokens.
+            // USD per 1k = price / 1_000_000_000.
+            let to_per_1k = |v: Option<u64>| -> f64 {
+                v.map(|n| (n as f64) / 1_000_000_000.0).unwrap_or(0.0)
+            };
+            XaiModelRow {
+                id: m.id,
+                aliases: m.aliases,
+                input_modalities: m.input_modalities,
+                output_modalities: m.output_modalities,
+                cost_prompt_per_1k: to_per_1k(m.prompt_text_token_price),
+                cost_completion_per_1k: to_per_1k(m.completion_text_token_price),
+                context_length: m
+                    .max_prompt_length
+                    .map(|n| n.min(u32::MAX as u64) as u32),
+            }
+        })
+        .collect();
+    Ok(Json(XaiModelList { items }))
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct XaiImageModelRow {
+    pub id: String,
+    pub aliases: Vec<String>,
+    pub input_modalities: Vec<String>,
+    pub output_modalities: Vec<String>,
+    /// USD per generated image — converted from xAI's microdollars-per-image
+    /// encoding. The image admin form uses this as the `$ / megapixel`
+    /// pre-fill; xAI image models bill per image, not per pixel.
+    pub cost_per_image: f64,
+    pub context_length: Option<u32>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct XaiImageModelList {
+    pub items: Vec<XaiImageModelRow>,
+}
+
+#[utoipa::path(
+    get, path = "/admin/xai/image-models", tag = "admin",
+    responses(
+        (status = 200, body = XaiImageModelList),
+        (status = 400, description = "xai_api_key not configured"),
+        (status = 403),
+        (status = 502, description = "xAI unreachable")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_xai_image_models(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+) -> ApiResult<Json<XaiImageModelList>> {
+    let models = state.llm().list_xai_image_models().await?;
+    let items = models
+        .into_iter()
+        .map(|m| XaiImageModelRow {
+            id: m.id,
+            aliases: m.aliases,
+            input_modalities: m.input_modalities,
+            output_modalities: m.output_modalities,
+            cost_per_image: m
+                .image_generation_price
+                .map(|n| (n as f64) / 1_000_000.0)
+                .unwrap_or(0.0),
+            context_length: m
+                .max_prompt_length
+                .map(|n| n.min(u32::MAX as u64) as u32),
+        })
+        .collect();
+    Ok(Json(XaiImageModelList { items }))
+}
+
+#[utoipa::path(
+    get, path = "/admin/openrouter/models", tag = "admin",
+    params(
+        ("output_modalities" = Option<String>, Query,
+            description = "Filter forwarded to OpenRouter (e.g. 'image').")
+    ),
+    responses(
+        (status = 200, body = OpenRouterModelList),
+        (status = 403),
+        (status = 502, description = "OpenRouter unreachable")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_openrouter_models(
+    State(state): State<AppState>,
+    Query(q): Query<OpenRouterModelsQuery>,
+    _admin: RequireAdmin,
+) -> ApiResult<Json<OpenRouterModelList>> {
+    let models = state
+        .llm()
+        .list_openrouter_models(q.output_modalities.as_deref())
+        .await?;
+    let items = models
+        .into_iter()
+        .map(|m| {
+            // Pricing strings are USD per token; multiply by 1000 to land in
+            // the same unit our `cost_*_per_1k` columns use. Per-image price
+            // we keep as-is.
+            let parse = |s: Option<String>| -> f64 {
+                s.as_deref()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0)
+            };
+            let pricing = m.pricing.unwrap_or_default();
+            let arch = m.architecture.unwrap_or_default();
+            OpenRouterModelRow {
+                id: m.id,
+                name: m.name.unwrap_or_default(),
+                description: m.description,
+                context_length: m.context_length.map(|n| n.min(u32::MAX as u64) as u32),
+                input_modalities: arch.input_modalities,
+                output_modalities: arch.output_modalities,
+                cost_prompt_per_1k: parse(pricing.prompt) * 1000.0,
+                cost_completion_per_1k: parse(pricing.completion) * 1000.0,
+                cost_per_image: parse(pricing.image),
+            }
+        })
+        .collect();
+    Ok(Json(OpenRouterModelList { items }))
+}
+
+// =========================================================================
 // LLM admin
 // =========================================================================
 
@@ -36,8 +239,17 @@ pub struct AdminLlmRow {
     pub context_window: u32,
     pub cost_prompt_per_1k: f64,
     pub cost_completion_per_1k: f64,
+    /// Per-megapixel price for image generation models. `0` for text models.
+    #[serde(default)]
+    pub cost_per_megapixel: f64,
     pub enabled: bool,
     pub default_for: Vec<String>,
+    /// What kind of model this is (`text`, `image`, …). `None` ⇒ unspecified.
+    pub function: Option<String>,
+    /// BCP-47 codes this model handles well. Empty = any language.
+    pub languages: Vec<String>,
+    /// Picker tiebreaker; lower wins.
+    pub priority: i32,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -50,11 +262,27 @@ pub struct UpdateLlmRequest {
     pub enabled: Option<bool>,
     #[validate(length(min = 1, max = 80))]
     pub name: Option<String>,
+    /// Upstream model id. Allow renaming (e.g. tracking a vendor's slug
+    /// changes) without delete-and-recreate.
+    #[validate(length(min = 1, max = 200))]
+    pub model_id: Option<String>,
+    #[validate(range(min = 1, max = 10_000_000))]
+    pub context_window: Option<u32>,
     #[validate(range(min = 0.0, max = 1000.0))]
     pub cost_prompt_per_1k: Option<f64>,
     #[validate(range(min = 0.0, max = 1000.0))]
     pub cost_completion_per_1k: Option<f64>,
+    /// Per-megapixel price for image models.
+    #[validate(range(min = 0.0, max = 1000.0))]
+    pub cost_per_megapixel: Option<f64>,
     pub default_for: Option<Vec<String>>,
+    /// `Some("")` clears the function; omitted leaves it unchanged.
+    #[validate(length(max = 40))]
+    pub function: Option<String>,
+    /// Replaces the language list wholesale. Pass `[]` to mean "any".
+    pub languages: Option<Vec<String>>,
+    #[validate(range(min = 0, max = 1_000_000))]
+    pub priority: Option<i32>,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -75,8 +303,22 @@ pub struct CreateLlmRequest {
     pub cost_prompt_per_1k: f64,
     #[validate(range(min = 0.0, max = 1000.0))]
     pub cost_completion_per_1k: f64,
+    /// Per-megapixel price for image models. Defaults to 0 if omitted.
+    #[serde(default)]
+    #[validate(range(min = 0.0, max = 1000.0))]
+    pub cost_per_megapixel: Option<f64>,
     pub enabled: Option<bool>,
     pub default_for: Option<Vec<String>>,
+    #[validate(length(max = 40))]
+    pub function: Option<String>,
+    pub languages: Option<Vec<String>>,
+    #[validate(range(min = 0, max = 1_000_000))]
+    pub priority: Option<i32>,
+    /// Wire identifier for the upstream provider (`open_router` | `xai`).
+    /// Defaults to `open_router` when omitted, matching legacy clients.
+    #[serde(default)]
+    #[validate(length(max = 32))]
+    pub provider: Option<String>,
 }
 
 fn is_valid_llm_id(s: &str) -> bool {
@@ -94,8 +336,20 @@ struct DbLlm {
     context_window: i64,
     cost_prompt_per_1k: f64,
     cost_completion_per_1k: f64,
+    #[serde(default)]
+    cost_per_megapixel: f64,
     enabled: bool,
     default_for: Vec<String>,
+    #[serde(default)]
+    function: Option<String>,
+    #[serde(default)]
+    languages: Vec<String>,
+    #[serde(default = "default_priority")]
+    priority: i64,
+}
+
+fn default_priority() -> i64 {
+    100
 }
 
 #[utoipa::path(
@@ -136,25 +390,53 @@ pub async fn patch_llm(
     Json(body): Json<UpdateLlmRequest>,
 ) -> ApiResult<Json<AdminLlmRow>> {
     body.validate().map_err(|e| Error::Validation(e.to_string()))?;
-    let mut sets: Vec<String> = Vec::new();
+    let mut sets: Vec<&str> = Vec::new();
     if body.enabled.is_some() {
-        sets.push("enabled = $enabled".into());
+        sets.push("enabled = $enabled");
     }
     if body.name.is_some() {
-        sets.push("name = $name".into());
+        sets.push("name = $name");
+    }
+    if body.model_id.is_some() {
+        sets.push("model_id = $model_id");
+    }
+    if body.context_window.is_some() {
+        sets.push("context_window = $cw");
     }
     if body.cost_prompt_per_1k.is_some() {
-        sets.push("cost_prompt_per_1k = $cp".into());
+        sets.push("cost_prompt_per_1k = $cp");
     }
     if body.cost_completion_per_1k.is_some() {
-        sets.push("cost_completion_per_1k = $cc".into());
+        sets.push("cost_completion_per_1k = $cc");
+    }
+    if body.cost_per_megapixel.is_some() {
+        sets.push("cost_per_megapixel = $cmp");
     }
     if body.default_for.is_some() {
-        sets.push("default_for = $df".into());
+        sets.push("default_for = $df");
+    }
+    if body.function.is_some() {
+        sets.push("function = $function");
+    }
+    if body.languages.is_some() {
+        sets.push("languages = $languages");
+    }
+    if body.priority.is_some() {
+        sets.push("priority = $priority");
     }
     if sets.is_empty() {
         return Err(Error::Validation("no fields to update".into()).into());
     }
+
+    // Empty-string on `function` → NONE so admins can clear the value.
+    let function_arg = body.function.map(|s| {
+        let t = s.trim().to_string();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
+    });
 
     let sql = format!("UPDATE llm:`{id}` SET {}", sets.join(", "));
     state
@@ -163,9 +445,15 @@ pub async fn patch_llm(
         .query(sql)
         .bind(("enabled", body.enabled))
         .bind(("name", body.name))
+        .bind(("model_id", body.model_id))
+        .bind(("cw", body.context_window.map(|n| n as i64)))
         .bind(("cp", body.cost_prompt_per_1k))
         .bind(("cc", body.cost_completion_per_1k))
+        .bind(("cmp", body.cost_per_megapixel))
         .bind(("df", body.default_for))
+        .bind(("function", function_arg))
+        .bind(("languages", body.languages))
+        .bind(("priority", body.priority.map(|n| n as i64)))
         .await
         .map_err(|e| Error::Database(format!("admin patch_llm: {e}")))?
         .check()
@@ -219,6 +507,22 @@ pub async fn create_llm(
 
     let enabled = body.enabled.unwrap_or(true);
     let default_for = body.default_for.unwrap_or_default();
+    let function = body
+        .function
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| Some("text".to_string()));
+    let languages = body.languages.unwrap_or_default();
+    let priority = body.priority.unwrap_or(100) as i64;
+    let provider = match body.provider.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some("open_router") | None => "open_router".to_string(),
+        Some("xai") => "xai".to_string(),
+        Some(other) => {
+            return Err(Error::Validation(format!("unknown provider `{other}`")).into());
+        }
+    };
 
     state
         .db()
@@ -226,29 +530,67 @@ pub async fn create_llm(
         .query(format!(
             r#"CREATE llm:`{}` CONTENT {{
                 name: $name,
-                provider: "open_router",
+                provider: $provider,
                 model_id: $model_id,
                 context_window: $cw,
                 cost_prompt_per_1k: $cp,
                 cost_completion_per_1k: $cc,
+                cost_per_megapixel: $cmp,
                 enabled: $enabled,
-                default_for: $df
+                default_for: $df,
+                function: $function,
+                languages: $languages,
+                priority: $priority
             }}"#,
             body.id
         ))
         .bind(("name", body.name))
+        .bind(("provider", provider))
         .bind(("model_id", body.model_id))
         .bind(("cw", body.context_window as i64))
         .bind(("cp", body.cost_prompt_per_1k))
         .bind(("cc", body.cost_completion_per_1k))
+        .bind(("cmp", body.cost_per_megapixel.unwrap_or(0.0)))
         .bind(("enabled", enabled))
         .bind(("df", default_for))
+        .bind(("function", function))
+        .bind(("languages", languages))
+        .bind(("priority", priority))
         .await
         .map_err(|e| Error::Database(format!("create_llm: {e}")))?
         .check()
         .map_err(|e| Error::Database(format!("create_llm: {e}")))?;
 
     Ok((StatusCode::CREATED, Json(load_llm(&state, &body.id).await?)))
+}
+
+#[utoipa::path(
+    delete, path = "/admin/llm/{id}", tag = "admin",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = 404, description = "Not found"),
+        (status = 403, description = "Not an admin")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn delete_llm(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    if !is_valid_llm_id(&id) {
+        return Err(Error::Validation("invalid llm id".into()).into());
+    }
+    state
+        .db()
+        .inner()
+        .query(format!("DELETE llm:`{id}`"))
+        .await
+        .map_err(|e| Error::Database(format!("delete_llm: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("delete_llm: {e}")))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn load_llm(state: &AppState, id: &str) -> Result<AdminLlmRow> {
@@ -274,8 +616,12 @@ fn row_to_llm(r: DbLlm) -> AdminLlmRow {
         context_window: r.context_window as u32,
         cost_prompt_per_1k: r.cost_prompt_per_1k,
         cost_completion_per_1k: r.cost_completion_per_1k,
+        cost_per_megapixel: r.cost_per_megapixel,
         enabled: r.enabled,
         default_for: r.default_for,
+        function: r.function.filter(|s| !s.trim().is_empty()),
+        languages: r.languages,
+        priority: r.priority as i32,
     }
 }
 
@@ -897,6 +1243,99 @@ pub async fn retry_job(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Cancel a job that hasn't reached a terminal state yet. Flips the row to
+/// `dead` so the worker pool stops considering it; for in-flight jobs the
+/// worker keeps running until its current chunk finishes, but its terminal
+/// write becomes a no-op (gated on `status = running` in the repo) so the
+/// cancel sticks. Already-terminal jobs return 409 — use delete instead.
+#[utoipa::path(
+    post, path = "/admin/jobs/{id}/cancel", tag = "admin",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Cancelled"),
+        (status = 403),
+        (status = 404),
+        (status = 409, description = "Job is already in a terminal state")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn cancel_job(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let job = state.jobs().by_id(&id).await?.ok_or(Error::NotFound {
+        resource: format!("job:{id}"),
+    })?;
+    if job.status.is_terminal() {
+        return Err(Error::Conflict(format!(
+            "job is {:?}; only queued/running/throttled/failed jobs can be cancelled",
+            job.status
+        ))
+        .into());
+    }
+    state
+        .db()
+        .inner()
+        .query(format!(
+            r#"UPDATE job:`{id}` SET
+                status = "dead",
+                finished_at = time::now(),
+                updated_at = time::now(),
+                last_error = "cancelled by admin",
+                worker_id = NONE
+            "#
+        ))
+        .await
+        .map_err(|e| Error::Database(format!("cancel job: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("cancel job: {e}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Permanently delete a job row. Also deletes any direct children
+/// (`parent = job:<id>`) so a parent fan-out doesn't leave orphans.
+#[utoipa::path(
+    delete, path = "/admin/jobs/{id}", tag = "admin",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = 403),
+        (status = 404)
+    ),
+    security(("bearer" = []))
+)]
+pub async fn delete_job(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    if !is_safe_job_id(&id) {
+        return Err(Error::Validation("invalid job id".into()).into());
+    }
+    state
+        .db()
+        .inner()
+        .query(format!(
+            "DELETE job WHERE parent = job:`{id}`; DELETE job:`{id}`"
+        ))
+        .await
+        .map_err(|e| Error::Database(format!("delete job: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("delete job: {e}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Job ids are uuid simple (32 hex chars) but we accept any safe alphanumeric
+/// to stay tolerant of older formats. Whitelist embedded path so it can't
+/// inject SurrealQL.
+fn is_safe_job_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 // =========================================================================
 // System overview
 // =========================================================================
@@ -1053,6 +1492,7 @@ pub async fn test_llm(
         max_tokens: body.max_tokens,
         json_mode: None,
         modalities: None,
+        provider: Some(llm.provider),
     };
     let resp = state.llm().chat(&req).await?;
     Ok(Json(TestLlmResponse {
@@ -1118,6 +1558,174 @@ pub async fn test_voice(
         duration_ms: pcm.duration_ms(),
         mocked: pcm.mocked,
     }))
+}
+
+// =========================================================================
+// YouTube description footers (per-language disclaimer + backlink)
+// =========================================================================
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct YoutubeFooterRow {
+    /// BCP-47 language code (`en`, `nl`, `fr`, …). Doubles as the record
+    /// id in the `youtube_description_footer` table.
+    pub language: String,
+    pub text: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct YoutubeFooterList {
+    pub items: Vec<YoutubeFooterRow>,
+}
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct UpsertYoutubeFooterRequest {
+    /// Body of the footer. Appended verbatim after a blank line at the
+    /// end of every YouTube description for this language. Capped at
+    /// 4000 chars so it never crowds out the auto-generated chapters
+    /// list inside YouTube's 5000-char description ceiling.
+    #[validate(length(min = 1, max = 4000))]
+    pub text: String,
+}
+
+#[utoipa::path(
+    get, path = "/admin/youtube-settings", tag = "admin",
+    responses(
+        (status = 200, body = YoutubeFooterList),
+        (status = 403)
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_youtube_footers(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+) -> ApiResult<Json<YoutubeFooterList>> {
+    #[derive(Deserialize)]
+    struct Row {
+        id: Thing,
+        text: String,
+        updated_at: DateTime<Utc>,
+    }
+    let rows: Vec<Row> = state
+        .db()
+        .inner()
+        .query("SELECT id, text, updated_at FROM youtube_description_footer ORDER BY id ASC")
+        .await
+        .map_err(|e| Error::Database(format!("list footers: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("list footers (decode): {e}")))?;
+    let items = rows
+        .into_iter()
+        .map(|r| YoutubeFooterRow {
+            language: r.id.id.to_raw(),
+            text: r.text,
+            updated_at: r.updated_at,
+        })
+        .collect();
+    Ok(Json(YoutubeFooterList { items }))
+}
+
+#[utoipa::path(
+    put, path = "/admin/youtube-settings/{language}", tag = "admin",
+    params(("language" = String, Path, description = "BCP-47 language code")),
+    request_body = UpsertYoutubeFooterRequest,
+    responses(
+        (status = 200, body = YoutubeFooterRow),
+        (status = 400, description = "Validation failed"),
+        (status = 403)
+    ),
+    security(("bearer" = []))
+)]
+pub async fn upsert_youtube_footer(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    Path(language): Path<String>,
+    Json(body): Json<UpsertYoutubeFooterRequest>,
+) -> ApiResult<Json<YoutubeFooterRow>> {
+    body.validate().map_err(|e| Error::Validation(e.to_string()))?;
+    let lang = language.trim();
+    if !is_valid_lang(lang) {
+        return Err(Error::Validation("invalid language code".into()).into());
+    }
+    state
+        .db()
+        .inner()
+        .query(format!(
+            "UPSERT youtube_description_footer:`{lang}` MERGE {{ \
+                text: $text, updated_at: time::now() \
+            }}"
+        ))
+        .bind(("text", body.text.clone()))
+        .await
+        .map_err(|e| Error::Database(format!("upsert footer: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("upsert footer: {e}")))?;
+    #[derive(Deserialize)]
+    struct Row {
+        text: String,
+        updated_at: DateTime<Utc>,
+    }
+    let rows: Vec<Row> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT text, updated_at FROM youtube_description_footer:`{lang}`"
+        ))
+        .await
+        .map_err(|e| Error::Database(format!("read footer: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("read footer (decode): {e}")))?;
+    let row = rows
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::Database("upserted footer not readable".into()))?;
+    Ok(Json(YoutubeFooterRow {
+        language: lang.to_string(),
+        text: row.text,
+        updated_at: row.updated_at,
+    }))
+}
+
+#[utoipa::path(
+    delete, path = "/admin/youtube-settings/{language}", tag = "admin",
+    params(("language" = String, Path)),
+    responses(
+        (status = 204),
+        (status = 403)
+    ),
+    security(("bearer" = []))
+)]
+pub async fn delete_youtube_footer(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    Path(language): Path<String>,
+) -> ApiResult<StatusCode> {
+    let lang = language.trim();
+    if !is_valid_lang(lang) {
+        return Err(Error::Validation("invalid language code".into()).into());
+    }
+    state
+        .db()
+        .inner()
+        .query(format!(
+            "DELETE youtube_description_footer:`{lang}`"
+        ))
+        .await
+        .map_err(|e| Error::Database(format!("delete footer: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("delete footer: {e}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// BCP-47-ish allowlist for the footer record id. We embed the language
+/// in `youtube_description_footer:`<lang>`` so the charset has to stay
+/// SurrealDB-safe. ASCII letters, digits, and `-` cover every BCP-47
+/// code we'd realistically ship.
+fn is_valid_lang(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 16
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// Encode PCM i16 mono to an in-memory WAV blob using the same `hound`

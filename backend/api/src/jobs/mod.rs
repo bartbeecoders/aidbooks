@@ -4,5 +4,6 @@
 //! TTS clients, config, and storage paths.
 
 mod handlers;
+pub mod publishers;
 
 pub use handlers::registry;

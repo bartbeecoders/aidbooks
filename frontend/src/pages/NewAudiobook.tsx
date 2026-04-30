@@ -1,8 +1,23 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
-import { audiobooks, catalog, coverArt, topics, ApiError } from "../api";
-import type { AudiobookLength, Voice } from "../api";
+import { Link, useNavigate } from "react-router-dom";
+import {
+  audiobooks,
+  catalog,
+  coverArt,
+  integrations,
+  topics,
+  ApiError,
+} from "../api";
+import type {
+  AudiobookLength,
+  AutoPipeline,
+  TopicTemplate,
+  Voice,
+} from "../api";
+import { ArtStyleSelect } from "../components/ArtStylePicker";
+import { DEFAULT_ART_STYLE } from "../lib/art-styles";
+import { imageCapableLlms } from "../lib/cover-llm";
 import { Field, inputClass, primaryBtn } from "./Login";
 
 const GENRE_PRESETS: { label: string; icon: string }[] = [
@@ -57,25 +72,66 @@ export function NewAudiobook(): JSX.Element {
   const [genre, setGenre] = useState("");
   const [language, setLanguage] = useState("en");
   const [voiceId, setVoiceId] = useState<string | null>(null);
+  const [artStyle, setArtStyle] = useState<string>(DEFAULT_ART_STYLE);
+  const [coverLlmId, setCoverLlmId] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [cover, setCover] = useState<{ base64: string; mime: string } | null>(null);
+  // Auto-pipeline: chapters + cover + audio default ON. Publish defaults
+  // OFF because it depends on the user having a YouTube channel connected.
+  const [autoChapters, setAutoChapters] = useState(true);
+  const [autoCover, setAutoCover] = useState(true);
+  // Tiles per *visual* paragraph (the LLM extract pass picks visualizable
+  // paragraphs first; this knob just controls how many tiles per pick).
+  // 0 = chapter cover tiles only.
+  const [imagesPerParagraph, setImagesPerParagraph] = useState<number>(0);
+  const [autoAudio, setAutoAudio] = useState(true);
+  const [autoPublish, setAutoPublish] = useState(false);
+  const [publishMode, setPublishMode] = useState<"single" | "playlist">("single");
+  const [publishPrivacy, setPublishPrivacy] =
+    useState<"private" | "unlisted" | "public">("private");
+  const [publishReview, setPublishReview] = useState(true);
 
   const voicesQuery = useQuery({
     queryKey: ["voices"],
     queryFn: () => catalog.voices(),
   });
+  const templatesQuery = useQuery({
+    queryKey: ["topic-templates"],
+    queryFn: () => topics.templates(),
+  });
+  const llmsQuery = useQuery({
+    queryKey: ["llms"],
+    queryFn: () => catalog.llms(),
+  });
+  const youtubeAccount = useQuery({
+    queryKey: ["integrations", "youtube", "account"],
+    queryFn: () => integrations.youtube.account(),
+  });
+  const coverLlms = llmsQuery.data
+    ? imageCapableLlms(llmsQuery.data.items)
+    : [];
+  const youtubeConnected = youtubeAccount.data?.connected ?? false;
+
+  const applyTemplate = (t: TopicTemplate): void => {
+    setTopic(t.topic);
+    if (t.genre) setGenre(t.genre);
+    if (t.length) setLength(t.length);
+    if (t.language) setLanguage(t.language);
+  };
 
   const generateCover = useMutation({
     mutationFn: () =>
       coverArt.preview({
         topic: topic.trim(),
         genre: genre.trim() || undefined,
+        art_style: artStyle || undefined,
+        llm_id: coverLlmId || undefined,
       }),
     onSuccess: (r) => setCover({ base64: r.image_base64, mime: r.mime_type }),
   });
 
   const surprise = useMutation({
-    mutationFn: () => topics.random({ seed: null }),
+    mutationFn: () => topics.random({ seed: null, language }),
     onSuccess: (r) => {
       setTopic(r.topic);
       setGenre(r.genre ?? "");
@@ -83,16 +139,62 @@ export function NewAudiobook(): JSX.Element {
     },
   });
 
+  // Highest-priority enabled LLM tagged `default_for: ["chapter"]` whose
+  // languages list either includes the selected language or is empty
+  // (= any). Mirrors `pick_llm_for_roles_lang(state, [Chapter], lang)` on
+  // the backend so the user sees the same row that'll actually run. We
+  // surface the *chapter* row because that's the model that does the bulk
+  // of the work; outline/topic typically use the same default.
+  const pickedTextLlm = (() => {
+    const items = llmsQuery.data?.items ?? [];
+    const candidates = items
+      .filter(
+        (l) =>
+          l.default_for?.includes("chapter") &&
+          (!l.languages?.length || l.languages.includes(language)),
+      )
+      .sort((a, b) => {
+        const ap = a.priority ?? 100;
+        const bp = b.priority ?? 100;
+        if (ap !== bp) return ap - bp;
+        return a.name.localeCompare(b.name);
+      });
+    return candidates[0] ?? null;
+  })();
+
   const create = useMutation({
-    mutationFn: () =>
-      audiobooks.create({
+    mutationFn: () => {
+      // Effective publish step is gated on the audio step + a connected
+      // YouTube channel — UI mirrors the backend's `normalise_auto_pipeline`.
+      const effectiveAudio = autoChapters && autoAudio;
+      const effectivePublish =
+        effectiveAudio && autoPublish && youtubeConnected;
+      const auto_pipeline: AutoPipeline = {
+        chapters: autoChapters,
+        cover: autoCover,
+        audio: effectiveAudio,
+        publish: effectivePublish
+          ? {
+              mode: publishMode,
+              privacy_status: publishPrivacy,
+              review: publishReview,
+            }
+          : null,
+      };
+      return audiobooks.create({
         topic: topic.trim(),
         length,
         genre: genre.trim() || undefined,
         language,
         voice_id: voiceId ?? undefined,
         cover_image_base64: cover?.base64,
-      }),
+        art_style: artStyle || undefined,
+        cover_llm_id: coverLlmId || undefined,
+        images_per_paragraph:
+          autoCover && imagesPerParagraph > 0 ? imagesPerParagraph : 0,
+        auto_pipeline,
+      });
+    },
     onSuccess: (book) => {
       qc.invalidateQueries({ queryKey: ["audiobooks"] });
       navigate(`/app/book/${book.id}`);
@@ -102,12 +204,12 @@ export function NewAudiobook(): JSX.Element {
     },
   });
 
-  // Whenever topic or genre changes, the previewed cover no longer matches —
-  // drop it so the user re-generates intentionally rather than shipping a
-  // stale image.
+  // Whenever topic, genre, art style, or the picked image LLM changes, the
+  // previewed cover no longer matches — drop it so the user re-generates
+  // intentionally rather than shipping a stale image.
   useEffect(() => {
     setCover(null);
-  }, [topic, genre]);
+  }, [topic, genre, artStyle, coverLlmId]);
 
   function submit(e: FormEvent<HTMLFormElement>): void {
     e.preventDefault();
@@ -115,15 +217,72 @@ export function NewAudiobook(): JSX.Element {
     create.mutate();
   }
 
+  // The submit-button label tells the user how far we'll auto-run. Order
+  // mirrors the backend's pipeline: outline (always) → chapters → audio
+  // → publish.
+  const submitLabel = (() => {
+    if (create.isPending) return "Starting…";
+    if (autoChapters && autoAudio && autoPublish && youtubeConnected) {
+      return publishReview ? "Generate + publish (review)" : "Generate + publish";
+    }
+    if (autoChapters && autoAudio) return "Generate book + audio";
+    if (autoChapters) return "Generate book";
+    return "Draft outline";
+  })();
+
   return (
-    <section className="max-w-xl">
+    <section className="mx-auto max-w-5xl">
       <h1 className="text-2xl font-semibold tracking-tight">New audiobook</h1>
       <p className="mt-1 text-sm text-slate-400">
-        Pick a topic, length, and optional genre. We&apos;ll draft the outline
-        immediately; narration happens on the next screen.
+        Pick a topic and any extras you want; by default we&apos;ll draft the
+        outline, write the chapters, and narrate them in one go.
       </p>
 
-      <form onSubmit={submit} className="mt-6 space-y-4">
+      <form onSubmit={submit} className="mt-6 space-y-6">
+        <Field label="Language">
+          <div className="flex items-center gap-2">
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              className={`${inputClass} flex-1`}
+            >
+              {LANGUAGES.map((l) => (
+                <option key={l.code} value={l.code}>
+                  {l.flag}  {l.label}
+                </option>
+              ))}
+            </select>
+            <LanguageLlmHint
+              language={language}
+              llm={pickedTextLlm}
+              loading={llmsQuery.isLoading}
+            />
+          </div>
+        </Field>
+
+        {templatesQuery.data && templatesQuery.data.items.length > 0 && (
+          <Field label="Start from a template (optional)">
+            <select
+              defaultValue=""
+              onChange={(e) => {
+                const t = templatesQuery.data?.items.find(
+                  (x) => x.id === e.target.value,
+                );
+                if (t) applyTemplate(t);
+                e.target.value = "";
+              }}
+              className={inputClass}
+            >
+              <option value="">— Pick a template —</option>
+              {templatesQuery.data.items.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.title}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+
         <Field label="Topic">
           <div className="flex gap-2">
             <input
@@ -148,75 +307,439 @@ export function NewAudiobook(): JSX.Element {
           </div>
         </Field>
 
-        <Field label="Length">
-          <div className="grid grid-cols-3 gap-2">
-            {(["short", "medium", "long"] as AudiobookLength[]).map((l) => (
-              <button
-                key={l}
-                type="button"
-                onClick={() => setLength(l)}
-                className={`rounded-md border px-3 py-2 text-sm capitalize ${
-                  length === l
-                    ? "border-sky-600 bg-sky-600/10 text-sky-200"
-                    : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
-                }`}
-              >
-                {l}
-              </button>
-            ))}
+        <div className="grid gap-6 md:grid-cols-2">
+          <div className="space-y-4">
+            <Field label="Length">
+              <div className="grid grid-cols-3 gap-2">
+                {(["short", "medium", "long"] as AudiobookLength[]).map((l) => (
+                  <button
+                    key={l}
+                    type="button"
+                    onClick={() => setLength(l)}
+                    className={`rounded-md border px-3 py-2 text-sm capitalize ${
+                      length === l
+                        ? "border-sky-600 bg-sky-600/10 text-sky-200"
+                        : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
+                    }`}
+                  >
+                    {l}
+                  </button>
+                ))}
+              </div>
+            </Field>
+
+            <Field label="Genre (optional)">
+              <GenreCombo value={genre} onChange={setGenre} />
+            </Field>
+
+            <Field label="Voice (optional)">
+              <VoicePicker
+                voices={voicesQuery.data?.items ?? []}
+                isLoading={voicesQuery.isLoading}
+                selected={voiceId}
+                onSelect={setVoiceId}
+              />
+            </Field>
           </div>
-        </Field>
 
-        <Field label="Language">
-          <select
-            value={language}
-            onChange={(e) => setLanguage(e.target.value)}
-            className={inputClass}
-          >
-            {LANGUAGES.map((l) => (
-              <option key={l.code} value={l.code}>
-                {l.flag}  {l.label}
-              </option>
-            ))}
-          </select>
-        </Field>
+          <div className="space-y-4">
+            <Field label="Art style">
+              <ArtStyleSelect value={artStyle} onChange={setArtStyle} />
+              <p className="mt-1 text-xs text-slate-500">
+                Applied to both the cover and per-chapter artwork. You can
+                change it later from the book detail page.
+              </p>
+            </Field>
 
-        <Field label="Genre (optional)">
-          <GenreCombo value={genre} onChange={setGenre} />
-        </Field>
+            {coverLlms.length > 1 && (
+              <Field label="Image model">
+                <select
+                  value={coverLlmId}
+                  onChange={(e) => setCoverLlmId(e.target.value)}
+                  className={inputClass}
+                >
+                  <option value="">Server default</option>
+                  {coverLlms.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="mt-1 text-xs text-slate-500">
+                  Used for cover and chapter artwork. Empty = whichever model
+                  is marked default-for cover_art in admin settings.
+                </p>
+              </Field>
+            )}
 
-        <Field label="Voice (optional)">
-          <VoicePicker
-            voices={voicesQuery.data?.items ?? []}
-            isLoading={voicesQuery.isLoading}
-            selected={voiceId}
-            onSelect={setVoiceId}
-          />
-        </Field>
+            <Field label="Cover art (optional)">
+              <CoverArtPicker
+                cover={cover}
+                canGenerate={topic.trim().length >= 3}
+                generating={generateCover.isPending}
+                onGenerate={() => generateCover.mutate()}
+                onClear={() => setCover(null)}
+                error={
+                  generateCover.error
+                    ? generateCover.error instanceof ApiError
+                      ? generateCover.error.message
+                      : "Cover generation failed"
+                    : null
+                }
+              />
+            </Field>
+          </div>
+        </div>
 
-        <Field label="Cover art (optional)">
-          <CoverArtPicker
-            cover={cover}
-            canGenerate={topic.trim().length >= 3}
-            generating={generateCover.isPending}
-            onGenerate={() => generateCover.mutate()}
-            onClear={() => setCover(null)}
-            error={
-              generateCover.error
-                ? generateCover.error instanceof ApiError
-                  ? generateCover.error.message
-                  : "Cover generation failed"
-                : null
-            }
-          />
-        </Field>
+        <PipelinePanel
+          chapters={autoChapters}
+          onChapters={setAutoChapters}
+          cover={autoCover}
+          onCover={setAutoCover}
+          imagesPerParagraph={imagesPerParagraph}
+          onImagesPerParagraph={setImagesPerParagraph}
+          audio={autoAudio}
+          onAudio={setAutoAudio}
+          publish={autoPublish}
+          onPublish={setAutoPublish}
+          publishMode={publishMode}
+          onPublishMode={setPublishMode}
+          publishPrivacy={publishPrivacy}
+          onPublishPrivacy={setPublishPrivacy}
+          publishReview={publishReview}
+          onPublishReview={setPublishReview}
+          youtubeConnected={youtubeConnected}
+          coverPreGenerated={cover !== null}
+        />
 
         {error && <p className="text-sm text-rose-400">{error}</p>}
         <button type="submit" disabled={create.isPending} className={primaryBtn}>
-          {create.isPending ? "Drafting outline…" : "Create outline"}
+          {submitLabel}
         </button>
       </form>
     </section>
+  );
+}
+
+function LanguageLlmHint({
+  language,
+  llm,
+  loading,
+}: {
+  language: string;
+  llm: { name: string; model_id: string; provider?: string | null } | null;
+  loading: boolean;
+}): JSX.Element {
+  const langLabel =
+    LANGUAGES.find((l) => l.code === language)?.label ?? language;
+  if (loading) {
+    return (
+      <span className="rounded-md border border-slate-800 bg-slate-900/40 px-2.5 py-1.5 text-[11px] text-slate-500">
+        loading…
+      </span>
+    );
+  }
+  if (!llm) {
+    return (
+      <span
+        title={`No LLM tagged default-for chapter is enabled for ${langLabel}. Configure one in admin → LLMs.`}
+        className="rounded-md border border-amber-900/60 bg-amber-950/30 px-2.5 py-1.5 text-[11px] text-amber-200"
+      >
+        ⚠ no model for {langLabel}
+      </span>
+    );
+  }
+  return (
+    <span
+      title={`Highest-priority LLM for ${langLabel}: ${llm.model_id}${
+        llm.provider ? ` via ${llm.provider}` : ""
+      }. Used for outline, chapters, translation, and the surprise-me topic.`}
+      className="rounded-md border border-slate-800 bg-slate-900/40 px-2.5 py-1.5 text-[11px] text-slate-300"
+    >
+      🤖 {llm.name}
+    </span>
+  );
+}
+
+function PipelinePanel({
+  chapters,
+  onChapters,
+  cover,
+  onCover,
+  imagesPerParagraph,
+  onImagesPerParagraph,
+  audio,
+  onAudio,
+  publish,
+  onPublish,
+  publishMode,
+  onPublishMode,
+  publishPrivacy,
+  onPublishPrivacy,
+  publishReview,
+  onPublishReview,
+  youtubeConnected,
+  coverPreGenerated,
+}: {
+  chapters: boolean;
+  onChapters: (v: boolean) => void;
+  cover: boolean;
+  onCover: (v: boolean) => void;
+  imagesPerParagraph: number;
+  onImagesPerParagraph: (v: number) => void;
+  audio: boolean;
+  onAudio: (v: boolean) => void;
+  publish: boolean;
+  onPublish: (v: boolean) => void;
+  publishMode: "single" | "playlist";
+  onPublishMode: (v: "single" | "playlist") => void;
+  publishPrivacy: "private" | "unlisted" | "public";
+  onPublishPrivacy: (v: "private" | "unlisted" | "public") => void;
+  publishReview: boolean;
+  onPublishReview: (v: boolean) => void;
+  youtubeConnected: boolean;
+  coverPreGenerated: boolean;
+}): JSX.Element {
+  const audioDisabled = !chapters;
+  const publishDisabled = !chapters || !audio;
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+      <div className="mb-3 flex items-baseline justify-between">
+        <h2 className="text-sm font-semibold text-slate-100">Pipeline</h2>
+        <span className="text-[11px] text-slate-500">
+          What runs after the outline drafts
+        </span>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <PipelineStep
+          step="1"
+          title="Write chapters"
+          subtitle="LLM expands the outline into prose."
+          enabled={chapters}
+          onChange={(v) => {
+            onChapters(v);
+            if (!v) {
+              onAudio(false);
+              onPublish(false);
+            }
+          }}
+        />
+        <PipelineStep
+          step="2"
+          title="Generate cover art"
+          subtitle={
+            coverPreGenerated
+              ? "Already pre-generated above — step skipped."
+              : "Image model paints a 1:1 cover from topic + style."
+          }
+          enabled={cover && !coverPreGenerated}
+          onChange={(v) => onCover(v)}
+          disabled={coverPreGenerated}
+          disabledReason="Cover already pre-generated"
+        />
+        <PipelineStep
+          step="3"
+          title="Narrate audio"
+          subtitle="TTS generates one WAV per chapter."
+          enabled={audio}
+          onChange={(v) => {
+            onAudio(v);
+            if (!v) onPublish(false);
+          }}
+          disabled={audioDisabled}
+          disabledReason="Enable Write chapters first"
+        />
+        <PipelineStep
+          step="4"
+          title="Publish to YouTube"
+          subtitle={
+            youtubeConnected
+              ? "Encode + upload the finished audio."
+              : "Connect YouTube in Settings to enable."
+          }
+          enabled={publish && youtubeConnected}
+          onChange={(v) => onPublish(v)}
+          disabled={publishDisabled || !youtubeConnected}
+          disabledReason={
+            publishDisabled
+              ? "Enable narration first"
+              : "Connect a YouTube channel from Settings"
+          }
+        />
+      </div>
+
+      {chapters && cover && (
+        <div className="mt-4 rounded-md border border-slate-800 bg-slate-950/60 p-3">
+          <div className="flex items-baseline justify-between">
+            <div>
+              <p className="text-xs font-semibold text-slate-100">
+                Paragraph illustrations
+              </p>
+              <p className="text-[11px] text-slate-400">
+                An LLM picks the visual paragraphs in each chapter; the
+                image model then renders {imagesPerParagraph === 0
+                  ? "no"
+                  : imagesPerParagraph}{" "}
+                tile{imagesPerParagraph === 1 ? "" : "s"} per pick. Tiles
+                are crossfaded during playback in reading order.
+              </p>
+            </div>
+            <span className="text-[11px] text-slate-500">
+              {imagesPerParagraph === 0
+                ? "off"
+                : `${imagesPerParagraph}× per paragraph`}
+            </span>
+          </div>
+          <div className="mt-2 grid grid-cols-4 gap-2">
+            {[0, 1, 2, 3].map((n) => (
+              <button
+                key={n}
+                type="button"
+                onClick={() => onImagesPerParagraph(n)}
+                className={`rounded-md border px-3 py-2 text-xs ${
+                  imagesPerParagraph === n
+                    ? "border-rose-600 bg-rose-600/10 text-rose-200"
+                    : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
+                }`}
+              >
+                {n === 0 ? "Off" : `${n}×`}
+              </button>
+            ))}
+          </div>
+          {imagesPerParagraph > 0 && (
+            <p className="mt-2 text-[11px] text-slate-500">
+              Capped at 12 visual paragraphs per chapter. With{" "}
+              {imagesPerParagraph}× tiles, a 6-chapter book makes ≤
+              {" "}
+              {6 * 12 * imagesPerParagraph} image calls (typically ~half
+              that — non-visual paragraphs are skipped).
+            </p>
+          )}
+        </div>
+      )}
+
+      {publish && youtubeConnected && (
+        <div className="mt-4 rounded-md border border-slate-800 bg-slate-950/60 p-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field label="Video format">
+              <div className="grid grid-cols-2 gap-2">
+                {(
+                  [
+                    { value: "single", label: "Single video" },
+                    { value: "playlist", label: "Playlist" },
+                  ] as const
+                ).map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => onPublishMode(opt.value)}
+                    className={`rounded-md border px-3 py-2 text-xs ${
+                      publishMode === opt.value
+                        ? "border-rose-600 bg-rose-600/10 text-rose-200"
+                        : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </Field>
+            <Field label="Visibility">
+              <div className="grid grid-cols-3 gap-2">
+                {(["private", "unlisted", "public"] as const).map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => onPublishPrivacy(p)}
+                    className={`rounded-md border px-3 py-2 text-xs capitalize ${
+                      publishPrivacy === p
+                        ? "border-rose-600 bg-rose-600/10 text-rose-200"
+                        : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
+                    }`}
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+            </Field>
+          </div>
+          <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-md border border-slate-800 bg-slate-950 p-2 text-xs">
+            <input
+              type="checkbox"
+              checked={publishReview}
+              onChange={(e) => onPublishReview(e.target.checked)}
+              className="mt-0.5 h-3.5 w-3.5 accent-rose-600"
+            />
+            <span className="min-w-0 flex-1">
+              <span className="block text-slate-100">Stop for review</span>
+              <span className="block text-slate-400">
+                Encode but don&apos;t upload to YouTube until you approve from
+                the audiobook detail page.
+              </span>
+            </span>
+          </label>
+        </div>
+      )}
+
+      {!youtubeConnected && publish && (
+        <p className="mt-3 rounded-md border border-amber-900/60 bg-amber-950/30 p-2 text-xs text-amber-200">
+          Connect a YouTube channel from{" "}
+          <Link to="/app/settings" className="underline hover:text-amber-100">
+            Settings
+          </Link>{" "}
+          to enable the publish step.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function PipelineStep({
+  step,
+  title,
+  subtitle,
+  enabled,
+  onChange,
+  disabled,
+  disabledReason,
+}: {
+  step: string;
+  title: string;
+  subtitle: string;
+  enabled: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+  disabledReason?: string;
+}): JSX.Element {
+  return (
+    <label
+      className={`flex cursor-pointer items-start gap-3 rounded-md border p-3 ${
+        disabled
+          ? "cursor-not-allowed border-slate-800 bg-slate-950/40 opacity-60"
+          : enabled
+            ? "border-sky-600 bg-sky-600/10"
+            : "border-slate-700 bg-slate-950 hover:border-slate-600"
+      }`}
+      title={disabled ? disabledReason : undefined}
+    >
+      <input
+        type="checkbox"
+        checked={enabled}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 h-4 w-4 accent-sky-500 disabled:cursor-not-allowed"
+      />
+      <span className="min-w-0 flex-1">
+        <span className="flex items-center gap-1.5">
+          <span className="text-[10px] uppercase tracking-wide text-slate-500">
+            Step {step}
+          </span>
+        </span>
+        <span className="block text-sm font-medium text-slate-100">{title}</span>
+        <span className="block text-xs text-slate-400">{subtitle}</span>
+      </span>
+    </label>
   );
 }
 

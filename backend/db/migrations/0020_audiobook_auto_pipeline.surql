@@ -1,0 +1,14 @@
+-- One-shot pipeline preference for an audiobook.
+--
+-- Stored as a free-form object so we can grow the contract (e.g. add a
+-- `translate` step) without a schema bump. Shape today is:
+--   {
+--     "chapters": true,
+--     "audio": true,
+--     "publish": { "mode": "single",
+--                  "privacy_status": "private",
+--                  "review": false }
+--                  | null
+--   }
+-- A NULL/absent column means the legacy "step-by-step from the UI" flow.
+DEFINE FIELD IF NOT EXISTS auto_pipeline ON audiobook TYPE option<object>;

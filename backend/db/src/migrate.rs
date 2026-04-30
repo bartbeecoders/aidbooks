@@ -53,6 +53,70 @@ const MIGRATIONS: &[Migration] = &[
         name: "0009_translate_kind",
         sql: include_str!("../migrations/0009_translate_kind.surql"),
     },
+    Migration {
+        name: "0010_youtube",
+        sql: include_str!("../migrations/0010_youtube.surql"),
+    },
+    Migration {
+        name: "0011_chapter_art",
+        sql: include_str!("../migrations/0011_chapter_art.surql"),
+    },
+    Migration {
+        name: "0012_topic_template",
+        sql: include_str!("../migrations/0012_topic_template.surql"),
+    },
+    Migration {
+        name: "0013_art_style",
+        sql: include_str!("../migrations/0013_art_style.surql"),
+    },
+    Migration {
+        name: "0014_llm_meta",
+        sql: include_str!("../migrations/0014_llm_meta.surql"),
+    },
+    Migration {
+        name: "0015_cover_llm",
+        sql: include_str!("../migrations/0015_cover_llm.surql"),
+    },
+    Migration {
+        name: "0016_youtube_playlist",
+        sql: include_str!("../migrations/0016_youtube_playlist.surql"),
+    },
+    Migration {
+        name: "0017_youtube_review",
+        sql: include_str!("../migrations/0017_youtube_review.surql"),
+    },
+    Migration {
+        name: "0018_image_llm_pricing",
+        sql: include_str!("../migrations/0018_image_llm_pricing.surql"),
+    },
+    Migration {
+        name: "0019_image_llm_pricing_backfill",
+        sql: include_str!("../migrations/0019_image_llm_pricing_backfill.surql"),
+    },
+    Migration {
+        name: "0020_audiobook_auto_pipeline",
+        sql: include_str!("../migrations/0020_audiobook_auto_pipeline.surql"),
+    },
+    Migration {
+        name: "0021_audiobook_auto_pipeline_flexible",
+        sql: include_str!("../migrations/0021_audiobook_auto_pipeline_flexible.surql"),
+    },
+    Migration {
+        name: "0022_chapter_images",
+        sql: include_str!("../migrations/0022_chapter_images.surql"),
+    },
+    Migration {
+        name: "0023_paragraph_illustrations",
+        sql: include_str!("../migrations/0023_paragraph_illustrations.surql"),
+    },
+    Migration {
+        name: "0024_llm_provider_xai",
+        sql: include_str!("../migrations/0024_llm_provider_xai.surql"),
+    },
+    Migration {
+        name: "0025_youtube_description_footer",
+        sql: include_str!("../migrations/0025_youtube_description_footer.surql"),
+    },
 ];
 
 /// Run any pending migrations. Safe to call on every startup.

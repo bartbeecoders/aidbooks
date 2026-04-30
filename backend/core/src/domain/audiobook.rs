@@ -82,6 +82,7 @@ pub struct Chapter {
     pub synopsis: Option<String>,
     pub target_words: Option<u32>,
     pub body_md: Option<String>,
+    pub chapter_art_path: Option<String>,
     pub audio_path: Option<String>,
     pub duration_ms: Option<u64>,
     pub status: ChapterStatus,

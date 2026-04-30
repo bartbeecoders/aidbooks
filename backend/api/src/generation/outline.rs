@@ -7,14 +7,14 @@
 
 use std::collections::HashMap;
 
-use listenai_core::domain::{AudiobookLength, PromptRole};
+use listenai_core::domain::{AudiobookLength, LlmRole, PromptRole};
 use listenai_core::id::UserId;
 use listenai_core::{Error, Result};
 use serde::Deserialize;
 use tracing::{info, warn};
 
 use crate::generation::prompts;
-use crate::llm::{ChatMessage, ChatRequest};
+use crate::llm::{pick_llm_for_roles_lang, ChatMessage, ChatRequest};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -60,10 +60,18 @@ pub async fn run(
     vars.insert("language", crate::i18n::label(language).to_string());
 
     let rendered = prompts::render(state, PromptRole::Outline, &vars).await?;
-    let model = state.config().openrouter_default_model.clone();
+    // Honor the admin's `default_for: ["outline"]` + `priority` ranking,
+    // and prefer rows whose `languages` includes the book's language. Falls
+    // back to `Config.openrouter_default_model` only when no row matches.
+    let picked = pick_llm_for_roles_lang(
+        state,
+        &[LlmRole::Outline],
+        Some(language),
+    )
+    .await?;
 
     let req = ChatRequest {
-        model,
+        model: picked.model_id.clone(),
         messages: vec![
             ChatMessage::system("You write audiobook outlines as strict JSON."),
             ChatMessage::user(rendered.body),
@@ -72,6 +80,7 @@ pub async fn run(
         max_tokens: Some(2_000),
         json_mode: Some(true),
         modalities: None,
+        provider: Some(picked.provider.clone()),
     };
 
     let response = match state.llm().chat(&req).await {
@@ -88,7 +97,7 @@ pub async fn run(
         state,
         user,
         Some(audiobook_id),
-        "claude_haiku_4_5",
+        &picked.llm_id,
         PromptRole::Outline,
         &response,
         None,
@@ -106,7 +115,7 @@ pub async fn run(
         }
     };
 
-    persist_outline(state, audiobook_id, &outline, length).await?;
+    persist_outline(state, audiobook_id, &outline, length, language).await?;
     set_audiobook_status(state, audiobook_id, "outline_ready").await?;
 
     info!(
@@ -161,6 +170,7 @@ async fn persist_outline(
     audiobook_id: &str,
     outline: &OutlineJson,
     length: AudiobookLength,
+    language: &str,
 ) -> Result<()> {
     // Replace title.
     state
@@ -175,13 +185,17 @@ async fn persist_outline(
         .check()
         .map_err(|e| Error::Database(format!("persist title: {e}")))?;
 
-    // Wipe and recreate chapters for this audiobook so regeneration is clean.
+    // Wipe and recreate the primary-language chapters for this audiobook
+    // so regeneration is clean. Scoping by language preserves any
+    // translation rows that already exist for other languages.
     state
         .db()
         .inner()
         .query(format!(
-            "DELETE chapter WHERE audiobook = audiobook:`{audiobook_id}`"
+            "DELETE chapter WHERE audiobook = audiobook:`{audiobook_id}` \
+             AND language = $lang"
         ))
+        .bind(("lang", language.to_string()))
         .await
         .map_err(|e| Error::Database(format!("wipe chapters: {e}")))?
         .check()
@@ -189,6 +203,9 @@ async fn persist_outline(
 
     for ch in &outline.chapters {
         let ch_id = uuid::Uuid::new_v4().simple().to_string();
+        // Without `language`, SurrealDB applies the field default (`"en"`,
+        // see 0007_chapter_lang.surql) — which would orphan a Dutch book's
+        // chapters under "en". Bind explicitly.
         let sql = format!(
             r#"CREATE chapter:`{ch_id}` CONTENT {{
                 audiobook: audiobook:`{audiobook_id}`,
@@ -196,7 +213,8 @@ async fn persist_outline(
                 title: $title,
                 synopsis: $synopsis,
                 target_words: $target_words,
-                status: "pending"
+                status: "pending",
+                language: $language
             }}"#
         );
         state
@@ -211,6 +229,7 @@ async fn persist_outline(
                 ch.target_words
                     .unwrap_or_else(|| length.words_per_chapter()) as i64,
             ))
+            .bind(("language", language.to_string()))
             .await
             .map_err(|e| Error::Database(format!("create chapter: {e}")))?
             .check()
@@ -241,6 +260,10 @@ pub async fn log_generation_event(
         PromptRole::RandomTopic => "random_topic",
         PromptRole::Moderation => "moderation",
         PromptRole::Title => "title",
+        PromptRole::Cover => "cover",
+        PromptRole::ParagraphImage => "paragraph_image",
+        PromptRole::Translate => "translate",
+        PromptRole::SceneExtract => "scene_extract",
     };
     let sql = format!(
         r#"CREATE generation_event:`{event_id}` CONTENT {{
@@ -257,6 +280,22 @@ pub async fn log_generation_event(
         user = user.0,
     );
     let success = error.is_none();
+    // Cost resolution priority:
+    //   1. Mock path → $0 (no real billing happened).
+    //   2. Upstream populated `usage.cost` (OpenRouter when
+    //      `usage:{include:true}` was sent) → use it as-is.
+    //   3. Otherwise → compute from the LLM row's per-1k pricing × token
+    //      counts. xAI's chat API doesn't return a billed cost, so this
+    //      branch is what makes Grok costs show up in the badge.
+    let cost = if response.mocked {
+        0.0
+    } else if response.usage.cost > 0.0 {
+        response.usage.cost
+    } else {
+        compute_cost_from_row(state, llm_id, &response.usage)
+            .await
+            .unwrap_or(0.0)
+    };
     state
         .db()
         .inner()
@@ -264,7 +303,7 @@ pub async fn log_generation_event(
         .bind(("role", role_str.to_string()))
         .bind(("pt", response.usage.prompt_tokens as i64))
         .bind(("ct", response.usage.completion_tokens as i64))
-        .bind(("cost", 0.0_f64))
+        .bind(("cost", cost))
         .bind(("success", success))
         .bind(("error", error.map(|s| s.to_string())))
         .await
@@ -272,4 +311,49 @@ pub async fn log_generation_event(
         .check()
         .map_err(|e| Error::Database(format!("log generation event: {e}")))?;
     Ok(())
+}
+
+/// Compute USD cost from the LLM row's per-1k pricing × the response's
+/// token counts. Used when the upstream didn't return a `usage.cost`
+/// field — most notably xAI, which only ships token counts. Returns
+/// `None` if the row can't be loaded (e.g. `_default_` placeholder); the
+/// caller falls back to `0.0` in that case.
+async fn compute_cost_from_row(
+    state: &AppState,
+    llm_id: &str,
+    usage: &crate::llm::ChatUsage,
+) -> Option<f64> {
+    if !is_safe_llm_id(llm_id) {
+        return None;
+    }
+    #[derive(Deserialize)]
+    struct PriceRow {
+        #[serde(default)]
+        cost_prompt_per_1k: f64,
+        #[serde(default)]
+        cost_completion_per_1k: f64,
+    }
+    let rows: Vec<PriceRow> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT cost_prompt_per_1k, cost_completion_per_1k \
+             FROM llm:`{llm_id}`"
+        ))
+        .await
+        .ok()?
+        .take(0)
+        .ok()?;
+    let row = rows.into_iter().next()?;
+    let pt = usage.prompt_tokens as f64;
+    let ct = usage.completion_tokens as f64;
+    Some(pt * row.cost_prompt_per_1k / 1000.0 + ct * row.cost_completion_per_1k / 1000.0)
+}
+
+/// Same charset rule used elsewhere — keeps the embedded `llm:<id>` safe
+/// from injection. Duplicated here to avoid coupling with cover.rs.
+fn is_safe_llm_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }

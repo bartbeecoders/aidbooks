@@ -619,6 +619,7 @@ export interface components {
             body_md?: string | null;
             /** Format: int64 */
             duration_ms?: number | null;
+            has_art: boolean;
             id: components["schemas"]["ChapterId"];
             language: string;
             /** Format: int32 */

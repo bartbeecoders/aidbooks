@@ -83,7 +83,7 @@ async fn seed_prompts(db: &Db) -> Result<()> {
         json!({
             "id": "random_topic_v1",
             "role": "random_topic",
-            "variables": ["seed"],
+            "variables": ["seed", "language"],
             "body": include_str!("prompts/random_topic_v1.md"),
         }),
     ];
@@ -167,7 +167,10 @@ async fn seed_llms(db: &Db) -> Result<()> {
             "context":       200000,
             "cost_prompt":   3.0,
             "cost_completion": 15.0,
-            "default_for":   ["outline", "chapter"]
+            "default_for":   ["outline", "chapter"],
+            "function":      "text",
+            "languages":     [],
+            "priority":      10,
         }),
         json!({
             "id":            "claude_haiku_4_5",
@@ -176,7 +179,10 @@ async fn seed_llms(db: &Db) -> Result<()> {
             "context":       200000,
             "cost_prompt":   0.25,
             "cost_completion": 1.25,
-            "default_for":   ["random_topic", "title"]
+            "default_for":   ["random_topic", "title"],
+            "function":      "text",
+            "languages":     [],
+            "priority":      20,
         }),
     ];
 
@@ -188,16 +194,28 @@ async fn seed_llms(db: &Db) -> Result<()> {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
+        let languages: Vec<String> = l["languages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        // UPSERT MERGE so re-running doesn't clobber an admin's tweaks to
+        // priority/cost/etc. on existing rows.
         let sql = format!(
-            r#"UPSERT llm:`{id}` CONTENT {{
+            r#"UPSERT llm:`{id}` MERGE {{
                 name: $name,
                 provider: "open_router",
                 model_id: $model_id,
                 context_window: $context,
                 cost_prompt_per_1k: $cost_p,
                 cost_completion_per_1k: $cost_c,
+                cost_per_megapixel: 0.0,
                 enabled: true,
-                default_for: $default_for
+                default_for: $default_for,
+                function: $function,
+                languages: $languages,
+                priority: $priority
             }}"#
         );
         db.inner()
@@ -208,6 +226,9 @@ async fn seed_llms(db: &Db) -> Result<()> {
             .bind(("cost_p", l["cost_prompt"].as_f64().unwrap()))
             .bind(("cost_c", l["cost_completion"].as_f64().unwrap()))
             .bind(("default_for", default_for))
+            .bind(("function", l["function"].as_str().unwrap().to_string()))
+            .bind(("languages", languages))
+            .bind(("priority", l["priority"].as_i64().unwrap()))
             .await
             .map_err(|e| Error::Database(format!("seed llm {id}: {e}")))?
             .check()

@@ -12,6 +12,9 @@ const STATUS_OPTIONS = [
   "dead",
   "throttled",
 ] as const;
+
+// Mirrors `JobKind::as_str` in `core/src/domain/job.rs`. Keep in sync when
+// new kinds land.
 const KIND_OPTIONS = [
   "outline",
   "chapters",
@@ -20,7 +23,11 @@ const KIND_OPTIONS = [
   "post_process",
   "cover",
   "gc",
+  "translate",
+  "publish_youtube",
 ] as const;
+
+const POLL_MS = 5000;
 
 export function AdminJobs(): JSX.Element {
   const qc = useQueryClient();
@@ -34,11 +41,19 @@ export function AdminJobs(): JSX.Element {
         status: status || undefined,
         kind: kind || undefined,
       }),
-    refetchInterval: 5000,
+    refetchInterval: POLL_MS,
   });
 
   const retry = useMutation({
     mutationFn: (id: string) => admin.jobs.retry(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "jobs"] }),
+  });
+  const cancel = useMutation({
+    mutationFn: (id: string) => admin.jobs.cancel(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "jobs"] }),
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => admin.jobs.remove(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "jobs"] }),
   });
 
@@ -48,11 +63,21 @@ export function AdminJobs(): JSX.Element {
     return counts;
   }, [data]);
 
+  // Bulk actions for everything matching the current filter — the count
+  // shown on the buttons makes the blast radius obvious.
+  const purgeable = useMemo(
+    () =>
+      (data?.items ?? []).filter((j) =>
+        ["completed", "dead", "failed"].includes(j.status),
+      ),
+    [data],
+  );
+
   return (
     <div>
       <PageHeader
         title="Jobs"
-        description="Live view of every durable job. Filter by status / kind; dead jobs get a Retry button that clears attempts and re-queues."
+        description="Live view of every durable job. Cancel queued/running jobs to short-circuit them; delete to clean up history. Refreshes every 5s."
       />
 
       <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
@@ -86,6 +111,25 @@ export function AdminJobs(): JSX.Element {
         >
           {isFetching ? "Refreshing…" : "Refresh"}
         </button>
+        {purgeable.length > 0 && (
+          <button
+            onClick={() => {
+              if (
+                window.confirm(
+                  `Delete ${purgeable.length} terminal job(s) shown? This cannot be undone.`,
+                )
+              ) {
+                Promise.all(purgeable.map((j) => admin.jobs.remove(j.id)))
+                  .then(() => qc.invalidateQueries({ queryKey: ["admin", "jobs"] }))
+                  .catch(() => qc.invalidateQueries({ queryKey: ["admin", "jobs"] }));
+              }
+            }}
+            className="rounded-md border border-rose-900 bg-rose-950/40 px-2 py-1 text-xs text-rose-300 hover:border-rose-800"
+            title="Delete every completed/failed/dead job in the current view"
+          >
+            Purge terminal ({purgeable.length})
+          </button>
+        )}
         <div className="ml-auto flex flex-wrap gap-2 text-xs text-slate-400">
           {Object.entries(totalsByStatus).map(([k, v]) => (
             <span
@@ -119,7 +163,15 @@ export function AdminJobs(): JSX.Element {
                 key={j.id}
                 job={j}
                 onRetry={() => retry.mutate(j.id)}
-                retrying={retry.isPending && retry.variables === j.id}
+                onCancel={() => cancel.mutate(j.id)}
+                onDelete={() => {
+                  if (window.confirm(`Delete this ${j.kind} job?`)) {
+                    remove.mutate(j.id);
+                  }
+                }}
+                pendingRetry={retry.isPending && retry.variables === j.id}
+                pendingCancel={cancel.isPending && cancel.variables === j.id}
+                pendingDelete={remove.isPending && remove.variables === j.id}
               />
             ))}
             {data.items.length === 0 && (
@@ -132,9 +184,12 @@ export function AdminJobs(): JSX.Element {
           </tbody>
         </table>
       )}
-      {retry.error && (
+      {(retry.error || cancel.error || remove.error) && (
         <p className="mt-3 text-sm text-rose-400">
-          {retry.error instanceof ApiError ? retry.error.message : "Retry failed"}
+          {(retry.error ?? cancel.error ?? remove.error) instanceof ApiError
+            ? ((retry.error ?? cancel.error ?? remove.error) as ApiError)
+                .message
+            : "Action failed"}
         </p>
       )}
     </div>
@@ -144,13 +199,26 @@ export function AdminJobs(): JSX.Element {
 function JobRow({
   job,
   onRetry,
-  retrying,
+  onCancel,
+  onDelete,
+  pendingRetry,
+  pendingCancel,
+  pendingDelete,
 }: {
   job: AdminJobRow;
   onRetry: () => void;
-  retrying: boolean;
+  onCancel: () => void;
+  onDelete: () => void;
+  pendingRetry: boolean;
+  pendingCancel: boolean;
+  pendingDelete: boolean;
 }): JSX.Element {
   const canRetry = job.status === "dead" || job.status === "failed";
+  const canCancel =
+    job.status === "queued" ||
+    job.status === "running" ||
+    job.status === "throttled" ||
+    job.status === "failed";
   return (
     <tr className="border-t border-slate-800 align-top">
       <td className="py-3 pr-4 font-mono text-xs text-slate-300">{job.kind}</td>
@@ -180,17 +248,39 @@ function JobRow({
         {new Date(job.queued_at).toLocaleTimeString()}
       </td>
       <td className="py-3 pr-4 text-right">
-        {canRetry ? (
+        <div className="flex flex-wrap justify-end gap-1.5">
+          {canRetry && (
+            <button
+              onClick={onRetry}
+              disabled={pendingRetry}
+              className="rounded-md border border-emerald-800 bg-emerald-950 px-2 py-1 text-xs text-emerald-200 hover:bg-emerald-900 disabled:opacity-50"
+            >
+              {pendingRetry ? "…" : "Retry"}
+            </button>
+          )}
+          {canCancel && (
+            <button
+              onClick={onCancel}
+              disabled={pendingCancel}
+              title={
+                job.status === "running"
+                  ? "Marks the job dead. Any in-flight work finishes but its result is discarded."
+                  : "Marks the job dead before the worker picks it up."
+              }
+              className="rounded-md border border-amber-800 bg-amber-950 px-2 py-1 text-xs text-amber-200 hover:bg-amber-900 disabled:opacity-50"
+            >
+              {pendingCancel ? "…" : "Cancel"}
+            </button>
+          )}
           <button
-            onClick={onRetry}
-            disabled={retrying}
-            className="rounded-md border border-emerald-800 bg-emerald-950 px-2 py-1 text-xs text-emerald-200 hover:bg-emerald-900 disabled:opacity-50"
+            onClick={onDelete}
+            disabled={pendingDelete}
+            title="Delete this job row (and any direct children)."
+            className="rounded-md border border-rose-900 bg-rose-950/40 px-2 py-1 text-xs text-rose-300 hover:border-rose-800 disabled:opacity-50"
           >
-            {retrying ? "…" : "Retry"}
+            {pendingDelete ? "…" : "Delete"}
           </button>
-        ) : (
-          <span className="text-xs text-slate-600">—</span>
-        )}
+        </div>
       </td>
     </tr>
   );

@@ -106,8 +106,20 @@ pub fn build_router(state: AppState) -> Router {
             post(handlers::audiobook::generate_audio),
         )
         .route(
+            "/audiobook/:id/cancel-pipeline",
+            post(handlers::audiobook::cancel_pipeline),
+        )
+        .route(
             "/audiobook/:id/chapter/:n/regenerate-audio",
             post(handlers::audiobook::regenerate_chapter_audio),
+        )
+        .route(
+            "/audiobook/:id/chapter/:n/art",
+            get(handlers::stream::chapter_art).post(handlers::audiobook::regenerate_chapter_art),
+        )
+        .route(
+            "/audiobook/:id/chapter/:n/paragraph/:p/image/:i",
+            get(handlers::stream::paragraph_image),
         )
         .route(
             "/audiobook/:id/chapter/:n/audio",
@@ -127,6 +139,10 @@ pub fn build_router(state: AppState) -> Router {
             "/audiobook/:id/translate",
             post(handlers::audiobook::translate),
         )
+        .route(
+            "/audiobook/:id/costs",
+            get(handlers::audiobook::costs),
+        )
         // --- Phase 5: jobs + real-time progress ---
         .route(
             "/audiobook/:id/jobs",
@@ -137,6 +153,10 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::ws::audiobook_progress),
         )
         .route("/topics/random", post(handlers::topics::random))
+        .route(
+            "/topic-templates",
+            get(handlers::topic_templates::list_public),
+        )
         .route("/voices", get(handlers::catalog::list_voices))
         .route("/llms", get(handlers::catalog::list_llms))
         // --- Phase 7: admin ---
@@ -147,7 +167,8 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/admin/llm/:id",
-            axum::routing::patch(handlers::admin::patch_llm),
+            axum::routing::patch(handlers::admin::patch_llm)
+                .delete(handlers::admin::delete_llm),
         )
         .route("/admin/voice", get(handlers::admin::list_voices))
         .route(
@@ -165,11 +186,84 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/admin/jobs", get(handlers::admin::list_jobs))
         .route(
+            "/admin/jobs/:id",
+            axum::routing::delete(handlers::admin::delete_job),
+        )
+        .route(
             "/admin/jobs/:id/retry",
             post(handlers::admin::retry_job),
         )
+        .route(
+            "/admin/jobs/:id/cancel",
+            post(handlers::admin::cancel_job),
+        )
         .route("/admin/test/llm", post(handlers::admin::test_llm))
         .route("/admin/test/voice", post(handlers::admin::test_voice))
+        .route(
+            "/admin/openrouter/models",
+            get(handlers::admin::list_openrouter_models),
+        )
+        .route(
+            "/admin/xai/models",
+            get(handlers::admin::list_xai_models),
+        )
+        .route(
+            "/admin/xai/image-models",
+            get(handlers::admin::list_xai_image_models),
+        )
+        .route(
+            "/admin/youtube-settings",
+            get(handlers::admin::list_youtube_footers),
+        )
+        .route(
+            "/admin/youtube-settings/:language",
+            axum::routing::put(handlers::admin::upsert_youtube_footer)
+                .delete(handlers::admin::delete_youtube_footer),
+        )
+        .route(
+            "/admin/topic-templates",
+            get(handlers::topic_templates::list_admin)
+                .post(handlers::topic_templates::create),
+        )
+        .route(
+            "/admin/topic-templates/:id",
+            axum::routing::patch(handlers::topic_templates::patch)
+                .delete(handlers::topic_templates::delete),
+        )
+        // --- Phase 8: integrations (YouTube publishing) ---
+        .route(
+            "/integrations/youtube/oauth/start",
+            get(handlers::integrations::youtube_oauth_start),
+        )
+        .route(
+            "/integrations/youtube/oauth/callback",
+            get(handlers::integrations::youtube_oauth_callback),
+        )
+        .route(
+            "/integrations/youtube/account",
+            get(handlers::integrations::youtube_account_status)
+                .delete(handlers::integrations::youtube_account_disconnect),
+        )
+        .route(
+            "/audiobook/:id/publish/youtube",
+            post(handlers::integrations::publish_youtube),
+        )
+        .route(
+            "/audiobook/:id/publications",
+            get(handlers::integrations::list_publications),
+        )
+        .route(
+            "/audiobook/:id/publications/:pid/approve",
+            post(handlers::integrations::approve_publication),
+        )
+        .route(
+            "/audiobook/:id/publications/:pid/cancel",
+            post(handlers::integrations::cancel_publication),
+        )
+        .route(
+            "/audiobook/:id/publications/:pid/preview",
+            get(handlers::integrations::preview_publication),
+        )
         .fallback(not_found)
         .with_state(state)
         .layer(middleware)

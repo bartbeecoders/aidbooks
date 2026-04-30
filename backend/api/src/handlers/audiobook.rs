@@ -46,6 +46,60 @@ pub struct CreateAudiobookRequest {
     /// content generation and TTS narration. Defaults to `"en"`.
     #[validate(length(min = 2, max = 8))]
     pub language: Option<String>,
+    /// Visual style for cover + chapter artwork (e.g. `"watercolor"`,
+    /// `"cartoon"`, `"realistic"`). Stored on the audiobook so subsequent
+    /// regenerations stay consistent. Free-text; the frontend offers a
+    /// curated list.
+    #[validate(length(max = 60))]
+    pub art_style: Option<String>,
+    /// Pin a specific LLM (`llm:<id>`) for cover + chapter art generation.
+    /// `None` falls back to whichever model is marked default-for cover_art.
+    #[validate(length(max = 64))]
+    pub cover_llm_id: Option<String>,
+    /// Tiles to generate per *visualizable* paragraph (after the LLM
+    /// extract pass picks paragraphs that have visual content). `None` /
+    /// `0` = no paragraph-level art (only chapter cover tiles). Capped
+    /// at 3. Auto-pipeline must include `cover: true` for these to run.
+    pub images_per_paragraph: Option<u32>,
+    /// Optional one-shot pipeline: after the synchronous outline runs,
+    /// the server can chain chapter writing → narration → YouTube publish
+    /// without further user action. `None` = the legacy step-by-step flow.
+    pub auto_pipeline: Option<AutoPipelineRequest>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Validate, ToSchema, Clone)]
+pub struct AutoPipelineRequest {
+    /// Enqueue the chapter-writing job immediately after outline lands.
+    #[serde(default)]
+    pub chapters: bool,
+    /// Enqueue a cover-art job alongside chapter writing. Also drives
+    /// per-chapter art: when this is true and chapters is true, one
+    /// chapter-art job fans out per chapter after the prose lands.
+    /// Ignored when the caller already supplied `cover_image_base64`
+    /// (for the main cover only — chapter art still runs).
+    #[serde(default)]
+    pub cover: bool,
+    /// After chapters finish, enqueue narration. Ignored when `chapters`
+    /// is false (no chapters → nothing to narrate).
+    #[serde(default)]
+    pub audio: bool,
+    /// After narration finishes, enqueue a YouTube publish. `None` = no
+    /// publish step. Requires the user to have a YouTube channel
+    /// connected; otherwise the publish step skips with a warn.
+    #[serde(default)]
+    pub publish: Option<AutoPublishRequest>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Validate, ToSchema, Clone)]
+pub struct AutoPublishRequest {
+    /// `single` (one concatenated video, default) or `playlist`.
+    pub mode: Option<String>,
+    /// `private`, `unlisted`, `public`. Defaults to `private`.
+    pub privacy_status: Option<String>,
+    /// When true, the publish stops after encoding so the user can
+    /// preview before approving.
+    #[serde(default)]
+    pub review: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -70,6 +124,15 @@ pub struct AudiobookSummary {
     /// Voice picked for narration (`None` when the server default is used).
     /// Frontend resolves the human-readable name via `/voices`.
     pub voice_id: Option<String>,
+    /// Visual style applied to cover + chapter artwork. `None` falls back to
+    /// the generator default (currently "cinematic").
+    pub art_style: Option<String>,
+    /// LLM pinned for cover + chapter art generation. `None` falls back to
+    /// the picker (whichever model is default-for `cover_art`).
+    pub cover_llm_id: Option<String>,
+    /// Tiles per visual paragraph (extracted by the LLM scene pass). `0`
+    /// = no paragraph art, only chapter cover tiles.
+    pub images_per_paragraph: u32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -90,11 +153,35 @@ pub struct ChapterSummary {
     pub target_words: Option<u32>,
     pub body_md: Option<String>,
     pub status: ChapterStatus,
+    pub has_art: bool,
+    /// Paragraph illustration metadata. One entry per paragraph the
+    /// splitter produced (in body order); `image_count` reflects how many
+    /// tiles have been generated so far at
+    /// `GET /audiobook/:id/chapter/:n/paragraph/:p/image/:i` (1-based).
+    /// Empty when paragraph illustration wasn't requested for this book.
+    pub paragraphs: Vec<ParagraphSummary>,
     /// WAV duration in milliseconds, populated once the chapter has been
     /// narrated. The player uses this to render a whole-book progress bar.
     pub duration_ms: Option<u64>,
     /// Which language version this chapter belongs to.
     pub language: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ParagraphSummary {
+    /// Index into the chapter's paragraph array (stable across regenerations).
+    pub index: u32,
+    /// Character count of the paragraph body. Used by the player to
+    /// time-slot the slideshow proportionally to chapter duration.
+    pub char_count: u32,
+    /// `true` when the LLM extract pass identified visual content here
+    /// (i.e. `scene_description` is set). Non-visual paragraphs are
+    /// preserved in the array so indices stay stable, but they never
+    /// get tile jobs enqueued.
+    pub is_visual: bool,
+    /// Tiles persisted so far for this paragraph (range `1..=image_count`
+    /// addressable on the stream endpoint).
+    pub image_count: u32,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -113,6 +200,20 @@ pub struct UpdateAudiobookRequest {
     /// audio files.
     #[validate(length(min = 1, max = 64))]
     pub voice_id: Option<String>,
+    /// Pass `Some("watercolor")` to change the artwork style; pass an empty
+    /// string to clear the override (falls back to the server default on the
+    /// next regeneration).
+    #[validate(length(max = 60))]
+    pub art_style: Option<String>,
+    /// Pass `Some("gemini_flash_image")` to pin a specific image model for
+    /// cover + chapter art; pass an empty string to fall back to the picker.
+    #[validate(length(max = 64))]
+    pub cover_llm_id: Option<String>,
+    /// New target count of tiles per visual paragraph (0..=3). `0`
+    /// clears the override. Existing on-disk paragraph images stay on
+    /// disk but only the first N per paragraph are surfaced in the
+    /// chapter summary.
+    pub images_per_paragraph: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -142,6 +243,12 @@ struct DbAudiobook {
     language: Option<String>,
     #[serde(default)]
     primary_voice: Option<Thing>,
+    #[serde(default)]
+    art_style: Option<String>,
+    #[serde(default)]
+    cover_llm_id: Option<String>,
+    #[serde(default)]
+    images_per_paragraph: Option<i64>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -155,9 +262,27 @@ struct DbChapter {
     target_words: Option<i64>,
     body_md: Option<String>,
     status: String,
+    #[serde(default)]
+    chapter_art_path: Option<String>,
+    #[serde(default)]
+    paragraphs: Option<Vec<DbParagraph>>,
     duration_ms: Option<i64>,
     #[serde(default)]
     language: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct DbParagraph {
+    #[serde(default)]
+    pub(crate) index: i64,
+    #[serde(default)]
+    pub(crate) text: String,
+    #[serde(default)]
+    pub(crate) char_count: Option<i64>,
+    #[serde(default)]
+    pub(crate) scene_description: Option<String>,
+    #[serde(default)]
+    pub(crate) image_paths: Vec<String>,
 }
 
 impl DbAudiobook {
@@ -181,6 +306,20 @@ impl DbAudiobook {
             // Filled in by `enrich_summary` once the chapter set is loaded.
             available_languages: Vec::new(),
             voice_id: self.primary_voice.as_ref().map(|t| t.id.to_raw()),
+            art_style: self
+                .art_style
+                .clone()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            cover_llm_id: self
+                .cover_llm_id
+                .clone()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            images_per_paragraph: self
+                .images_per_paragraph
+                .map(|n| n.clamp(0, 3) as u32)
+                .unwrap_or(0),
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -201,6 +340,36 @@ impl DbChapter {
             target_words: self.target_words.map(|w| w as u32),
             body_md: self.body_md.clone(),
             status: parse_chapter_status(&self.status)?,
+            has_art: self
+                .chapter_art_path
+                .as_deref()
+                .map(|p| !p.trim().is_empty())
+                .unwrap_or(false),
+            paragraphs: self
+                .paragraphs
+                .as_ref()
+                .map(|ps| {
+                    ps.iter()
+                        .map(|p| ParagraphSummary {
+                            index: p.index.max(0) as u32,
+                            char_count: p
+                                .char_count
+                                .unwrap_or_else(|| p.text.chars().count() as i64)
+                                .max(0) as u32,
+                            is_visual: p
+                                .scene_description
+                                .as_deref()
+                                .map(|s| !s.trim().is_empty())
+                                .unwrap_or(false),
+                            image_count: p
+                                .image_paths
+                                .iter()
+                                .filter(|s| !s.trim().is_empty())
+                                .count() as u32,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             duration_ms: self.duration_ms.map(|d| d.max(0) as u64),
             language: self
                 .language
@@ -305,6 +474,34 @@ pub async fn create(
         Some(vid) => format!("primary_voice: voice:`{vid}`,"),
         None => String::new(),
     };
+    let art_style = body
+        .art_style
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let cover_llm_id = body
+        .cover_llm_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    // Cap at 3 so a runaway client can't queue dozens of image jobs per
+    // paragraph. Combined with the per-book paragraph cap inside the
+    // ChapterParagraphs handler, this bounds total image cost.
+    let images_per_paragraph: Option<i64> = body.images_per_paragraph.map(|n| n.min(3) as i64);
+    // Validate + normalise pipeline upfront so a bad value never lands in
+    // the row. Empty pipeline (no chapters/audio/publish) is the same as
+    // not requesting one at all — drop it.
+    let auto_pipeline = match body.auto_pipeline.as_ref() {
+        Some(p) => normalise_auto_pipeline(p)?,
+        None => None,
+    };
+    // Bind the typed struct directly. Going through `serde_json::Value`
+    // here doesn't round-trip cleanly through SurrealDB's `option<object>`
+    // — inner fields silently come back as defaults — so the auto-pipeline
+    // chain would skip narration + chapter art on the read-back. See the
+    // analogous workaround in `jobs/publishers/youtube.rs`.
     let sql = format!(
         r#"CREATE audiobook:`{id}` CONTENT {{
             owner: user:`{user_id}`,
@@ -313,6 +510,10 @@ pub async fn create(
             genre: $genre,
             length: $length,
             language: $language,
+            art_style: $art_style,
+            cover_llm_id: $cover_llm_id,
+            images_per_paragraph: $images_per_paragraph,
+            auto_pipeline: $auto_pipeline,
             {voice_clause}
             status: "draft"
         }}"#,
@@ -333,6 +534,10 @@ pub async fn create(
         ))
         .bind(("length", length_to_str(body.length).to_string()))
         .bind(("language", language.clone()))
+        .bind(("art_style", art_style))
+        .bind(("cover_llm_id", cover_llm_id))
+        .bind(("images_per_paragraph", images_per_paragraph))
+        .bind(("auto_pipeline", auto_pipeline.clone()))
         .await
         .map_err(|e| Error::Database(format!("create audiobook: {e}")))?
         .check()
@@ -357,7 +562,67 @@ pub async fn create(
     )
     .await?;
 
+    // Auto-pipeline: kick off chapter writing immediately after outline if
+    // the user requested it. Subsequent steps (TTS, publish) are chained
+    // by the job handlers themselves so a refresh / disconnect doesn't
+    // break the flow. Cover runs alongside chapters because it only
+    // needs topic + genre + style; no point gating it behind chapter text.
+    if let Some(pipeline) = &auto_pipeline {
+        if pipeline.chapters {
+            let req = EnqueueRequest::new(JobKind::Chapters)
+                .with_user(user.id.clone())
+                .with_audiobook(AudiobookId(id.clone()));
+            if let Err(e) = state.jobs().enqueue(req).await {
+                warn!(error = %e, audiobook_id = id, "auto-pipeline: enqueue chapters failed");
+            }
+        }
+        // Skip the cover job if the caller already supplied bytes — they
+        // pre-generated their preview and we just persisted it.
+        if pipeline.cover && body.cover_image_base64.is_none() {
+            // Image gen is flakier than text — give it a larger retry
+            // budget so a single content-filter false positive or empty
+            // upstream payload doesn't kill the cover.
+            let req = EnqueueRequest::new(JobKind::Cover)
+                .with_user(user.id.clone())
+                .with_audiobook(AudiobookId(id.clone()))
+                .with_max_attempts(5);
+            if let Err(e) = state.jobs().enqueue(req).await {
+                warn!(error = %e, audiobook_id = id, "auto-pipeline: enqueue cover failed");
+            }
+        }
+    }
+
     Ok(Json(load_detail(&state, &id, &user.id, None).await?))
+}
+
+/// Convert the user-supplied pipeline into a normalised, validated form.
+/// Empty / no-op pipelines collapse to `None` so we don't persist noise.
+fn normalise_auto_pipeline(req: &AutoPipelineRequest) -> Result<Option<AutoPipelineRequest>> {
+    // Audio without chapters is impossible — strip it.
+    let audio = req.chapters && req.audio;
+    // Publish without audio is impossible — strip it.
+    let publish = if audio { req.publish.clone() } else { None };
+    if let Some(p) = &publish {
+        let mode = p.mode.as_deref().unwrap_or("single");
+        if !matches!(mode, "single" | "playlist") {
+            return Err(Error::Validation("pipeline.publish.mode must be single or playlist".into()));
+        }
+        let privacy = p.privacy_status.as_deref().unwrap_or("private");
+        if !matches!(privacy, "private" | "unlisted" | "public") {
+            return Err(Error::Validation(
+                "pipeline.publish.privacy_status must be private/unlisted/public".into(),
+            ));
+        }
+    }
+    if !req.chapters && !req.cover && !audio && publish.is_none() {
+        return Ok(None);
+    }
+    Ok(Some(AutoPipelineRequest {
+        chapters: req.chapters,
+        cover: req.cover,
+        audio,
+        publish,
+    }))
 }
 
 // -------------------------------------------------------------------------
@@ -510,6 +775,57 @@ pub async fn patch(
                 .map_err(|e| Error::Database(format!("patch voice: {e}")))?;
         }
     }
+    if let Some(style) = body.art_style {
+        let trimmed = style.trim();
+        // Empty string clears the override; the cover generator falls back
+        // to its built-in default on the next regeneration.
+        let value: Option<String> = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        state
+            .db()
+            .inner()
+            .query(format!("UPDATE audiobook:`{id}` SET art_style = $s"))
+            .bind(("s", value))
+            .await
+            .map_err(|e| Error::Database(format!("patch art_style: {e}")))?
+            .check()
+            .map_err(|e| Error::Database(format!("patch art_style: {e}")))?;
+    }
+    if let Some(llm) = body.cover_llm_id {
+        let trimmed = llm.trim();
+        let value: Option<String> = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        state
+            .db()
+            .inner()
+            .query(format!("UPDATE audiobook:`{id}` SET cover_llm_id = $l"))
+            .bind(("l", value))
+            .await
+            .map_err(|e| Error::Database(format!("patch cover_llm_id: {e}")))?
+            .check()
+            .map_err(|e| Error::Database(format!("patch cover_llm_id: {e}")))?;
+    }
+    if let Some(count) = body.images_per_paragraph {
+        let capped = count.min(3) as i64;
+        let value: Option<i64> = if capped == 0 { None } else { Some(capped) };
+        state
+            .db()
+            .inner()
+            .query(format!(
+                "UPDATE audiobook:`{id}` SET images_per_paragraph = $c"
+            ))
+            .bind(("c", value))
+            .await
+            .map_err(|e| Error::Database(format!("patch images_per_paragraph: {e}")))?
+            .check()
+            .map_err(|e| Error::Database(format!("patch images_per_paragraph: {e}")))?;
+    }
 
     Ok(Json(load_detail(&state, &id, &user.id, None).await?))
 }
@@ -539,8 +855,12 @@ pub async fn regenerate_cover(
     let book = load_audiobook(&state, &id).await?;
     let bytes = crate::generation::cover::generate(
         &state,
+        &user.id,
+        Some(&id),
         &book.topic,
         book.genre.as_deref(),
+        book.art_style.as_deref(),
+        book.cover_llm_id.as_deref(),
     )
     .await?;
     use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
@@ -879,6 +1199,101 @@ pub async fn generate_audio(
     Ok(StatusCode::ACCEPTED)
 }
 
+// -------------------------------------------------------------------------
+// POST /audiobook/:id/cancel-pipeline  — abort everything in flight
+// -------------------------------------------------------------------------
+
+/// Cancel every non-terminal job for this audiobook and clear the
+/// auto-pipeline column so chained handlers don't fan out further steps.
+///
+/// In-flight jobs keep running to the end of their current chunk — the
+/// repo's terminal writes (`mark_completed` / `mark_failed`) are gated on
+/// `status = "running"`, so flipping the row to `dead` first makes those
+/// writes no-ops and the cancel sticks. Queued and throttled rows stop
+/// being eligible for pickup as soon as the UPDATE lands.
+#[utoipa::path(
+    post,
+    path = "/audiobook/{id}/cancel-pipeline",
+    tag = "audiobook",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204, description = "All in-flight jobs cancelled"),
+        (status = 404, description = "Not found"),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn cancel_pipeline(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    assert_owner(&state, &id, &user.id).await?;
+
+    // Mark everything in flight as dead. SurrealDB serialises writes
+    // per record, so a concurrent worker terminal-write either lands
+    // first (job completes naturally) or sees status != "running" and
+    // becomes a no-op.
+    state
+        .db()
+        .inner()
+        .query(format!(
+            r#"UPDATE job SET
+                status = "dead",
+                finished_at = time::now(),
+                updated_at = time::now(),
+                last_error = "cancelled by user",
+                worker_id = NONE
+              WHERE audiobook = audiobook:`{id}`
+                AND status IN ["queued", "running", "throttled"]"#
+        ))
+        .await
+        .map_err(|e| Error::Database(format!("cancel pipeline: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("cancel pipeline: {e}")))?;
+
+    // Drop the auto_pipeline so post-success hooks (chapters → narration,
+    // narration → publish) don't fire after the cancel lands.
+    state
+        .db()
+        .inner()
+        .query(format!(
+            "UPDATE audiobook:`{id}` SET auto_pipeline = NONE"
+        ))
+        .await
+        .map_err(|e| Error::Database(format!("cancel pipeline (clear auto): {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("cancel pipeline (clear auto): {e}")))?;
+
+    // Push a fresh snapshot so subscribers re-render without waiting for
+    // the next worker progress tick.
+    let jobs = state.jobs().list_for_audiobook(&id).await?;
+    let snapshots = jobs
+        .into_iter()
+        .map(|j| listenai_jobs::hub::JobSnapshot {
+            id: j.id,
+            kind: j.kind.as_str().to_string(),
+            status: j.status.as_str().to_string(),
+            progress_pct: j.progress_pct,
+            attempts: j.attempts,
+            chapter_number: j.chapter_number,
+            last_error: j.last_error,
+        })
+        .collect();
+    state
+        .hub()
+        .publish(
+            &id,
+            listenai_jobs::hub::ProgressEvent::Snapshot {
+                audiobook_id: id.clone(),
+                jobs: snapshots,
+                at: Utc::now(),
+            },
+        )
+        .await;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Returns true iff a non-terminal job of `kind` exists for this audiobook.
 /// Used to block double-submits while an identical job is still queued or
 /// running.
@@ -930,6 +1345,46 @@ pub async fn regenerate_chapter_audio(
     let book = load_audiobook(&state, &id).await?;
     let lang = book.language.clone().unwrap_or_else(|| "en".to_string());
     audio_gen::run_one_by_number(&state, &user.id, &id, n as i64, &lang).await?;
+    let after = load_chapter_by_number(&state, &id, n as i64).await?;
+    Ok(Json(after.to_summary()?))
+}
+
+#[utoipa::path(
+    post,
+    path = "/audiobook/{id}/chapter/{n}/art",
+    tag = "audiobook",
+    params(("id" = String, Path), ("n" = u32, Path)),
+    responses(
+        (status = 200, description = "Generated chapter artwork", body = ChapterSummary),
+        (status = 404, description = "Not found"),
+        (status = 502, description = "Upstream image-gen error")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn regenerate_chapter_art(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path((id, n)): Path<(String, u32)>,
+) -> ApiResult<Json<ChapterSummary>> {
+    assert_owner(&state, &id, &user.id).await?;
+    let book = load_audiobook(&state, &id).await?;
+    let chapter = load_chapter_by_number(&state, &id, n as i64).await?;
+    let bytes = crate::generation::cover::generate_chapter_art(
+        &state,
+        &user.id,
+        &id,
+        &book.title,
+        &book.topic,
+        book.genre.as_deref(),
+        book.art_style.as_deref(),
+        book.cover_llm_id.as_deref(),
+        n,
+        &chapter.title,
+        chapter.synopsis.as_deref(),
+        chapter.body_md.as_deref(),
+    )
+    .await?;
+    persist_chapter_art(&state, &id, &chapter.id.id.to_raw(), n, &bytes).await?;
     let after = load_chapter_by_number(&state, &id, n as i64).await?;
     Ok(Json(after.to_summary()?))
 }
@@ -1032,6 +1487,103 @@ pub async fn regenerate_chapter(
 }
 
 // -------------------------------------------------------------------------
+// GET /audiobook/:id/costs  — aggregated generation cost
+// -------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CostByRole {
+    pub role: String,
+    pub count: u32,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub cost_usd: f64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AudiobookCostSummary {
+    pub audiobook_id: String,
+    pub total_cost_usd: f64,
+    pub total_prompt_tokens: u64,
+    pub total_completion_tokens: u64,
+    pub event_count: u32,
+    pub by_role: Vec<CostByRole>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/audiobook/{id}/costs",
+    tag = "audiobook",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, description = "Cost rollup for the audiobook", body = AudiobookCostSummary),
+        (status = 404, description = "Not found")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn costs(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path(id): Path<String>,
+) -> ApiResult<Json<AudiobookCostSummary>> {
+    assert_owner(&state, &id, &user.id).await?;
+
+    #[derive(Debug, Deserialize)]
+    struct EventRow {
+        role: String,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        #[serde(default)]
+        cost_usd: f64,
+    }
+
+    let rows: Vec<EventRow> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT role, prompt_tokens, completion_tokens, cost_usd \
+             FROM generation_event WHERE audiobook = audiobook:`{id}`"
+        ))
+        .await
+        .map_err(|e| Error::Database(format!("load costs: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("load costs (decode): {e}")))?;
+
+    use std::collections::BTreeMap;
+    let mut by_role: BTreeMap<String, CostByRole> = BTreeMap::new();
+    let mut total_cost = 0.0;
+    let mut total_pt: u64 = 0;
+    let mut total_ct: u64 = 0;
+    let event_count = rows.len() as u32;
+    for r in rows {
+        let pt = r.prompt_tokens.max(0) as u64;
+        let ct = r.completion_tokens.max(0) as u64;
+        total_cost += r.cost_usd;
+        total_pt += pt;
+        total_ct += ct;
+        let entry = by_role.entry(r.role.clone()).or_insert(CostByRole {
+            role: r.role,
+            count: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            cost_usd: 0.0,
+        });
+        entry.count += 1;
+        entry.prompt_tokens += pt;
+        entry.completion_tokens += ct;
+        entry.cost_usd += r.cost_usd;
+    }
+
+    Ok(Json(AudiobookCostSummary {
+        audiobook_id: id,
+        total_cost_usd: total_cost,
+        total_prompt_tokens: total_pt,
+        total_completion_tokens: total_ct,
+        event_count,
+        by_role: by_role.into_values().collect(),
+    }))
+}
+
+// -------------------------------------------------------------------------
 // Helpers
 // -------------------------------------------------------------------------
 
@@ -1122,7 +1674,7 @@ fn is_supported_language(code: &str) -> bool {
 /// `<storage_path>/<audiobook_id>/cover.<ext>`, then update the audiobook's
 /// `cover_path` column. The on-disk extension matches the sniffed MIME so
 /// the stream handler can serve it with the right Content-Type.
-async fn persist_cover(state: &AppState, audiobook_id: &str, b64: &str) -> Result<()> {
+pub(crate) async fn persist_cover(state: &AppState, audiobook_id: &str, b64: &str) -> Result<()> {
     use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 
     let trimmed = b64.trim();
@@ -1155,11 +1707,14 @@ async fn persist_cover(state: &AppState, audiobook_id: &str, b64: &str) -> Resul
         .map_err(|e| Error::Other(anyhow::anyhow!("write cover {path:?}: {e}")))?;
 
     let rel = format!("{audiobook_id}/{filename}");
+    // Bump `updated_at` so the frontend's cache-buster (which keys off it)
+    // changes — without this, a regenerated cover stays visually identical
+    // because the browser still has the old bytes for the same URL.
     state
         .db()
         .inner()
         .query(format!(
-            "UPDATE audiobook:`{audiobook_id}` SET cover_path = $p"
+            "UPDATE audiobook:`{audiobook_id}` SET cover_path = $p, updated_at = time::now()"
         ))
         .bind(("p", rel))
         .await
@@ -1167,6 +1722,166 @@ async fn persist_cover(state: &AppState, audiobook_id: &str, b64: &str) -> Resul
         .check()
         .map_err(|e| Error::Database(format!("set cover_path: {e}")))?;
     Ok(())
+}
+
+pub(crate) async fn persist_chapter_art(
+    state: &AppState,
+    audiobook_id: &str,
+    chapter_id: &str,
+    chapter_number: u32,
+    bytes: &[u8],
+) -> Result<()> {
+    if bytes.is_empty() {
+        return Err(Error::Validation("chapter artwork image is empty".into()));
+    }
+    let ext = match crate::handlers::cover::detect_mime(bytes) {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        _ => "bin",
+    };
+    let dir = state.config().storage_path.join(audiobook_id).join("chapters");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| Error::Other(anyhow::anyhow!("create chapter art dir {dir:?}: {e}")))?;
+    let filename = format!("{chapter_number}-art.{ext}");
+    let path = dir.join(&filename);
+    std::fs::write(&path, bytes)
+        .map_err(|e| Error::Other(anyhow::anyhow!("write chapter art {path:?}: {e}")))?;
+
+    let rel = format!("{audiobook_id}/chapters/{filename}");
+    state
+        .db()
+        .inner()
+        .query(format!("UPDATE chapter:`{chapter_id}` SET chapter_art_path = $p"))
+        .bind(("p", rel))
+        .await
+        .map_err(|e| Error::Database(format!("set chapter_art_path: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("set chapter_art_path: {e}")))?;
+    // Bump the audiobook's `updated_at` too so the frontend cache-buster
+    // keyed on it busts the chapter-art URL just like the cover URL.
+    bump_audiobook_updated(state, audiobook_id).await.ok();
+    Ok(())
+}
+
+/// Touches `audiobook.updated_at = now()`. Best-effort: a failure here
+/// shouldn't fail the parent regeneration, just means the browser may
+/// keep showing the old image until a hard refresh.
+async fn bump_audiobook_updated(state: &AppState, audiobook_id: &str) -> Result<()> {
+    state
+        .db()
+        .inner()
+        .query(format!(
+            "UPDATE audiobook:`{audiobook_id}` SET updated_at = time::now()"
+        ))
+        .await
+        .map_err(|e| Error::Database(format!("bump updated_at: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("bump updated_at: {e}")))?;
+    Ok(())
+}
+
+/// Persist one paragraph illustration tile. Writes to disk under
+/// `<audiobook>/chapters/<n>-p<paragraph>-<ordinal>.<ext>` and updates
+/// `chapter.paragraphs[paragraph_index].image_paths[ordinal-1]` in-place.
+///
+/// The handler is responsible for ensuring the paragraph index is in
+/// range — this function will widen the array if a later ordinal lands
+/// before earlier ones.
+pub(crate) async fn persist_paragraph_image(
+    state: &AppState,
+    audiobook_id: &str,
+    chapter_id: &str,
+    chapter_number: u32,
+    paragraph_index: u32,
+    ordinal: u32,
+    bytes: &[u8],
+) -> Result<()> {
+    if bytes.is_empty() {
+        return Err(Error::Validation("paragraph image is empty".into()));
+    }
+    if ordinal == 0 {
+        return Err(Error::Validation("ordinal must be >= 1".into()));
+    }
+    let ext = match crate::handlers::cover::detect_mime(bytes) {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        _ => "bin",
+    };
+    let dir = state.config().storage_path.join(audiobook_id).join("chapters");
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        Error::Other(anyhow::anyhow!("create paragraph art dir {dir:?}: {e}"))
+    })?;
+    let filename = format!("{chapter_number}-p{paragraph_index}-{ordinal}.{ext}");
+    let path = dir.join(&filename);
+    std::fs::write(&path, bytes)
+        .map_err(|e| Error::Other(anyhow::anyhow!("write paragraph image {path:?}: {e}")))?;
+
+    // Load → mutate → write back. The whole `paragraphs` array is
+    // FLEXIBLE so we round-trip arbitrary inner keys; we only mutate
+    // the target paragraph's `image_paths` slot.
+    let rows: Vec<DbChapterParagraphs> = state
+        .db()
+        .inner()
+        .query(format!("SELECT paragraphs FROM chapter:`{chapter_id}`"))
+        .await
+        .map_err(|e| Error::Database(format!("load paragraphs: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("load paragraphs (decode): {e}")))?;
+    let mut paragraphs: Vec<serde_json::Value> = rows
+        .into_iter()
+        .next()
+        .and_then(|r| r.paragraphs)
+        .unwrap_or_default();
+
+    let target = paragraphs
+        .iter_mut()
+        .find(|p| {
+            p.get("index")
+                .and_then(serde_json::Value::as_i64)
+                .map(|i| i == paragraph_index as i64)
+                .unwrap_or(false)
+        })
+        .ok_or_else(|| {
+            Error::Validation(format!(
+                "paragraph {paragraph_index} not found on chapter {chapter_number}"
+            ))
+        })?;
+    let obj = target.as_object_mut().ok_or_else(|| {
+        Error::Database("paragraph entry is not an object".into())
+    })?;
+    let entry = obj
+        .entry("image_paths".to_string())
+        .or_insert_with(|| serde_json::json!([]));
+    let arr = entry.as_array_mut().ok_or_else(|| {
+        Error::Database("paragraph image_paths is not an array".into())
+    })?;
+    let slot = (ordinal as usize).saturating_sub(1);
+    while arr.len() <= slot {
+        arr.push(serde_json::Value::String(String::new()));
+    }
+    arr[slot] = serde_json::Value::String(format!("{audiobook_id}/chapters/{filename}"));
+
+    state
+        .db()
+        .inner()
+        .query(format!(
+            "UPDATE chapter:`{chapter_id}` SET paragraphs = $p"
+        ))
+        .bind(("p", paragraphs))
+        .await
+        .map_err(|e| Error::Database(format!("set paragraphs: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("set paragraphs: {e}")))?;
+    bump_audiobook_updated(state, audiobook_id).await.ok();
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct DbChapterParagraphs {
+    #[serde(default)]
+    paragraphs: Option<Vec<serde_json::Value>>,
 }
 
 async fn assert_voice_enabled(state: &AppState, voice_id: &str) -> Result<String> {

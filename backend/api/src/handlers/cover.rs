@@ -22,6 +22,17 @@ pub struct CoverPreviewRequest {
     pub topic: String,
     #[validate(length(max = 40))]
     pub genre: Option<String>,
+    /// Visual style hint, e.g. `"watercolor"`, `"cartoon"`. The frontend
+    /// offers a curated dropdown but free-text is accepted. When omitted,
+    /// the generator falls back to its built-in default.
+    #[validate(length(max = 60))]
+    pub art_style: Option<String>,
+    /// Optional explicit LLM id to use instead of the picker's default.
+    /// Surfaced on the New Audiobook page as a dropdown when more than one
+    /// image-capable model is configured. Server validates the id against
+    /// the `llm` table.
+    #[validate(length(max = 64))]
+    pub llm_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -47,13 +58,22 @@ pub struct CoverPreviewResponse {
 )]
 pub async fn preview(
     State(state): State<AppState>,
-    Authenticated(_user): Authenticated,
+    Authenticated(user): Authenticated,
     Json(body): Json<CoverPreviewRequest>,
 ) -> ApiResult<Json<CoverPreviewResponse>> {
     body.validate()
         .map_err(|e| Error::Validation(e.to_string()))?;
 
-    let bytes = cover_gen::generate(&state, &body.topic, body.genre.as_deref()).await?;
+    let bytes = cover_gen::generate(
+        &state,
+        &user.id,
+        None,
+        &body.topic,
+        body.genre.as_deref(),
+        body.art_style.as_deref(),
+        body.llm_id.as_deref(),
+    )
+    .await?;
     Ok(Json(CoverPreviewResponse {
         image_base64: B64.encode(&bytes),
         mime_type: detect_mime(&bytes).to_string(),

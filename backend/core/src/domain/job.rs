@@ -19,6 +19,13 @@ pub enum JobKind {
     /// Translate every chapter from the audiobook's primary language to the
     /// job's `language` target.
     Translate,
+    /// Encode an MP4 (cover image + concatenated chapter WAVs) and upload it
+    /// to the user's connected YouTube channel.
+    PublishYoutube,
+    /// Per-chapter orchestrator: split the body into paragraphs, run the
+    /// LLM scene-extract pass, persist `chapter.paragraphs`, and fan out
+    /// one `Cover` job per paragraph tile.
+    ChapterParagraphs,
 }
 
 impl JobKind {
@@ -32,6 +39,8 @@ impl JobKind {
             JobKind::Cover => "cover",
             JobKind::Gc => "gc",
             JobKind::Translate => "translate",
+            JobKind::PublishYoutube => "publish_youtube",
+            JobKind::ChapterParagraphs => "chapter_paragraphs",
         }
     }
 
@@ -45,6 +54,8 @@ impl JobKind {
             "cover" => JobKind::Cover,
             "gc" => JobKind::Gc,
             "translate" => JobKind::Translate,
+            "publish_youtube" => JobKind::PublishYoutube,
+            "chapter_paragraphs" => JobKind::ChapterParagraphs,
             _ => return None,
         })
     }

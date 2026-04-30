@@ -46,8 +46,20 @@ struct DbLlm {
     context_window: i64,
     cost_prompt_per_1k: f64,
     cost_completion_per_1k: f64,
+    #[serde(default)]
+    cost_per_megapixel: f64,
     enabled: bool,
     default_for: Vec<String>,
+    #[serde(default)]
+    function: Option<String>,
+    #[serde(default)]
+    languages: Vec<String>,
+    #[serde(default = "default_priority")]
+    priority: i64,
+}
+
+fn default_priority() -> i64 {
+    100
 }
 
 #[utoipa::path(
@@ -127,8 +139,12 @@ pub async fn list_llms(
                 context_window: r.context_window as u32,
                 cost_prompt_per_1k: r.cost_prompt_per_1k,
                 cost_completion_per_1k: r.cost_completion_per_1k,
+                cost_per_megapixel: r.cost_per_megapixel,
                 enabled: r.enabled,
                 default_for: r.default_for.iter().filter_map(|s| parse_role(s)).collect(),
+                function: r.function.filter(|s| !s.trim().is_empty()),
+                languages: r.languages,
+                priority: r.priority as i32,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -147,6 +163,7 @@ fn parse_gender(s: &str) -> Result<VoiceGender> {
 fn parse_provider(s: &str) -> Result<LlmProvider> {
     Ok(match s {
         "open_router" => LlmProvider::OpenRouter,
+        "xai" => LlmProvider::Xai,
         other => return Err(Error::Database(format!("unknown provider `{other}`"))),
     })
 }
@@ -158,6 +175,8 @@ fn parse_role(s: &str) -> Option<LlmRole> {
         "title" => LlmRole::Title,
         "random_topic" => LlmRole::RandomTopic,
         "moderation" => LlmRole::Moderation,
+        "cover_art" => LlmRole::CoverArt,
+        "translate" => LlmRole::Translate,
         _ => return None,
     })
 }

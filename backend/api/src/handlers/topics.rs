@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use axum::{extract::State, Json};
-use listenai_core::domain::{AudiobookLength, PromptRole};
+use listenai_core::domain::{AudiobookLength, LlmRole, PromptRole};
 use listenai_core::Error;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -12,13 +12,18 @@ use utoipa::ToSchema;
 use crate::auth::Authenticated;
 use crate::error::ApiResult;
 use crate::generation::{outline as outline_gen, prompts};
-use crate::llm::{ChatMessage, ChatRequest};
+use crate::llm::{pick_llm_for_roles_lang, ChatMessage, ChatRequest};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct RandomTopicRequest {
     /// Optional seed or theme hint, e.g. "sci-fi", "history of Korea".
     pub seed: Option<String>,
+    /// BCP-47 language code (`"en"`, `"nl"`, …). The model writes the
+    /// returned `topic` in this language, and the picker prefers an LLM
+    /// whose `languages` list includes it. Defaults to English.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -44,17 +49,33 @@ pub async fn random(
     Authenticated(user): Authenticated,
     Json(body): Json<RandomTopicRequest>,
 ) -> ApiResult<Json<RandomTopicResponse>> {
+    let language = body
+        .language
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("en");
     let mut vars: HashMap<&str, String> = HashMap::new();
     vars.insert(
         "seed",
         body.seed
             .unwrap_or_else(|| "(no seed; anything goes)".into()),
     );
+    vars.insert("language", crate::i18n::label(language).to_string());
     let rendered = prompts::render(&state, PromptRole::RandomTopic, &vars).await?;
-    let model = state.config().openrouter_default_model.clone();
+    // Pick the highest-priority row tagged `default_for: ["random_topic"]`,
+    // preferring rows whose `languages` matches the requested language.
+    // Falls back to the chapter LLM, then to `Config.openrouter_default_model`
+    // when no row matches.
+    let picked = pick_llm_for_roles_lang(
+        &state,
+        &[LlmRole::RandomTopic, LlmRole::Chapter],
+        Some(language),
+    )
+    .await?;
 
     let req = ChatRequest {
-        model,
+        model: picked.model_id.clone(),
         messages: vec![
             ChatMessage::system("Respond with one JSON object only."),
             ChatMessage::user(rendered.body),
@@ -63,6 +84,7 @@ pub async fn random(
         max_tokens: Some(400),
         json_mode: Some(true),
         modalities: None,
+        provider: Some(picked.provider.clone()),
     };
 
     let response = state.llm().chat(&req).await?;
@@ -70,7 +92,7 @@ pub async fn random(
         &state,
         &user.id,
         None,
-        "claude_haiku_4_5",
+        &picked.llm_id,
         PromptRole::RandomTopic,
         &response,
         None,

@@ -45,6 +45,11 @@ struct CoverRow {
     cover_path: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ChapterArtRow {
+    chapter_art_path: Option<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/audiobook/{id}/chapter/{n}/audio",
@@ -180,6 +185,62 @@ pub async fn cover(
     Ok((StatusCode::OK, headers, body).into_response())
 }
 
+#[utoipa::path(
+    get,
+    path = "/audiobook/{id}/chapter/{n}/art",
+    tag = "audiobook",
+    params(("id" = String, Path), ("n" = u32, Path)),
+    responses(
+        (status = 200, description = "Chapter artwork bytes", content_type = "image/png"),
+        (status = 404, description = "Not found")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn chapter_art(
+    State(state): State<AppState>,
+    auth_header: Option<Authenticated>,
+    Query(q): Query<StreamAuthQuery>,
+    Path((id, n)): Path<(String, u32)>,
+) -> ApiResult<Response> {
+    let user_id = resolve_user(&state, auth_header, &q)?;
+    assert_owner(&state, &id, &user_id).await?;
+    let rel = load_chapter_art_rel(&state, &id, n as i64, q.language.as_deref()).await?;
+    let abs = state.config().storage_path.join(&rel);
+    let file = tokio::fs::File::open(&abs)
+        .await
+        .map_err(|_| Error::NotFound {
+            resource: format!("chapter art for audiobook:{id} chapter {n}"),
+        })?;
+    let len = file
+        .metadata()
+        .await
+        .map(|m| m.len())
+        .map_err(|e| Error::Other(anyhow::anyhow!("stat chapter art: {e}")))?;
+
+    let mut head = [0u8; 32];
+    let head_len = match tokio::fs::File::open(&abs).await {
+        Ok(mut f) => f.read(&mut head).await.unwrap_or(0),
+        Err(_) => 0,
+    };
+    let mime = crate::handlers::cover::detect_mime(&head[..head_len]);
+
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(mime).unwrap_or_else(|_| HeaderValue::from_static("image/png")),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=3600"),
+    );
+    if let Ok(v) = HeaderValue::from_str(&len.to_string()) {
+        headers.insert(header::CONTENT_LENGTH, v);
+    }
+    Ok((StatusCode::OK, headers, body).into_response())
+}
+
 async fn load_cover_rel(state: &AppState, audiobook_id: &str) -> Result<String> {
     let rows: Vec<CoverRow> = state
         .db()
@@ -197,6 +258,171 @@ async fn load_cover_rel(state: &AppState, audiobook_id: &str) -> Result<String> 
         .filter(|p| !p.trim().is_empty())
         .ok_or(Error::NotFound {
             resource: format!("cover for audiobook:{audiobook_id}"),
+        })
+}
+
+#[utoipa::path(
+    get,
+    path = "/audiobook/{id}/chapter/{n}/paragraph/{p}/image/{i}",
+    tag = "audiobook",
+    params(
+        ("id" = String, Path),
+        ("n" = u32, Path),
+        ("p" = u32, Path, description = "Paragraph index (matches chapter.paragraphs[].index)"),
+        ("i" = u32, Path, description = "1-based tile ordinal")
+    ),
+    responses(
+        (status = 200, description = "Paragraph illustration bytes", content_type = "image/png"),
+        (status = 404, description = "Not found")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn paragraph_image(
+    State(state): State<AppState>,
+    auth_header: Option<Authenticated>,
+    Query(q): Query<StreamAuthQuery>,
+    Path((id, n, p, i)): Path<(String, u32, u32, u32)>,
+) -> ApiResult<Response> {
+    let user_id = resolve_user(&state, auth_header, &q)?;
+    assert_owner(&state, &id, &user_id).await?;
+    if i == 0 {
+        return Err(Error::NotFound {
+            resource: format!(
+                "paragraph image 0 for audiobook:{id} chapter {n} paragraph {p}"
+            ),
+        }
+        .into());
+    }
+    let rel = load_paragraph_image_rel(&state, &id, n as i64, p, i, q.language.as_deref()).await?;
+    let abs = state.config().storage_path.join(&rel);
+    let file = tokio::fs::File::open(&abs)
+        .await
+        .map_err(|_| Error::NotFound {
+            resource: format!(
+                "paragraph image {i} for audiobook:{id} chapter {n} paragraph {p}"
+            ),
+        })?;
+    let len = file
+        .metadata()
+        .await
+        .map(|m| m.len())
+        .map_err(|e| Error::Other(anyhow::anyhow!("stat paragraph image: {e}")))?;
+
+    let mut head = [0u8; 32];
+    let head_len = match tokio::fs::File::open(&abs).await {
+        Ok(mut f) => f.read(&mut head).await.unwrap_or(0),
+        Err(_) => 0,
+    };
+    let mime = crate::handlers::cover::detect_mime(&head[..head_len]);
+
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(mime).unwrap_or_else(|_| HeaderValue::from_static("image/png")),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=3600"),
+    );
+    if let Ok(v) = HeaderValue::from_str(&len.to_string()) {
+        headers.insert(header::CONTENT_LENGTH, v);
+    }
+    Ok((StatusCode::OK, headers, body).into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct ParagraphsRow {
+    #[serde(default)]
+    paragraphs: Option<Vec<serde_json::Value>>,
+}
+
+async fn load_paragraph_image_rel(
+    state: &AppState,
+    audiobook_id: &str,
+    n: i64,
+    paragraph_index: u32,
+    i: u32,
+    language: Option<&str>,
+) -> Result<String> {
+    let lang = match language {
+        Some(l) if !l.trim().is_empty() => l.to_string(),
+        _ => primary_language(state, audiobook_id).await?,
+    };
+    let rows: Vec<ParagraphsRow> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT paragraphs FROM chapter \
+             WHERE audiobook = audiobook:`{audiobook_id}` \
+               AND number = $n AND language = $lang LIMIT 1"
+        ))
+        .bind(("n", n))
+        .bind(("lang", lang))
+        .await
+        .map_err(|e| Error::Database(format!("load paragraphs: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("load paragraphs (decode): {e}")))?;
+    let paragraphs = rows
+        .into_iter()
+        .next()
+        .and_then(|r| r.paragraphs)
+        .unwrap_or_default();
+    let target = paragraphs.iter().find(|v| {
+        v.get("index")
+            .and_then(serde_json::Value::as_i64)
+            .map(|idx| idx == paragraph_index as i64)
+            .unwrap_or(false)
+    });
+    let paths = target
+        .and_then(|p| p.get("image_paths"))
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let slot = (i as usize).saturating_sub(1);
+    paths
+        .get(slot)
+        .and_then(serde_json::Value::as_str)
+        .filter(|p| !p.trim().is_empty())
+        .map(str::to_string)
+        .ok_or(Error::NotFound {
+            resource: format!(
+                "paragraph image {i} for audiobook:{audiobook_id} chapter {n} paragraph {paragraph_index}"
+            ),
+        })
+}
+
+async fn load_chapter_art_rel(
+    state: &AppState,
+    audiobook_id: &str,
+    n: i64,
+    language: Option<&str>,
+) -> Result<String> {
+    let lang = match language {
+        Some(l) if !l.trim().is_empty() => l.to_string(),
+        _ => primary_language(state, audiobook_id).await?,
+    };
+    let rows: Vec<ChapterArtRow> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT chapter_art_path FROM chapter \
+             WHERE audiobook = audiobook:`{audiobook_id}` \
+               AND number = $n AND language = $lang LIMIT 1"
+        ))
+        .bind(("n", n))
+        .bind(("lang", lang))
+        .await
+        .map_err(|e| Error::Database(format!("load chapter art path: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("load chapter art path (decode): {e}")))?;
+    rows.into_iter()
+        .next()
+        .and_then(|r| r.chapter_art_path)
+        .filter(|p| !p.trim().is_empty())
+        .ok_or(Error::NotFound {
+            resource: format!("chapter art for audiobook:{audiobook_id} chapter {n}"),
         })
 }
 

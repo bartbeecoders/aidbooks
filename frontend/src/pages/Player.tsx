@@ -1,8 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useParams } from "react-router-dom";
-import { audiobooks } from "../api";
-import type { ChapterSummary } from "../api";
+import {
+  audiobooks,
+  chapterArtUrl,
+  coverImageUrl,
+  paragraphImageUrl,
+} from "../api";
+import type { ChapterSummary, ParagraphSummary } from "../api";
 import { useAuth } from "../store/auth";
 
 const SPEEDS = [0.75, 1, 1.25, 1.5, 2];
@@ -213,6 +218,18 @@ export function Player(): JSX.Element {
           </div>
         )}
 
+        <ChapterSlideshow
+          audiobookId={id}
+          chapter={active}
+          accessToken={accessToken}
+          language={langForUrl}
+          paragraphs={activeChapter?.paragraphs ?? []}
+          hasArt={activeChapter?.has_art ?? false}
+          hasCover={data.has_cover}
+          currentTime={currentTime}
+          chapterDuration={chapterDuration}
+        />
+
         <audio
           ref={audioRef}
           key={src}
@@ -288,6 +305,158 @@ export function Player(): JSX.Element {
         </Link>
       </aside>
     </section>
+  );
+}
+
+/**
+ * Slideshow shown above the audio element. Walks through the chapter's
+ * illustrations in playback order:
+ *   - the chapter cover tile (if any) holds the screen until the first
+ *     visual paragraph's time-slot,
+ *   - each visual paragraph then takes a slot proportional to its
+ *     character count over the chapter total — the assumption being
+ *     that TTS narrates roughly at a constant char/sec rate. Within a
+ *     paragraph that has multiple tiles, the slot is divided evenly.
+ *   - falls back to the audiobook cover when the chapter has no art at
+ *     all, so the player isn't blank.
+ */
+function ChapterSlideshow({
+  audiobookId,
+  chapter,
+  accessToken,
+  language,
+  paragraphs,
+  hasArt,
+  hasCover,
+  currentTime,
+  chapterDuration,
+}: {
+  audiobookId: string;
+  chapter: number;
+  accessToken: string;
+  language: string;
+  paragraphs: ParagraphSummary[];
+  hasArt: boolean;
+  hasCover: boolean;
+  currentTime: number;
+  chapterDuration: number;
+}): JSX.Element | null {
+  // Build (slide URL, time window) pairs. Slides without a known
+  // duration get equal share so the early-load case still renders.
+  const timeline = useMemo<{ url: string; start: number; end: number }[]>(() => {
+    const visual = paragraphs.filter((p) => p.is_visual && p.image_count > 0);
+    const totalChars = visual.reduce((sum, p) => sum + Math.max(1, p.char_count), 0);
+    const dur = chapterDuration > 0 ? chapterDuration : 0;
+
+    const slides: { url: string; weight: number }[] = [];
+    if (hasArt) {
+      // Cover tile gets a small lead-in slot proportional to one
+      // average paragraph; falls back to a 10% slice when paragraphs
+      // are missing entirely.
+      const lead =
+        visual.length > 0
+          ? Math.max(1, Math.round(totalChars / Math.max(1, visual.length)))
+          : Math.max(1, Math.round(totalChars * 0.1));
+      slides.push({
+        url: chapterArtUrl(audiobookId, chapter, accessToken, language),
+        weight: lead,
+      });
+    }
+    for (const p of visual) {
+      // Divide the paragraph's char-count budget evenly across its tiles.
+      const per = Math.max(1, Math.floor(Math.max(1, p.char_count) / p.image_count));
+      for (let ord = 1; ord <= p.image_count; ord++) {
+        slides.push({
+          url: paragraphImageUrl(
+            audiobookId,
+            chapter,
+            p.index,
+            ord,
+            accessToken,
+            language,
+          ),
+          weight: per,
+        });
+      }
+    }
+    if (slides.length === 0 && hasCover) {
+      slides.push({
+        url: coverImageUrl(audiobookId, accessToken),
+        weight: 1,
+      });
+    }
+    if (slides.length === 0) return [];
+
+    // Convert weights into time windows. With a known duration, scale
+    // weights to seconds; without, fall back to equal slots so the
+    // first slide always renders.
+    const totalWeight = slides.reduce((s, x) => s + x.weight, 0);
+    const out: { url: string; start: number; end: number }[] = [];
+    if (dur > 0 && totalWeight > 0) {
+      let acc = 0;
+      for (const s of slides) {
+        const span = (s.weight / totalWeight) * dur;
+        out.push({ url: s.url, start: acc, end: acc + span });
+        acc += span;
+      }
+      // Fix any rounding drift on the last slide.
+      if (out.length > 0) out[out.length - 1].end = dur;
+    } else {
+      for (let i = 0; i < slides.length; i++) {
+        out.push({ url: slides[i].url, start: i, end: i + 1 });
+      }
+    }
+    return out;
+  }, [
+    audiobookId,
+    chapter,
+    accessToken,
+    language,
+    paragraphs,
+    hasArt,
+    hasCover,
+    chapterDuration,
+  ]);
+
+  if (timeline.length === 0) return null;
+
+  // Pick the slide whose time window contains the playhead. With a
+  // known duration the windows are seconds; without, they're indices
+  // and currentTime won't advance through them — so we stick to slot 0.
+  const idx =
+    chapterDuration > 0
+      ? Math.max(
+          0,
+          timeline.findIndex((s) => currentTime < s.end),
+        )
+      : 0;
+  const safeIdx = idx === -1 ? timeline.length - 1 : idx;
+
+  return (
+    <div className="relative mt-4 aspect-square max-w-md overflow-hidden rounded-xl border border-slate-800 bg-slate-900/40">
+      {timeline.map((s, i) => (
+        <img
+          key={s.url}
+          src={s.url}
+          alt=""
+          className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-700 ${
+            i === safeIdx ? "opacity-100" : "opacity-0"
+          }`}
+        />
+      ))}
+      {timeline.length > 1 && (
+        <div className="absolute bottom-2 left-1/2 flex -translate-x-1/2 gap-1.5">
+          {timeline.map((_, i) => (
+            <span
+              key={i}
+              className={`h-1.5 w-1.5 rounded-full ${
+                i === safeIdx ? "bg-white/90" : "bg-white/30"
+              }`}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

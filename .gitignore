@@ -35,8 +35,9 @@ Thumbs.db
 # Claude Code local state
 .claude/
 
-# Dev script PIDs
+# Dev script PIDs + log files
 .pids/
+.logs/
 
 # Logs / misc
 *.log

@@ -48,6 +48,12 @@ hound = { workspace = true }
 base64 = { workspace = true }
 tokio-util = { workspace = true }
 
+# Phase 8 YouTube publishing
+chacha20poly1305 = { workspace = true }
+form_urlencoded = { workspace = true }
+sha2 = { workspace = true }
+rand = { workspace = true }
+
 listenai-core = { workspace = true }
 listenai-db = { workspace = true }
 listenai-jobs = { workspace = true }

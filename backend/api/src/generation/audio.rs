@@ -64,11 +64,21 @@ async fn synth_one(
     set_chapter_status(state, &chapter_raw, "running").await?;
 
     let tts = state.tts().clone();
+    let char_count = body.chars().count();
     let audio = match tts.synthesize(body, voice_id, language).await {
         Ok(a) => a,
         Err(e) => {
             set_chapter_status(state, &chapter_raw, "failed").await.ok();
-            log_tts_event(state, user, Some(audiobook_id), "", 0, Some(&e.to_string())).await?;
+            log_tts_event(
+                state,
+                user,
+                Some(audiobook_id),
+                "",
+                char_count,
+                0,
+                Some(&e.to_string()),
+            )
+            .await?;
             return Err(e);
         }
     };
@@ -105,6 +115,7 @@ async fn synth_one(
         user,
         Some(audiobook_id),
         voice_id,
+        char_count,
         files.duration_ms,
         None,
     )
@@ -196,15 +207,19 @@ async fn set_chapter_status(state: &AppState, chapter_raw: &str, status: &str) -
     Ok(())
 }
 
-/// Append a TTS cost row to `generation_event` — `role="tts"`. We
-/// currently don't bill against an LLM row, so `llm:_default_` is used as
-/// a placeholder; Phase 9 (billing) will replace this with a voice-priced
-/// table keyed on provider + minutes.
+/// Append a TTS cost row to `generation_event` — `role="tts"`. Cost is
+/// computed locally from `xai_tts_cost_per_1k_chars` × char count since
+/// xAI's TTS endpoint doesn't return a billed cost the way OpenRouter does.
+/// We persist the char count in `prompt_tokens` so the cost UI can
+/// reconstruct it; `completion_tokens` carries duration_ms for the same
+/// reason. Both fields are repurposed labels here, not real token counts.
+#[allow(clippy::too_many_arguments)]
 async fn log_tts_event(
     state: &AppState,
     user: &UserId,
     audiobook_id: Option<&str>,
     voice_id: &str,
+    char_count: usize,
     duration_ms: u64,
     error: Option<&str>,
 ) -> Result<()> {
@@ -213,10 +228,19 @@ async fn log_tts_event(
         Some(id) => format!(", audiobook: audiobook:`{id}`"),
         None => String::new(),
     };
+    // $/1k chars × char_count / 1000. Mock paths (or admin sets price = 0)
+    // stay at $0 — the UI shows that as "free" rather than misleading "$0".
+    let cost_usd = if error.is_none() {
+        (char_count as f64) * state.config().xai_tts_cost_per_1k_chars / 1000.0
+    } else {
+        0.0
+    };
     // Record the provider voice id in `error` slot when success so the admin
     // panel can show "Eve: 34.2s" without adding columns now.
     let note = if error.is_none() {
-        Some(format!("voice={voice_id} duration_ms={duration_ms}"))
+        Some(format!(
+            "voice={voice_id} duration_ms={duration_ms} chars={char_count}"
+        ))
     } else {
         error.map(str::to_string)
     };
@@ -225,9 +249,9 @@ async fn log_tts_event(
             user: user:`{user}`,
             llm: llm:`claude_haiku_4_5`,
             role: "tts",
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            cost_usd: 0.0,
+            prompt_tokens: $chars,
+            completion_tokens: $duration_ms,
+            cost_usd: $cost,
             success: $success,
             error: $error
             {audiobook_set}
@@ -238,6 +262,9 @@ async fn log_tts_event(
         .db()
         .inner()
         .query(sql)
+        .bind(("chars", char_count as i64))
+        .bind(("duration_ms", duration_ms as i64))
+        .bind(("cost", cost_usd))
         .bind(("success", error.is_none()))
         .bind(("error", note))
         .await

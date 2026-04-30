@@ -7,14 +7,14 @@
 
 use std::collections::HashMap;
 
-use listenai_core::domain::PromptRole;
+use listenai_core::domain::{LlmRole, PromptRole};
 use listenai_core::id::UserId;
 use listenai_core::{Error, Result};
 use serde::Deserialize;
 use tracing::info;
 
 use crate::generation::{outline::log_generation_event, prompts};
-use crate::llm::{ChatMessage, ChatRequest};
+use crate::llm::{pick_llm_for_roles_lang, ChatMessage, ChatRequest};
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -41,7 +41,8 @@ pub async fn run_all(state: &AppState, user: &UserId, audiobook_id: &str) -> Res
     set_audiobook_status(state, audiobook_id, "chapters_running").await?;
 
     let book = load_audiobook(state, audiobook_id).await?;
-    let chapters = load_chapters(state, audiobook_id).await?;
+    let lang = book.language.as_deref().unwrap_or("en");
+    let chapters = load_chapters(state, audiobook_id, lang).await?;
 
     let mut previous_ending: Option<String> = None;
     let mut any_failed = false;
@@ -89,14 +90,15 @@ pub async fn run_one_by_number(
     chapter_number: i64,
 ) -> Result<String> {
     let book = load_audiobook(state, audiobook_id).await?;
-    let chapters = load_chapters(state, audiobook_id).await?;
+    let lang = book.language.as_deref().unwrap_or("en");
+    let chapters = load_chapters(state, audiobook_id, lang).await?;
     let ch = chapters
         .iter()
         .find(|c| c.number == chapter_number)
         .ok_or(Error::NotFound {
             resource: format!("audiobook:{audiobook_id} chapter {chapter_number}"),
         })?;
-    let prev = previous_body(state, audiobook_id, chapter_number).await?;
+    let prev = previous_body(state, audiobook_id, chapter_number, lang).await?;
     run_one(state, user, audiobook_id, &book, ch, &prev).await
 }
 
@@ -132,10 +134,18 @@ async fn run_one(
     );
 
     let rendered = prompts::render(state, PromptRole::Chapter, &vars).await?;
-    let model = state.config().openrouter_default_model.clone();
+    // Honor the admin's `default_for: ["chapter"]` + `priority` ranking and
+    // language preference. Falls back to `Config.openrouter_default_model`
+    // only when no row matches.
+    let picked = pick_llm_for_roles_lang(
+        state,
+        &[LlmRole::Chapter],
+        book.language.as_deref(),
+    )
+    .await?;
 
     let req = ChatRequest {
-        model,
+        model: picked.model_id.clone(),
         messages: vec![
             ChatMessage::system(
                 "You write audiobook chapter prose. Output plain markdown prose only.",
@@ -146,6 +156,7 @@ async fn run_one(
         max_tokens: Some(4_000),
         json_mode: Some(false),
         modalities: None,
+        provider: Some(picked.provider.clone()),
     };
 
     let response = match state.llm().chat(&req).await {
@@ -158,7 +169,7 @@ async fn run_one(
                 state,
                 user,
                 Some(audiobook_id),
-                "claude_haiku_4_5",
+                &picked.llm_id,
                 PromptRole::Chapter,
                 &crate::llm::ChatResponse {
                     content: String::new(),
@@ -178,7 +189,7 @@ async fn run_one(
         state,
         user,
         Some(audiobook_id),
-        "claude_haiku_4_5",
+        &picked.llm_id,
         PromptRole::Chapter,
         &response,
         None,
@@ -224,14 +235,20 @@ async fn load_audiobook(state: &AppState, audiobook_id: &str) -> Result<Audioboo
     })
 }
 
-async fn load_chapters(state: &AppState, audiobook_id: &str) -> Result<Vec<ChapterRow>> {
+async fn load_chapters(
+    state: &AppState,
+    audiobook_id: &str,
+    language: &str,
+) -> Result<Vec<ChapterRow>> {
     let rows: Vec<ChapterRow> = state
         .db()
         .inner()
         .query(format!(
             "SELECT id, number, title, synopsis, target_words FROM chapter \
-             WHERE audiobook = audiobook:`{audiobook_id}` ORDER BY number ASC"
+             WHERE audiobook = audiobook:`{audiobook_id}` AND language = $lang \
+             ORDER BY number ASC"
         ))
+        .bind(("lang", language.to_string()))
         .await
         .map_err(|e| Error::Database(format!("load chapters: {e}")))?
         .take(0)
@@ -243,6 +260,7 @@ async fn previous_body(
     state: &AppState,
     audiobook_id: &str,
     chapter_number: i64,
+    language: &str,
 ) -> Result<String> {
     let prev = chapter_number - 1;
     if prev < 1 {
@@ -253,9 +271,11 @@ async fn previous_body(
         .inner()
         .query(format!(
             "SELECT VALUE body_md FROM chapter \
-             WHERE audiobook = audiobook:`{audiobook_id}` AND number = $n LIMIT 1"
+             WHERE audiobook = audiobook:`{audiobook_id}` \
+               AND number = $n AND language = $lang LIMIT 1"
         ))
         .bind(("n", prev))
+        .bind(("lang", language.to_string()))
         .await
         .map_err(|e| Error::Database(format!("load prev body: {e}")))?
         .take(0)

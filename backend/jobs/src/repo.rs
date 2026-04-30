@@ -316,6 +316,9 @@ impl JobRepo {
     }
 
     pub async fn mark_completed(&self, job_id: &str) -> Result<()> {
+        // Gated on `status = "running"` so an admin who cancels a mid-flight
+        // job doesn't get the cancel overwritten when the worker finishes.
+        // The worker's terminal write becomes a no-op in that case.
         self.db
             .inner()
             .query(format!(
@@ -326,6 +329,7 @@ impl JobRepo {
                     updated_at = time::now(),
                     last_error = NONE,
                     worker_id = NONE
+                  WHERE status = "running"
                 "#
             ))
             .await
@@ -346,6 +350,8 @@ impl JobRepo {
     ) -> Result<bool> {
         let terminal = row.attempts >= row.max_attempts;
         if terminal {
+            // Same gating reason as `mark_completed`: an admin's cancel-flip
+            // wins over a worker's terminal write.
             self.db
                 .inner()
                 .query(format!(
@@ -355,6 +361,7 @@ impl JobRepo {
                         updated_at = time::now(),
                         last_error = $err,
                         worker_id = NONE
+                      WHERE status = "running"
                     "#,
                     jid = row.id
                 ))
@@ -377,6 +384,7 @@ impl JobRepo {
                 last_error = $err,
                 not_before = time::now() + {exp_secs}s,
                 updated_at = time::now()
+              WHERE status = "running"
             "#,
             jid = row.id
         );

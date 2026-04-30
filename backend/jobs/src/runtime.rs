@@ -48,6 +48,14 @@ impl Default for WorkerConfig {
                 (JobKind::Cover, 1),
                 (JobKind::Gc, 1),
                 (JobKind::Translate, 2),
+                // YouTube publish jobs are dominated by network upload time;
+                // running them in parallel mostly fights for the per-project
+                // quota. One worker is plenty.
+                (JobKind::PublishYoutube, 1),
+                // Cheap-ish: one LLM call + a few CRUD writes. Bumping
+                // beyond 2 doesn't pay because each chapter's children
+                // are themselves Cover jobs with their own concurrency.
+                (JobKind::ChapterParagraphs, 2),
             ],
         }
     }

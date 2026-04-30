@@ -342,3 +342,18 @@ Suggested commit order, each independently shippable:
 5. Detail-page UI: button, dialog, publication list.
 6. Polish: chapter-marker timestamps, retry on `invalid_grant`,
    revocation handling.
+
+
+
+### Youtube Subtitles
+Implement subtitle generation. This text should be the audio generated text.
+
+### Chapter images
+When a chapter has an image, show this in the youtube video at the start of the chapter if 1 video is used for the whole audiobook.
+
+
+rework the creation on the artwork/illustrations
+Idea is that we create illustrations for each chapter/ paragraph, would be nice to have multiple illustrations per chapter/ paragraph. And these illustrations should be linked to the context of the chapter/paragraph. SO generate this artwork based on the text.
+
+WHen I generate the youtube publication, I would expect that all illustrations are used and shown at the correct moment.
+Why is it not the case?

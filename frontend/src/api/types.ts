@@ -9,16 +9,75 @@ import type { components } from "./schema";
 
 type S = components["schemas"];
 
-export type AudiobookSummary = S["AudiobookSummary"];
-export type AudiobookDetail = S["AudiobookDetail"];
+// `art_style` is intersected here because the cached `shared/openapi.json`
+// snapshot doesn't yet know about it; once the file is regenerated the
+// schema types will already carry the field and the intersections become
+// no-ops.
+type WithArtStyle = {
+  art_style?: string | null;
+  /** Pinned LLM id for cover + chapter art generation. */
+  cover_llm_id?: string | null;
+  /** Tiles per visual paragraph (0..=3). */
+  images_per_paragraph?: number | null;
+};
+
+export interface ParagraphSummary {
+  /** Stable index into the chapter's paragraph array. */
+  index: number;
+  /** Character count of the paragraph body — used to time-slot the slideshow. */
+  char_count: number;
+  /** Whether the LLM extract pass marked this paragraph as visual. */
+  is_visual: boolean;
+  /**
+   * Tiles persisted so far (1..=image_count addressable on the
+   * `/paragraph/:p/image/:i` stream endpoint).
+   */
+  image_count: number;
+}
+
+type WithChapterExtras = {
+  /** Per-paragraph metadata; empty when paragraph art wasn't requested. */
+  paragraphs?: ParagraphSummary[];
+};
+
+export type AudiobookSummary = S["AudiobookSummary"] & WithArtStyle;
+export type ChapterSummary = S["ChapterSummary"] & WithChapterExtras;
+export type AudiobookDetail = Omit<S["AudiobookDetail"], "chapters"> &
+  WithArtStyle & {
+    chapters: ChapterSummary[];
+  };
 export type AudiobookList = S["AudiobookList"];
-export type ChapterSummary = S["ChapterSummary"];
 export type AudiobookLength = S["AudiobookLength"];
 export type AudiobookStatus = S["AudiobookStatus"];
 export type ChapterStatus = S["ChapterStatus"];
 
-export type CreateAudiobookRequest = S["CreateAudiobookRequest"];
-export type UpdateAudiobookRequest = S["UpdateAudiobookRequest"];
+export interface AutoPublishPipeline {
+  /** `"single"` (one concatenated video) or `"playlist"`. Defaults to single. */
+  mode?: "single" | "playlist" | null;
+  privacy_status?: "private" | "unlisted" | "public" | null;
+  /** When true, the publish stops after encoding for review. */
+  review?: boolean;
+}
+
+export interface AutoPipeline {
+  /** Enqueue the chapter-writing job after outline. */
+  chapters: boolean;
+  /**
+   * Enqueue cover-art generation alongside chapters. Ignored if the
+   * caller already supplied `cover_image_base64`.
+   */
+  cover?: boolean;
+  /** Enqueue narration after chapters. Ignored when chapters is false. */
+  audio: boolean;
+  /** Optional YouTube publish step after narration. */
+  publish?: AutoPublishPipeline | null;
+}
+
+export type CreateAudiobookRequest = S["CreateAudiobookRequest"] &
+  WithArtStyle & {
+    auto_pipeline?: AutoPipeline | null;
+  };
+export type UpdateAudiobookRequest = S["UpdateAudiobookRequest"] & WithArtStyle;
 export type UpdateChapterRequest = S["UpdateChapterRequest"];
 
 export type LoginRequest = S["LoginRequest"];
@@ -31,14 +90,31 @@ export type UpdateMeRequest = S["UpdateMeRequest"];
 export type User = S["User"];
 
 export type VoiceList = S["VoiceList"];
-export type LlmList = S["LlmList"];
 export type Voice = S["Voice"];
-export type Llm = S["Llm"];
+// `function`/`languages`/`priority` were added after the cached schema
+// snapshot was generated; intersection here keeps callers type-safe until
+// `npm run gen:api` is re-run.
+export type Llm = S["Llm"] & {
+  function?: string | null;
+  languages?: string[];
+  priority?: number;
+  /** Per-megapixel price for image-generation models. */
+  cost_per_megapixel?: number;
+};
+export type LlmList = Omit<S["LlmList"], "items"> & { items: Llm[] };
 
-export type RandomTopicRequest = S["RandomTopicRequest"];
+// Intersected because the cached `shared/openapi.json` snapshot doesn't
+// yet include `language`; once the schema is regenerated the intersection
+// becomes a no-op.
+export type RandomTopicRequest = S["RandomTopicRequest"] & {
+  language?: string | null;
+};
 export type RandomTopicResponse = S["RandomTopicResponse"];
 
-export type CoverPreviewRequest = S["CoverPreviewRequest"];
+export type CoverPreviewRequest = S["CoverPreviewRequest"] & WithArtStyle & {
+  /** Override the picker for this preview. */
+  llm_id?: string | null;
+};
 export type CoverPreviewResponse = S["CoverPreviewResponse"];
 export type LlmRole = S["LlmRole"];
 export type TranslateRequest = S["TranslateRequest"];
@@ -54,10 +130,31 @@ export type ErrorBody = S["ErrorBody"];
 
 // --- admin ---------------------------------------------------------------
 export type SystemOverview = S["SystemOverview"];
-export type AdminLlmRow = S["AdminLlmRow"];
-export type AdminLlmList = S["AdminLlmList"];
-export type UpdateLlmRequest = S["UpdateLlmRequest"];
-export type CreateLlmRequest = S["CreateLlmRequest"];
+
+// `function`/`languages`/`priority` (and `model_id`/`context_window` on
+// patch) are intersected because the cached `shared/openapi.json` snapshot
+// hasn't been regenerated yet. Once it is, the schema types will already
+// carry these fields and the intersections become no-ops.
+type LlmExtra = {
+  function?: string | null;
+  languages?: string[] | null;
+  priority?: number | null;
+  /** Per-megapixel price for image-generation models. */
+  cost_per_megapixel?: number | null;
+  /** Upstream provider — `open_router` (default) or `xai`. */
+  provider?: string | null;
+};
+type LlmPatchExtra = LlmExtra & {
+  model_id?: string | null;
+  context_window?: number | null;
+};
+
+export type AdminLlmRow = S["AdminLlmRow"] & LlmExtra;
+export type AdminLlmList = Omit<S["AdminLlmList"], "items"> & {
+  items: AdminLlmRow[];
+};
+export type UpdateLlmRequest = S["UpdateLlmRequest"] & LlmPatchExtra;
+export type CreateLlmRequest = S["CreateLlmRequest"] & LlmExtra;
 export type AdminVoiceRow = S["AdminVoiceRow"];
 export type AdminVoiceList = S["AdminVoiceList"];
 export type UpdateVoiceRequest = S["UpdateVoiceRequest"];
@@ -69,6 +166,206 @@ export type AdminJobRow = S["AdminJobRow"];
 export type AdminJobList = S["AdminJobList"];
 export type UserRole = S["UserRole"];
 export type UserTier = S["UserTier"];
+
+// --- openrouter catalog --------------------------------------------------
+// Hand-written; mirrors `backend/api/src/handlers/admin.rs`.
+
+export interface OpenRouterModelRow {
+  id: string;
+  name: string;
+  description: string | null;
+  context_length: number | null;
+  input_modalities: string[];
+  output_modalities: string[];
+  /** USD per 1k prompt tokens (already converted from per-token). */
+  cost_prompt_per_1k: number;
+  cost_completion_per_1k: number;
+  /** USD per generated image, if the upstream priced one. */
+  cost_per_image: number;
+}
+
+export interface OpenRouterModelList {
+  items: OpenRouterModelRow[];
+}
+
+// --- xAI catalog ---------------------------------------------------------
+// Hand-written; mirrors `backend/api/src/handlers/admin.rs::list_xai_models`.
+
+export interface XaiModelRow {
+  id: string;
+  aliases: string[];
+  input_modalities: string[];
+  output_modalities: string[];
+  /** USD per 1k prompt tokens (already converted from xAI's encoding). */
+  cost_prompt_per_1k: number;
+  cost_completion_per_1k: number;
+  context_length: number | null;
+}
+
+export interface XaiModelList {
+  items: XaiModelRow[];
+}
+
+export interface XaiImageModelRow {
+  id: string;
+  aliases: string[];
+  input_modalities: string[];
+  output_modalities: string[];
+  /** USD per generated image (already converted from xAI's microdollars). */
+  cost_per_image: number;
+  context_length: number | null;
+}
+
+export interface XaiImageModelList {
+  items: XaiImageModelRow[];
+}
+
+// --- YouTube settings ----------------------------------------------------
+// Hand-written; mirrors `backend/api/src/handlers/admin.rs::YoutubeFooterRow`.
+
+export interface YoutubeFooterRow {
+  /** BCP-47 language code (also the record id). */
+  language: string;
+  text: string;
+  updated_at: string;
+}
+
+export interface YoutubeFooterList {
+  items: YoutubeFooterRow[];
+}
+
+export interface UpsertYoutubeFooterRequest {
+  text: string;
+}
+
+// --- audiobook costs -----------------------------------------------------
+// Hand-written; mirrors `backend/api/src/handlers/audiobook.rs::costs`.
+
+export interface CostByRole {
+  role: string;
+  count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_usd: number;
+}
+
+export interface AudiobookCostSummary {
+  audiobook_id: string;
+  total_cost_usd: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  event_count: number;
+  by_role: CostByRole[];
+}
+
+// --- topic templates -----------------------------------------------------
+// Hand-written; mirrors `backend/api/src/handlers/topic_templates.rs`.
+
+export interface TopicTemplate {
+  id: string;
+  title: string;
+  topic: string;
+  genre: string | null;
+  length: AudiobookLength | null;
+  language: string | null;
+  sort_order: number;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TopicTemplateList {
+  items: TopicTemplate[];
+}
+
+export interface CreateTopicTemplateRequest {
+  title: string;
+  topic: string;
+  genre?: string | null;
+  length?: AudiobookLength | null;
+  language?: string | null;
+  sort_order?: number | null;
+  enabled?: boolean | null;
+}
+
+export interface UpdateTopicTemplateRequest {
+  title?: string | null;
+  topic?: string | null;
+  genre?: string | null;
+  /** Wrapped: `null` clears the default; omitted leaves it untouched. */
+  length?: AudiobookLength | null;
+  language?: string | null;
+  sort_order?: number | null;
+  enabled?: boolean | null;
+}
+
+// --- integrations (YouTube) ----------------------------------------------
+// Hand-written to match `backend/api/src/handlers/integrations.rs`.
+
+export interface OauthStartResponse {
+  url: string;
+}
+
+export interface YoutubeAccountStatus {
+  connected: boolean;
+  channel_title: string | null;
+  connected_at: string | null;
+}
+
+export type PublishMode = "single" | "playlist";
+
+export interface PublishYoutubeRequest {
+  language: string;
+  privacy_status?: "private" | "unlisted" | "public" | null;
+  /** `"single"` (one concatenated video) or `"playlist"` (one video per chapter). */
+  mode?: PublishMode | null;
+  /** When true, encode but do not upload — wait for explicit approval. */
+  review?: boolean | null;
+  description?: string | null;
+}
+
+export interface PublishYoutubeResponse {
+  job_id: string;
+  publication_id: string;
+}
+
+export interface ApprovePublicationResponse {
+  job_id: string;
+  publication_id: string;
+}
+
+export interface PublicationVideoRow {
+  chapter_number: number;
+  title: string;
+  video_id: string | null;
+  video_url: string | null;
+  published_at: string | null;
+  last_error: string | null;
+}
+
+export interface PublicationRow {
+  id: string;
+  language: string;
+  privacy_status: "private" | "unlisted" | "public";
+  mode: PublishMode;
+  /** True while waiting for explicit approval after preview encoding. */
+  review: boolean;
+  /** ISO timestamp at which the preview MP4(s) became available. */
+  preview_ready_at: string | null;
+  video_id: string | null;
+  video_url: string | null;
+  playlist_id: string | null;
+  playlist_url: string | null;
+  published_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+  videos: PublicationVideoRow[];
+}
+
+export interface PublicationList {
+  items: PublicationRow[];
+}
 
 // --- admin test endpoints ------------------------------------------------
 // Hand-written (not generated) because the frontend doesn't always
