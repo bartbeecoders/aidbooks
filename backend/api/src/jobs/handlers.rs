@@ -138,6 +138,8 @@ struct CoverBookRow {
     art_style: Option<String>,
     #[serde(default)]
     cover_llm_id: Option<String>,
+    #[serde(default)]
+    is_short: Option<bool>,
 }
 
 #[async_trait]
@@ -160,7 +162,7 @@ impl JobHandler for CoverHandler {
             .db()
             .inner()
             .query(format!(
-                "SELECT title, topic, genre, art_style, cover_llm_id \
+                "SELECT title, topic, genre, art_style, cover_llm_id, is_short \
                  FROM audiobook:`{audiobook_id}`"
             ))
             .await
@@ -223,6 +225,7 @@ impl JobHandler for CoverHandler {
             book.genre.as_deref(),
             book.art_style.as_deref(),
             book.cover_llm_id.as_deref(),
+            book.is_short.unwrap_or(false),
         )
         .await
         {
@@ -304,6 +307,7 @@ async fn run_chapter_art(
         &ch.title,
         ch.synopsis.as_deref(),
         ch.body_md.as_deref(),
+        book.is_short.unwrap_or(false),
     )
     .await
     {
@@ -1199,7 +1203,7 @@ async fn enqueue_auto_publish(
         return;
     }
 
-    let mode = publish
+    let mut mode = publish
         .mode
         .as_deref()
         .filter(|s| !s.trim().is_empty())
@@ -1212,6 +1216,15 @@ async fn enqueue_auto_publish(
         .unwrap_or("private")
         .to_string();
     let review = publish.review;
+
+    // Shorts always upload as a single vertical clip — clamp the mode
+    // here so a stale `auto_pipeline.publish.mode` from before the
+    // Short flag was flipped on can't land the upload in playlist
+    // mode. Mirrors the override on the manual publish handler and in
+    // the publisher itself.
+    if load_audiobook_is_short(state, audiobook_id).await.unwrap_or(false) {
+        mode = "single".to_string();
+    }
 
     // Mint a fresh publication row. We don't bother with the upsert
     // path the HTTP handler uses because auto-publish only ever fires
@@ -1293,4 +1306,31 @@ async fn primary_language(state: &AppState, audiobook_id: &str) -> Result<String
         .next()
         .and_then(|r| r.language)
         .unwrap_or_else(|| "en".to_string()))
+}
+
+/// Read `audiobook.is_short`. Defaults to `false` for rows that pre-date
+/// migration 0031 or any DB error — the worst case is a Short that
+/// accidentally goes out as a horizontal video, which is recoverable;
+/// hard-failing the publish would be worse.
+async fn load_audiobook_is_short(state: &AppState, audiobook_id: &str) -> Result<bool> {
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(default)]
+        is_short: Option<bool>,
+    }
+    let rows: Vec<Row> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT is_short FROM audiobook:`{audiobook_id}`"
+        ))
+        .await
+        .map_err(|e| Error::Database(format!("auto-publish is_short: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("auto-publish is_short (decode): {e}")))?;
+    Ok(rows
+        .into_iter()
+        .next()
+        .and_then(|r| r.is_short)
+        .unwrap_or(false))
 }

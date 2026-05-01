@@ -34,6 +34,10 @@ pub struct TopicTemplate {
     pub language: Option<String>,
     pub sort_order: i32,
     pub enabled: bool,
+    /// When `true`, books created from this template default to YouTube
+    /// Short mode: a single ≤ 90 s chapter rendered as a vertical 9:16
+    /// video.
+    pub is_short: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -56,6 +60,9 @@ pub struct CreateTopicTemplateRequest {
     pub language: Option<String>,
     pub sort_order: Option<i32>,
     pub enabled: Option<bool>,
+    /// Default the New Audiobook form's "YouTube Short" toggle to this
+    /// value when the user picks the template. Defaults to `false`.
+    pub is_short: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -74,6 +81,7 @@ pub struct UpdateTopicTemplateRequest {
     pub language: Option<String>,
     pub sort_order: Option<i32>,
     pub enabled: Option<bool>,
+    pub is_short: Option<bool>,
 }
 
 // -------------------------------------------------------------------------
@@ -93,6 +101,8 @@ struct DbRow {
     language: Option<String>,
     sort_order: i64,
     enabled: bool,
+    #[serde(default)]
+    is_short: Option<bool>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -118,6 +128,7 @@ impl DbRow {
             language: self.language,
             sort_order: self.sort_order as i32,
             enabled: self.enabled,
+            is_short: self.is_short.unwrap_or(false),
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -243,6 +254,7 @@ pub async fn create(
         .map(str::to_string);
     let sort_order = body.sort_order.unwrap_or(0) as i64;
     let enabled = body.enabled.unwrap_or(true);
+    let is_short = body.is_short.unwrap_or(false);
 
     state
         .db()
@@ -255,7 +267,8 @@ pub async fn create(
                 length: $length,
                 language: $language,
                 sort_order: $sort_order,
-                enabled: $enabled
+                enabled: $enabled,
+                is_short: $is_short
             }}"#
         ))
         .bind(("title", body.title.trim().to_string()))
@@ -265,6 +278,7 @@ pub async fn create(
         .bind(("language", language))
         .bind(("sort_order", sort_order))
         .bind(("enabled", enabled))
+        .bind(("is_short", is_short))
         .await
         .map_err(|e| Error::Database(format!("topic_template create: {e}")))?
         .check()
@@ -326,6 +340,9 @@ pub async fn patch(
     if body.enabled.is_some() {
         sets.push("enabled = $enabled");
     }
+    if body.is_short.is_some() {
+        sets.push("is_short = $is_short");
+    }
     if sets.is_empty() {
         return Err(Error::Validation("no fields to update".into()).into());
     }
@@ -365,6 +382,7 @@ pub async fn patch(
         .bind(("language", language_clear))
         .bind(("sort_order", body.sort_order.map(|n| n as i64)))
         .bind(("enabled", body.enabled))
+        .bind(("is_short", body.is_short))
         .await
         .map_err(|e| Error::Database(format!("topic_template patch: {e}")))?
         .check()

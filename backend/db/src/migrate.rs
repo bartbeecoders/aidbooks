@@ -117,6 +117,30 @@ const MIGRATIONS: &[Migration] = &[
         name: "0025_youtube_description_footer",
         sql: include_str!("../migrations/0025_youtube_description_footer.surql"),
     },
+    Migration {
+        name: "0026_audiobook_category",
+        sql: include_str!("../migrations/0026_audiobook_category.surql"),
+    },
+    Migration {
+        name: "0027_audiobook_category_table",
+        sql: include_str!("../migrations/0027_audiobook_category_table.surql"),
+    },
+    Migration {
+        name: "0028_audiobook_tags",
+        sql: include_str!("../migrations/0028_audiobook_tags.surql"),
+    },
+    Migration {
+        name: "0029_podcast",
+        sql: include_str!("../migrations/0029_podcast.surql"),
+    },
+    Migration {
+        name: "0030_audiobook_tags_backfill",
+        sql: include_str!("../migrations/0030_audiobook_tags_backfill.surql"),
+    },
+    Migration {
+        name: "0031_audiobook_short",
+        sql: include_str!("../migrations/0031_audiobook_short.surql"),
+    },
 ];
 
 /// Run any pending migrations. Safe to call on every startup.

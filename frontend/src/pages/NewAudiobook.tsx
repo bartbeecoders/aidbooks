@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import {
@@ -70,6 +70,7 @@ export function NewAudiobook(): JSX.Element {
   const [topic, setTopic] = useState("");
   const [length, setLength] = useState<AudiobookLength>("short");
   const [genre, setGenre] = useState("");
+  const [category, setCategory] = useState("");
   const [language, setLanguage] = useState("en");
   const [voiceId, setVoiceId] = useState<string | null>(null);
   const [artStyle, setArtStyle] = useState<string>(DEFAULT_ART_STYLE);
@@ -78,6 +79,7 @@ export function NewAudiobook(): JSX.Element {
   const [cover, setCover] = useState<{ base64: string; mime: string } | null>(null);
   // Auto-pipeline: chapters + cover + audio default ON. Publish defaults
   // OFF because it depends on the user having a YouTube channel connected.
+  const [isShort, setIsShort] = useState(false);
   const [autoChapters, setAutoChapters] = useState(true);
   const [autoCover, setAutoCover] = useState(true);
   // Tiles per *visual* paragraph (the LLM extract pass picks visualizable
@@ -110,6 +112,18 @@ export function NewAudiobook(): JSX.Element {
   const coverLlms = llmsQuery.data
     ? imageCapableLlms(llmsQuery.data.items)
     : [];
+
+  // Categories live in an admin-curated table now. We pull them from
+  // the public catalog endpoint; admins manage the list via
+  // /admin/categories.
+  const categoriesQuery = useQuery({
+    queryKey: ["audiobook-categories"],
+    queryFn: () => catalog.audiobookCategories(),
+  });
+  const categoryNames = useMemo(
+    () => (categoriesQuery.data?.items ?? []).map((c) => c.name),
+    [categoriesQuery.data],
+  );
   const youtubeConnected = youtubeAccount.data?.connected ?? false;
 
   const applyTemplate = (t: TopicTemplate): void => {
@@ -117,6 +131,7 @@ export function NewAudiobook(): JSX.Element {
     if (t.genre) setGenre(t.genre);
     if (t.length) setLength(t.length);
     if (t.language) setLanguage(t.language);
+    setIsShort(t.is_short);
   };
 
   const generateCover = useMutation({
@@ -126,6 +141,7 @@ export function NewAudiobook(): JSX.Element {
         genre: genre.trim() || undefined,
         art_style: artStyle || undefined,
         llm_id: coverLlmId || undefined,
+        is_short: isShort,
       }),
     onSuccess: (r) => setCover({ base64: r.image_base64, mime: r.mime_type }),
   });
@@ -185,13 +201,18 @@ export function NewAudiobook(): JSX.Element {
         topic: topic.trim(),
         length,
         genre: genre.trim() || undefined,
+        category: category.trim() || undefined,
         language,
         voice_id: voiceId ?? undefined,
         cover_image_base64: cover?.base64,
         art_style: artStyle || undefined,
         cover_llm_id: coverLlmId || undefined,
+        // Shorts: single chapter, no paragraph slideshow.
         images_per_paragraph:
-          autoCover && imagesPerParagraph > 0 ? imagesPerParagraph : 0,
+          !isShort && autoCover && imagesPerParagraph > 0
+            ? imagesPerParagraph
+            : 0,
+        is_short: isShort,
         auto_pipeline,
       });
     },
@@ -204,12 +225,19 @@ export function NewAudiobook(): JSX.Element {
     },
   });
 
-  // Whenever topic, genre, art style, or the picked image LLM changes, the
-  // previewed cover no longer matches — drop it so the user re-generates
-  // intentionally rather than shipping a stale image.
+  // Whenever topic, genre, art style, the picked image LLM, or the
+  // YouTube Short toggle changes, the previewed cover no longer matches
+  // — drop it so the user re-generates intentionally rather than
+  // shipping a stale image (Shorts need 9:16; books need 1:1).
   useEffect(() => {
     setCover(null);
-  }, [topic, genre, artStyle, coverLlmId]);
+  }, [topic, genre, artStyle, coverLlmId, isShort]);
+
+  // Shorts always upload as a single vertical clip — playlist mode
+  // doesn't apply because the whole story fits in one ≤ 90 s video.
+  useEffect(() => {
+    if (isShort) setPublishMode("single");
+  }, [isShort]);
 
   function submit(e: FormEvent<HTMLFormElement>): void {
     e.preventDefault();
@@ -222,11 +250,12 @@ export function NewAudiobook(): JSX.Element {
   // → publish.
   const submitLabel = (() => {
     if (create.isPending) return "Starting…";
+    const noun = isShort ? "short" : "book";
     if (autoChapters && autoAudio && autoPublish && youtubeConnected) {
       return publishReview ? "Generate + publish (review)" : "Generate + publish";
     }
-    if (autoChapters && autoAudio) return "Generate book + audio";
-    if (autoChapters) return "Generate book";
+    if (autoChapters && autoAudio) return `Generate ${noun} + audio`;
+    if (autoChapters) return `Generate ${noun}`;
     return "Draft outline";
   })();
 
@@ -307,29 +336,91 @@ export function NewAudiobook(): JSX.Element {
           </div>
         </Field>
 
+        <Field label="Format">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setIsShort(false)}
+              className={`rounded-md border px-3 py-2 text-left text-sm ${
+                !isShort
+                  ? "border-sky-600 bg-sky-600/10 text-sky-200"
+                  : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
+              }`}
+            >
+              <span className="block font-medium">📚 Audiobook</span>
+              <span className="block text-[11px] text-slate-400">
+                Multi-chapter, square cover
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsShort(true)}
+              className={`rounded-md border px-3 py-2 text-left text-sm ${
+                isShort
+                  ? "border-rose-600 bg-rose-600/10 text-rose-200"
+                  : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
+              }`}
+            >
+              <span className="block font-medium">🎬 YouTube Short</span>
+              <span className="block text-[11px] text-slate-400">
+                Single ≤ 90 s clip, 9:16 vertical cover
+              </span>
+            </button>
+          </div>
+        </Field>
+
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-4">
-            <Field label="Length">
+            <Field label={isShort ? "Length (locked for Shorts)" : "Length"}>
               <div className="grid grid-cols-3 gap-2">
                 {(["short", "medium", "long"] as AudiobookLength[]).map((l) => (
                   <button
                     key={l}
                     type="button"
                     onClick={() => setLength(l)}
+                    disabled={isShort}
                     className={`rounded-md border px-3 py-2 text-sm capitalize ${
-                      length === l
-                        ? "border-sky-600 bg-sky-600/10 text-sky-200"
-                        : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
+                      isShort
+                        ? "cursor-not-allowed border-slate-800 bg-slate-950/40 text-slate-500"
+                        : length === l
+                          ? "border-sky-600 bg-sky-600/10 text-sky-200"
+                          : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
                     }`}
                   >
                     {l}
                   </button>
                 ))}
               </div>
+              {isShort && (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Shorts always render as a single ≤ 90 s chapter (~225 words),
+                  ignoring this preset.
+                </p>
+              )}
             </Field>
 
             <Field label="Genre (optional)">
               <GenreCombo value={genre} onChange={setGenre} />
+            </Field>
+
+            <Field label="Category (optional)">
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                disabled={categoriesQuery.isLoading}
+                className={inputClass}
+              >
+                <option value="">— Uncategorized —</option>
+                {categoryNames.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-slate-500">
+                Used to group books in the library sidebar. Manage the
+                list under <em>Admin → Categories</em>.
+              </p>
             </Field>
 
             <Field label="Voice (optional)">
@@ -379,6 +470,7 @@ export function NewAudiobook(): JSX.Element {
                 generating={generateCover.isPending}
                 onGenerate={() => generateCover.mutate()}
                 onClear={() => setCover(null)}
+                vertical={isShort}
                 error={
                   generateCover.error
                     ? generateCover.error instanceof ApiError
@@ -410,6 +502,7 @@ export function NewAudiobook(): JSX.Element {
           onPublishReview={setPublishReview}
           youtubeConnected={youtubeConnected}
           coverPreGenerated={cover !== null}
+          isShort={isShort}
         />
 
         {error && <p className="text-sm text-rose-400">{error}</p>}
@@ -480,6 +573,7 @@ function PipelinePanel({
   onPublishReview,
   youtubeConnected,
   coverPreGenerated,
+  isShort,
 }: {
   chapters: boolean;
   onChapters: (v: boolean) => void;
@@ -499,6 +593,7 @@ function PipelinePanel({
   onPublishReview: (v: boolean) => void;
   youtubeConnected: boolean;
   coverPreGenerated: boolean;
+  isShort: boolean;
 }): JSX.Element {
   const audioDisabled = !chapters;
   const publishDisabled = !chapters || !audio;
@@ -569,7 +664,7 @@ function PipelinePanel({
         />
       </div>
 
-      {chapters && cover && (
+      {chapters && cover && !isShort && (
         <div className="mt-4 rounded-md border border-slate-800 bg-slate-950/60 p-3">
           <div className="flex items-baseline justify-between">
             <div>
@@ -623,27 +718,33 @@ function PipelinePanel({
         <div className="mt-4 rounded-md border border-slate-800 bg-slate-950/60 p-3">
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label="Video format">
-              <div className="grid grid-cols-2 gap-2">
-                {(
-                  [
-                    { value: "single", label: "Single video" },
-                    { value: "playlist", label: "Playlist" },
-                  ] as const
-                ).map((opt) => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => onPublishMode(opt.value)}
-                    className={`rounded-md border px-3 py-2 text-xs ${
-                      publishMode === opt.value
-                        ? "border-rose-600 bg-rose-600/10 text-rose-200"
-                        : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
+              {isShort ? (
+                <div className="rounded-md border border-rose-900/50 bg-rose-950/20 px-3 py-2 text-xs text-rose-200">
+                  Single vertical Short (9:16, ≤ 90 s)
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-2">
+                  {(
+                    [
+                      { value: "single", label: "Single video" },
+                      { value: "playlist", label: "Playlist" },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => onPublishMode(opt.value)}
+                      className={`rounded-md border px-3 py-2 text-xs ${
+                        publishMode === opt.value
+                          ? "border-rose-600 bg-rose-600/10 text-rose-200"
+                          : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </Field>
             <Field label="Visibility">
               <div className="grid grid-cols-3 gap-2">
@@ -919,6 +1020,7 @@ function CoverArtPicker({
   generating,
   onGenerate,
   onClear,
+  vertical,
   error,
 }: {
   cover: { base64: string; mime: string } | null;
@@ -926,11 +1028,18 @@ function CoverArtPicker({
   generating: boolean;
   onGenerate: () => void;
   onClear: () => void;
+  vertical: boolean;
   error: string | null;
 }): JSX.Element {
+  // Match the preview frame to the requested aspect so a Short's 9:16
+  // cover doesn't get letterboxed inside a square placeholder (and a
+  // book's 1:1 cover doesn't stretch into a tall slot).
+  const frameSize = vertical ? "h-48 w-[6.75rem]" : "h-32 w-32";
   return (
     <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
-      <div className="flex h-32 w-32 shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-700 bg-slate-950">
+      <div
+        className={`flex shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-700 bg-slate-950 ${frameSize}`}
+      >
         {cover ? (
           <img
             src={`data:${cover.mime};base64,${cover.base64}`}
@@ -938,7 +1047,9 @@ function CoverArtPicker({
             className="h-full w-full object-cover"
           />
         ) : (
-          <span className="text-[11px] text-slate-500">No cover</span>
+          <span className="text-[11px] text-slate-500">
+            {vertical ? "No cover (9:16)" : "No cover"}
+          </span>
         )}
       </div>
       <div className="flex-1 space-y-2">

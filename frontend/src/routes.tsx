@@ -9,6 +9,7 @@ import { AdminLlms } from "./pages/admin/AdminLlms";
 import { AdminOverview } from "./pages/admin/AdminOverview";
 import { AdminTestLlm } from "./pages/admin/AdminTestLlm";
 import { AdminTestVoice } from "./pages/admin/AdminTestVoice";
+import { AdminCategories } from "./pages/admin/AdminCategories";
 import { AdminTopicTemplates } from "./pages/admin/AdminTopicTemplates";
 import { AdminUsers } from "./pages/admin/AdminUsers";
 import { AdminVoices } from "./pages/admin/AdminVoices";
@@ -34,7 +35,10 @@ export const router = createBrowserRouter([
     children: [
       { path: "/app", element: <Library /> },
       { path: "/app/new", element: <NewAudiobook /> },
-      { path: "/app/book/:id", element: <BookDetail /> },
+      // Library renders in both routes — `:id` selects which book is
+      // shown in the right pane. Keeping the URL shape preserves
+      // bookmarks and direct-link sharing.
+      { path: "/app/book/:id", element: <Library /> },
       { path: "/app/play/:id", element: <Player /> },
       { path: "/app/settings", element: <Settings /> },
       {
@@ -49,6 +53,7 @@ export const router = createBrowserRouter([
           { path: "/admin/image-llm", element: <AdminImageLlms /> },
           { path: "/admin/voice", element: <AdminVoices /> },
           { path: "/admin/topic-templates", element: <AdminTopicTemplates /> },
+          { path: "/admin/categories", element: <AdminCategories /> },
           { path: "/admin/youtube-settings", element: <AdminYoutubeSettings /> },
           { path: "/admin/test-llm", element: <AdminTestLlm /> },
           { path: "/admin/test-voice", element: <AdminTestVoice /> },

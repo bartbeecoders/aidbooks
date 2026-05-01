@@ -34,6 +34,11 @@ pub struct CreateAudiobookRequest {
     pub length: AudiobookLength,
     #[validate(length(max = 40))]
     pub genre: Option<String>,
+    /// Optional user-supplied bucket for the library view (e.g. "Bedtime
+    /// stories"). Free-text, max 60 chars. Distinct from `genre`, which
+    /// is the AI-content type.
+    #[validate(length(max = 60))]
+    pub category: Option<String>,
     /// Optional voice id from `/voices`. If omitted, the TTS layer falls
     /// back to the configured `xai_default_voice`.
     #[validate(length(min = 1, max = 64))]
@@ -65,6 +70,11 @@ pub struct CreateAudiobookRequest {
     /// the server can chain chapter writing → narration → YouTube publish
     /// without further user action. `None` = the legacy step-by-step flow.
     pub auto_pipeline: Option<AutoPipelineRequest>,
+    /// When `true`, generate the book as a YouTube Short: a single
+    /// chapter ≤ 90 s of narration with a vertical 9:16 cover. The
+    /// publish step renders a vertical 1080×1920 video and forces
+    /// `mode = single`.
+    pub is_short: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Validate, ToSchema, Clone)]
@@ -108,6 +118,13 @@ pub struct AudiobookSummary {
     pub title: String,
     pub topic: String,
     pub genre: Option<String>,
+    /// Free-text user grouping (e.g. "Bedtime stories"). `None` means the
+    /// book is in the implicit "Uncategorized" bucket.
+    pub category: Option<String>,
+    /// Podcast id (`podcast:<id>`) the book has been assigned to. `None`
+    /// when the book is unassigned. The podcast row owns the title +
+    /// description + cover art used by the future YouTube playlist.
+    pub podcast_id: Option<String>,
     pub length: AudiobookLength,
     pub status: AudiobookStatus,
     /// `true` when a cover image has been generated and is available at
@@ -133,6 +150,18 @@ pub struct AudiobookSummary {
     /// Tiles per visual paragraph (extracted by the LLM scene pass). `0`
     /// = no paragraph art, only chapter cover tiles.
     pub images_per_paragraph: u32,
+    /// X.ai TTS speech-tag palette suggested by the outline LLM. The
+    /// chapter writer embeds these inline in `body_md` (e.g. `[pause]`,
+    /// `<whisper>...</whisper>`); the X.ai TTS endpoint consumes them
+    /// directly from the text. Empty = plain narration.
+    pub tags: Vec<String>,
+    /// Total narration runtime for the primary-language chapters, in
+    /// milliseconds. `None` until at least one chapter has finished
+    /// narration. Library views use this to display + filter on length.
+    pub duration_ms: Option<u64>,
+    /// `true` when the book is rendered as a YouTube Short (≤ 90 s of
+    /// narration, vertical 9:16 artwork, single-video upload).
+    pub is_short: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -195,6 +224,15 @@ pub struct UpdateAudiobookRequest {
     pub title: Option<String>,
     #[validate(length(max = 40))]
     pub genre: Option<String>,
+    /// Pass `Some("Bedtime stories")` to set or change; pass an empty
+    /// string to clear (book moves to "Uncategorized").
+    #[validate(length(max = 60))]
+    pub category: Option<String>,
+    /// Podcast id to assign this audiobook to. Pass an empty string to
+    /// clear (book is unassigned). The id must reference a podcast owned
+    /// by the same user.
+    #[validate(length(max = 64))]
+    pub podcast_id: Option<String>,
     /// Pass `Some("eve")` to change the narrator. Re-narrate the audiobook
     /// after changing this for the new voice to take effect on existing
     /// audio files.
@@ -214,6 +252,10 @@ pub struct UpdateAudiobookRequest {
     /// disk but only the first N per paragraph are surfaced in the
     /// chapter summary.
     pub images_per_paragraph: Option<u32>,
+    /// Toggle YouTube Short mode. Existing chapters / cover art are
+    /// not auto-regenerated — flip this before regenerating outline +
+    /// cover to take effect.
+    pub is_short: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -236,6 +278,10 @@ struct DbAudiobook {
     title: String,
     topic: String,
     genre: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    podcast: Option<Thing>,
     length: String,
     status: String,
     cover_path: Option<String>,
@@ -249,6 +295,10 @@ struct DbAudiobook {
     cover_llm_id: Option<String>,
     #[serde(default)]
     images_per_paragraph: Option<i64>,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+    #[serde(default)]
+    is_short: Option<bool>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -292,6 +342,12 @@ impl DbAudiobook {
             title: self.title.clone(),
             topic: self.topic.clone(),
             genre: self.genre.clone(),
+            category: self
+                .category
+                .clone()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            podcast_id: self.podcast.as_ref().map(|t| t.id.to_raw()),
             length: parse_length(&self.length)?,
             status: parse_status(&self.status)?,
             has_cover: self
@@ -320,6 +376,11 @@ impl DbAudiobook {
                 .images_per_paragraph
                 .map(|n| n.clamp(0, 3) as u32)
                 .unwrap_or(0),
+            tags: self.tags.clone().unwrap_or_default(),
+            // Filled in by the list/detail loaders once chapter durations
+            // are aggregated. `None` here means "not yet computed".
+            duration_ms: None,
+            is_short: self.is_short.unwrap_or(false),
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -494,7 +555,7 @@ pub async fn create(
     // the row. Empty pipeline (no chapters/audio/publish) is the same as
     // not requesting one at all — drop it.
     let auto_pipeline = match body.auto_pipeline.as_ref() {
-        Some(p) => normalise_auto_pipeline(p)?,
+        Some(p) => normalise_auto_pipeline(p, body.is_short.unwrap_or(false))?,
         None => None,
     };
     // Bind the typed struct directly. Going through `serde_json::Value`
@@ -502,18 +563,30 @@ pub async fn create(
     // — inner fields silently come back as defaults — so the auto-pipeline
     // chain would skip narration + chapter art on the read-back. See the
     // analogous workaround in `jobs/publishers/youtube.rs`.
+    let category = body
+        .category
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if let Some(c) = &category {
+        assert_category_exists(&state, c).await?;
+    }
+    let is_short = body.is_short.unwrap_or(false);
     let sql = format!(
         r#"CREATE audiobook:`{id}` CONTENT {{
             owner: user:`{user_id}`,
             title: "Untitled",
             topic: $topic,
             genre: $genre,
+            category: $category,
             length: $length,
             language: $language,
             art_style: $art_style,
             cover_llm_id: $cover_llm_id,
             images_per_paragraph: $images_per_paragraph,
             auto_pipeline: $auto_pipeline,
+            is_short: $is_short,
             {voice_clause}
             status: "draft"
         }}"#,
@@ -532,12 +605,14 @@ pub async fn create(
                 Some(genre.clone())
             },
         ))
+        .bind(("category", category))
         .bind(("length", length_to_str(body.length).to_string()))
         .bind(("language", language.clone()))
         .bind(("art_style", art_style))
         .bind(("cover_llm_id", cover_llm_id))
         .bind(("images_per_paragraph", images_per_paragraph))
         .bind(("auto_pipeline", auto_pipeline.clone()))
+        .bind(("is_short", is_short))
         .await
         .map_err(|e| Error::Database(format!("create audiobook: {e}")))?
         .check()
@@ -559,6 +634,7 @@ pub async fn create(
         body.length,
         if genre.is_empty() { "any" } else { &genre },
         &language,
+        is_short,
     )
     .await?;
 
@@ -597,12 +673,20 @@ pub async fn create(
 
 /// Convert the user-supplied pipeline into a normalised, validated form.
 /// Empty / no-op pipelines collapse to `None` so we don't persist noise.
-fn normalise_auto_pipeline(req: &AutoPipelineRequest) -> Result<Option<AutoPipelineRequest>> {
+fn normalise_auto_pipeline(
+    req: &AutoPipelineRequest,
+    is_short: bool,
+) -> Result<Option<AutoPipelineRequest>> {
     // Audio without chapters is impossible — strip it.
     let audio = req.chapters && req.audio;
     // Publish without audio is impossible — strip it.
-    let publish = if audio { req.publish.clone() } else { None };
-    if let Some(p) = &publish {
+    let mut publish = if audio { req.publish.clone() } else { None };
+    if let Some(p) = &mut publish {
+        // Shorts upload as a single vertical video — playlist mode doesn't
+        // apply because the whole story fits in one ≤ 90 s clip.
+        if is_short {
+            p.mode = Some("single".to_string());
+        }
         let mode = p.mode.as_deref().unwrap_or("single");
         if !matches!(mode, "single" | "playlist") {
             return Err(Error::Validation("pipeline.publish.mode must be single or playlist".into()));
@@ -655,9 +739,49 @@ pub async fn list(
         .take(0)
         .map_err(|e| Error::Database(format!("list audiobooks (decode): {e}")))?;
 
+    // One extra round-trip pulls every narrated chapter for this user's
+    // books so we can sum runtime per audiobook in Rust. Doing it here
+    // (rather than per-row) keeps the list query O(1) regardless of
+    // library size.
+    #[derive(Deserialize)]
+    struct DurationRow {
+        audiobook: Thing,
+        #[serde(default)]
+        language: Option<String>,
+        duration_ms: i64,
+    }
+    let duration_rows: Vec<DurationRow> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT audiobook, language, duration_ms FROM chapter \
+             WHERE audiobook IN (SELECT VALUE id FROM audiobook WHERE owner = user:`{}`) \
+             AND duration_ms != NONE",
+            user.id.0,
+        ))
+        .await
+        .map_err(|e| Error::Database(format!("list audiobooks (durations): {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("list audiobooks (durations decode): {e}")))?;
+
+    // (audiobook_id, language) → summed duration. Using BTreeMap for
+    // determinism in tests.
+    let mut totals: std::collections::BTreeMap<(String, String), u64> =
+        std::collections::BTreeMap::new();
+    for r in duration_rows {
+        let lang = r.language.unwrap_or_else(|| "en".to_string());
+        let book_id = r.audiobook.id.to_raw();
+        *totals.entry((book_id, lang)).or_insert(0) += r.duration_ms.max(0) as u64;
+    }
+
     let items = rows
         .iter()
-        .map(DbAudiobook::to_summary)
+        .map(|row| {
+            let mut s = row.to_summary()?;
+            let primary = row.language.clone().unwrap_or_else(|| "en".to_string());
+            s.duration_ms = totals.get(&(s.id.0.clone(), primary)).copied();
+            Ok(s)
+        })
         .collect::<Result<Vec<_>>>()?;
     Ok(Json(AudiobookList { items }))
 }
@@ -748,6 +872,25 @@ pub async fn patch(
             .check()
             .map_err(|e| Error::Database(format!("patch genre: {e}")))?;
     }
+    if let Some(cat) = body.category {
+        // Empty string clears → moves the book back to "Uncategorized".
+        let trimmed = cat.trim();
+        let value: Option<String> = if trimmed.is_empty() {
+            None
+        } else {
+            assert_category_exists(&state, trimmed).await?;
+            Some(trimmed.to_string())
+        };
+        state
+            .db()
+            .inner()
+            .query(format!("UPDATE audiobook:`{id}` SET category = $c"))
+            .bind(("c", value))
+            .await
+            .map_err(|e| Error::Database(format!("patch category: {e}")))?
+            .check()
+            .map_err(|e| Error::Database(format!("patch category: {e}")))?;
+    }
     if let Some(voice) = body.voice_id {
         let trimmed = voice.trim();
         if trimmed.is_empty() {
@@ -826,6 +969,44 @@ pub async fn patch(
             .check()
             .map_err(|e| Error::Database(format!("patch images_per_paragraph: {e}")))?;
     }
+    if let Some(short) = body.is_short {
+        state
+            .db()
+            .inner()
+            .query(format!("UPDATE audiobook:`{id}` SET is_short = $s"))
+            .bind(("s", short))
+            .await
+            .map_err(|e| Error::Database(format!("patch is_short: {e}")))?
+            .check()
+            .map_err(|e| Error::Database(format!("patch is_short: {e}")))?;
+    }
+    if let Some(podcast_id) = body.podcast_id {
+        let trimmed = podcast_id.trim();
+        if trimmed.is_empty() {
+            state
+                .db()
+                .inner()
+                .query(format!("UPDATE audiobook:`{id}` SET podcast = NONE"))
+                .await
+                .map_err(|e| Error::Database(format!("clear podcast: {e}")))?
+                .check()
+                .map_err(|e| Error::Database(format!("clear podcast: {e}")))?;
+        } else {
+            // Reject ids the user doesn't own — embedding `podcast:<id>`
+            // raw would otherwise let cross-user assignments through.
+            assert_podcast_owned(&state, trimmed, &user.id).await?;
+            state
+                .db()
+                .inner()
+                .query(format!(
+                    "UPDATE audiobook:`{id}` SET podcast = podcast:`{trimmed}`"
+                ))
+                .await
+                .map_err(|e| Error::Database(format!("patch podcast: {e}")))?
+                .check()
+                .map_err(|e| Error::Database(format!("patch podcast: {e}")))?;
+        }
+    }
 
     Ok(Json(load_detail(&state, &id, &user.id, None).await?))
 }
@@ -861,6 +1042,7 @@ pub async fn regenerate_cover(
         book.genre.as_deref(),
         book.art_style.as_deref(),
         book.cover_llm_id.as_deref(),
+        book.is_short.unwrap_or(false),
     )
     .await?;
     use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
@@ -1382,6 +1564,7 @@ pub async fn regenerate_chapter_art(
         &chapter.title,
         chapter.synopsis.as_deref(),
         chapter.body_md.as_deref(),
+        book.is_short.unwrap_or(false),
     )
     .await?;
     persist_chapter_art(&state, &id, &chapter.id.id.to_raw(), n, &bytes).await?;
@@ -1654,8 +1837,19 @@ async fn load_detail(
         .map(DbChapter::to_summary)
         .collect::<Result<Vec<_>>>()?;
 
+    // Sum the *primary* language's chapter durations so the value is
+    // stable across language switches in the UI (matches what the list
+    // endpoint reports).
+    let primary_total: u64 = all_chapters
+        .iter()
+        .filter(|c| c.language.as_deref().unwrap_or("en") == primary)
+        .filter_map(|c| c.duration_ms)
+        .map(|d| d.max(0) as u64)
+        .sum();
+
     let mut summary = book.to_summary()?;
     summary.available_languages = langs;
+    summary.duration_ms = if primary_total > 0 { Some(primary_total) } else { None };
     Ok(AudiobookDetail { summary, chapters })
 }
 
@@ -1908,6 +2102,63 @@ async fn assert_voice_enabled(state: &AppState, voice_id: &str) -> Result<String
         return Err(Error::Validation(format!("voice `{voice_id}` is disabled")));
     }
     Ok(row.id.id.to_raw())
+}
+
+/// Validate that `id` refers to a podcast row owned by `user`. Rejects
+/// unsafe characters before they're embedded in a `podcast:`<id>`` clause.
+async fn assert_podcast_owned(state: &AppState, id: &str, user: &UserId) -> Result<()> {
+    let valid = !id.is_empty()
+        && id.chars().all(|c| {
+            c.is_ascii_alphanumeric() || c == '_' || c == '-'
+        });
+    if !valid {
+        return Err(Error::Validation(format!("invalid podcast id `{id}`")));
+    }
+    #[derive(Deserialize)]
+    struct Row {
+        owner: Thing,
+    }
+    let rows: Vec<Row> = state
+        .db()
+        .inner()
+        .query(format!("SELECT owner FROM podcast:`{id}`"))
+        .await
+        .map_err(|e| Error::Database(format!("podcast owner: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("podcast owner (decode): {e}")))?;
+    let row = rows.into_iter().next().ok_or_else(|| {
+        Error::Validation(format!("unknown podcast `{id}`"))
+    })?;
+    if row.owner.id.to_raw() != user.0 {
+        return Err(Error::Validation(format!("unknown podcast `{id}`")));
+    }
+    Ok(())
+}
+
+/// Validate that `name` references an entry in the curated
+/// `audiobook_category` table. Empty / NULL slots are handled by the
+/// caller — this only fires when the user supplied a non-empty value.
+async fn assert_category_exists(state: &AppState, name: &str) -> Result<()> {
+    #[derive(Deserialize)]
+    struct Row {
+        #[allow(dead_code)]
+        name: String,
+    }
+    let rows: Vec<Row> = state
+        .db()
+        .inner()
+        .query("SELECT name FROM audiobook_category WHERE name = $n LIMIT 1")
+        .bind(("n", name.to_string()))
+        .await
+        .map_err(|e| Error::Database(format!("category check: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("category check (decode): {e}")))?;
+    if rows.is_empty() {
+        return Err(Error::Validation(format!(
+            "unknown category `{name}` — admin must add it first"
+        )));
+    }
+    Ok(())
 }
 
 async fn assert_owner(state: &AppState, id: &str, user: &UserId) -> Result<()> {

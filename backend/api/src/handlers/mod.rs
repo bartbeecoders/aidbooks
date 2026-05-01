@@ -7,6 +7,7 @@ pub mod health;
 pub mod integrations;
 pub mod jobs;
 pub mod me;
+pub mod podcasts;
 pub mod stream;
 pub mod topic_templates;
 pub mod topics;

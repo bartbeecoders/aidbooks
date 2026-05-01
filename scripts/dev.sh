@@ -6,8 +6,10 @@ PID_DIR="$ROOT/.pids"
 LOG_DIR="$ROOT/.logs"
 BACKEND_PID_FILE="$PID_DIR/backend.pid"
 FRONTEND_PID_FILE="$PID_DIR/frontend.pid"
+MCP_PID_FILE="$PID_DIR/mcp.pid"
 BACKEND_LOG_FILE="$LOG_DIR/backend.log"
 FRONTEND_LOG_FILE="$LOG_DIR/frontend.log"
+MCP_LOG_FILE="$LOG_DIR/mcp.log"
 
 mkdir -p "$PID_DIR" "$LOG_DIR"
 
@@ -23,6 +25,15 @@ if [[ -f "$ROOT/.env" ]]; then
 else
     echo "No .env found at $ROOT/.env (backend will use defaults / mock mode)."
 fi
+
+# MCP HTTP transport — defaults to listening on every interface so other
+# machines on the LAN can reach it. Override with LISTENAI_MCP_BIND in .env
+# (e.g. `LISTENAI_MCP_BIND=127.0.0.1:8788`) to restrict to loopback.
+# Anyone who can reach this port can drive the audiobook backend, so leave
+# LISTENAI_TOKEN unset on the server side and require clients to authenticate
+# (Authorization: Bearer <jwt> or `_token` arg).
+: "${LISTENAI_MCP_BIND:=0.0.0.0:8788}"
+export LISTENAI_MCP_BIND
 
 stop_server() {
     local name="$1"
@@ -54,25 +65,28 @@ stop_server() {
 stop_all() {
     stop_server "backend" "$BACKEND_PID_FILE"
     stop_server "frontend" "$FRONTEND_PID_FILE"
+    stop_server "mcp" "$MCP_PID_FILE"
     # Belt-and-braces: anything with the same binary name that the PID file
     # didn't catch (orphan from a previous run whose shell died, or a manual
     # `cargo run` started outside this script) would still hold the RocksDB
     # LOCK file and crash the next backend boot. Sweep by name as a final
     # cleanup. `pgrep -f` matches the full command, `-x` is too strict here.
-    local stale
-    stale=$(pgrep -f "target/debug/listenai-api" || true)
-    if [[ -n "$stale" ]]; then
-        echo "Found orphan backend processes: $stale — killing"
-        # shellcheck disable=SC2086
-        kill $stale 2>/dev/null || true
-        sleep 1
-        stale=$(pgrep -f "target/debug/listenai-api" || true)
+    for bin in "target/debug/listenai-api" "target/debug/listenai-mcp"; do
+        local stale
+        stale=$(pgrep -f "$bin" || true)
         if [[ -n "$stale" ]]; then
-            echo "Force-killing $stale"
+            echo "Found orphan $bin processes: $stale — killing"
             # shellcheck disable=SC2086
-            kill -9 $stale 2>/dev/null || true
+            kill $stale 2>/dev/null || true
+            sleep 1
+            stale=$(pgrep -f "$bin" || true)
+            if [[ -n "$stale" ]]; then
+                echo "Force-killing $stale"
+                # shellcheck disable=SC2086
+                kill -9 $stale 2>/dev/null || true
+            fi
         fi
-    fi
+    done
 }
 
 cleanup() {
@@ -91,6 +105,7 @@ stop_all
 # you can watch live or `tail -f .logs/backend.log` later.
 : > "$BACKEND_LOG_FILE"
 : > "$FRONTEND_LOG_FILE"
+: > "$MCP_LOG_FILE"
 
 echo "Starting backend..."
 cd "$ROOT/backend"
@@ -101,6 +116,35 @@ BACKEND_PID=$!
 echo "$BACKEND_PID" > "$BACKEND_PID_FILE"
 echo "Backend started (PID $BACKEND_PID, logs: $BACKEND_LOG_FILE)."
 
+# The MCP server fetches /openapi.json at boot and exits fatally if the api
+# is not yet listening. Wait for the api to be reachable before launching it.
+# Cap the wait so a broken backend doesn't hang dev.sh forever.
+API_BASE="${LISTENAI_API_URL:-http://127.0.0.1:8787}"
+echo "Waiting for backend at $API_BASE/health ..."
+WAITED=0
+until curl -fsS --max-time 1 "$API_BASE/health" >/dev/null 2>&1; do
+    if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
+        echo "Backend exited before becoming ready — see $BACKEND_LOG_FILE"
+        stop_all
+        exit 1
+    fi
+    if (( WAITED >= 180 )); then
+        echo "Backend did not become ready within 180s — see $BACKEND_LOG_FILE"
+        stop_all
+        exit 1
+    fi
+    sleep 1
+    WAITED=$(( WAITED + 1 ))
+done
+echo "Backend is ready (took ${WAITED}s)."
+
+echo "Starting MCP server (http on $LISTENAI_MCP_BIND)..."
+cd "$ROOT/backend"
+{ cargo run -p mcp -- --http 2>&1 | tee -a "$MCP_LOG_FILE"; } &
+MCP_PID=$!
+echo "$MCP_PID" > "$MCP_PID_FILE"
+echo "MCP server started (PID $MCP_PID, logs: $MCP_LOG_FILE)."
+
 echo "Starting frontend..."
 cd "$ROOT/frontend"
 { npm run dev 2>&1 | tee -a "$FRONTEND_LOG_FILE"; } &
@@ -109,9 +153,10 @@ echo "$FRONTEND_PID" > "$FRONTEND_PID_FILE"
 echo "Frontend started (PID $FRONTEND_PID, logs: $FRONTEND_LOG_FILE)."
 
 echo ""
-echo "Both servers are running. Press Ctrl+C to stop."
+echo "All servers are running. Press Ctrl+C to stop."
 echo "Tail logs in another terminal with:"
 echo "  tail -f $BACKEND_LOG_FILE"
+echo "  tail -f $MCP_LOG_FILE"
 echo "  tail -f $FRONTEND_LOG_FILE"
 
-wait $BACKEND_PID $FRONTEND_PID
+wait $BACKEND_PID $MCP_PID $FRONTEND_PID

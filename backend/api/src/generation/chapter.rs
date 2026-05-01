@@ -32,6 +32,10 @@ struct AudiobookMini {
     genre: Option<String>,
     #[serde(default)]
     language: Option<String>,
+    /// X.ai TTS speech-tag palette. Already filtered to the supported set
+    /// when `outline.rs` persisted it.
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
 /// Generate every `pending` (or failed) chapter in order. Updates each
@@ -124,6 +128,7 @@ async fn run_one(
         "language",
         crate::i18n::label(book.language.as_deref().unwrap_or("en")).to_string(),
     );
+    vars.insert("tags", format_tag_list(&book.tags));
     vars.insert(
         "previous_ending",
         if previous_ending.is_empty() {
@@ -224,7 +229,7 @@ async fn load_audiobook(state: &AppState, audiobook_id: &str) -> Result<Audioboo
         .db()
         .inner()
         .query(format!(
-            "SELECT title, genre, language FROM audiobook:`{audiobook_id}`"
+            "SELECT title, genre, language, tags FROM audiobook:`{audiobook_id}`"
         ))
         .await
         .map_err(|e| Error::Database(format!("load audiobook: {e}")))?
@@ -233,6 +238,17 @@ async fn load_audiobook(state: &AppState, audiobook_id: &str) -> Result<Audioboo
     rows.into_iter().next().ok_or(Error::NotFound {
         resource: format!("audiobook:{audiobook_id}"),
     })
+}
+
+/// Render the tag palette into the human-readable form the chapter prompt
+/// expects, e.g. `[pause], <whisper>, <soft>`. Empty list → `(none — write
+/// plain prose)` so the LLM doesn't see an awkward dangling colon.
+fn format_tag_list(tags: &[String]) -> String {
+    if tags.is_empty() {
+        "(none — write plain prose)".to_string()
+    } else {
+        tags.join(", ")
+    }
 }
 
 async fn load_chapters(

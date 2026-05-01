@@ -25,7 +25,12 @@ import type {
   CreateLlmRequest,
   CreateTopicTemplateRequest,
   OauthStartResponse,
+  AudiobookCategoryList,
+  AudiobookCategoryNameList,
+  AudiobookCategoryRow,
+  CreateAudiobookCategoryRequest,
   OpenRouterModelList,
+  UpdateAudiobookCategoryRequest,
   UpsertYoutubeFooterRequest,
   XaiImageModelList,
   XaiModelList,
@@ -38,6 +43,13 @@ import type {
   TopicTemplateList,
   TranslateRequest,
   TranslateResponse,
+  CreatePodcastRequest,
+  PodcastList,
+  PodcastRow,
+  PreviewPodcastImageRequest,
+  PreviewPodcastImageResponse,
+  SyncPodcastResponse,
+  UpdatePodcastRequest,
   LoginRequest,
   MeResponse,
   RandomTopicRequest,
@@ -140,6 +152,8 @@ export const audiobooks = {
 export const catalog = {
   voices: () => apiFetch<VoiceList>("/voices"),
   llms: () => apiFetch<import("./types").LlmList>("/llms"),
+  audiobookCategories: () =>
+    apiFetch<AudiobookCategoryNameList>("/audiobook-categories"),
 };
 
 export const topics = {
@@ -192,6 +206,32 @@ export function paragraphImageUrl(
 export const jobs = {
   listForAudiobook: (id: string) => apiFetch<AudiobookJobList>(`/audiobook/${id}/jobs`),
 };
+
+// --- podcasts -----------------------------------------------------------
+export const podcasts = {
+  list: () => apiFetch<PodcastList>("/podcasts"),
+  get: (id: string) => apiFetch<PodcastRow>(`/podcasts/${id}`),
+  create: (body: CreatePodcastRequest) =>
+    apiFetch<PodcastRow>("/podcasts", { method: "POST", body }),
+  patch: (id: string, body: UpdatePodcastRequest) =>
+    apiFetch<PodcastRow>(`/podcasts/${id}`, { method: "PATCH", body }),
+  remove: (id: string) =>
+    apiFetch<void>(`/podcasts/${id}`, { method: "DELETE" }),
+  previewImage: (body: PreviewPodcastImageRequest) =>
+    apiFetch<PreviewPodcastImageResponse>("/podcasts/preview-image", {
+      method: "POST",
+      body,
+    }),
+  syncYoutube: (id: string) =>
+    apiFetch<SyncPodcastResponse>(`/podcasts/${id}/sync-youtube`, {
+      method: "POST",
+    }),
+};
+
+/** URL of the saved podcast cover image. Used as `<img src>`. */
+export function podcastImageUrl(podcastId: string, accessToken: string): string {
+  return `/api/podcasts/${podcastId}/image?access_token=${encodeURIComponent(accessToken)}`;
+}
 
 // --- integrations (YouTube) ---------------------------------------------
 export const integrations = {
@@ -326,6 +366,25 @@ export const admin = {
     remove: (language: string) =>
       apiFetch<void>(
         `/admin/youtube-settings/${encodeURIComponent(language)}`,
+        { method: "DELETE" },
+      ),
+  },
+  audiobookCategories: {
+    list: () =>
+      apiFetch<AudiobookCategoryList>("/admin/audiobook-categories"),
+    create: (body: CreateAudiobookCategoryRequest) =>
+      apiFetch<AudiobookCategoryRow>("/admin/audiobook-categories", {
+        method: "POST",
+        body,
+      }),
+    update: (id: string, body: UpdateAudiobookCategoryRequest) =>
+      apiFetch<AudiobookCategoryRow>(
+        `/admin/audiobook-categories/${encodeURIComponent(id)}`,
+        { method: "PATCH", body },
+      ),
+    remove: (id: string) =>
+      apiFetch<void>(
+        `/admin/audiobook-categories/${encodeURIComponent(id)}`,
         { method: "DELETE" },
       ),
   },

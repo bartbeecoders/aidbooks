@@ -33,6 +33,9 @@ pub struct CoverPreviewRequest {
     /// the `llm` table.
     #[validate(length(max = 64))]
     pub llm_id: Option<String>,
+    /// When `true`, render a vertical 9:16 cover suitable for a YouTube
+    /// Short instead of the default square thumbnail.
+    pub is_short: Option<bool>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -72,6 +75,7 @@ pub async fn preview(
         body.genre.as_deref(),
         body.art_style.as_deref(),
         body.llm_id.as_deref(),
+        body.is_short.unwrap_or(false),
     )
     .await?;
     Ok(Json(CoverPreviewResponse {

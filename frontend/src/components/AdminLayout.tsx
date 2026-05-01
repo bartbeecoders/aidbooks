@@ -6,6 +6,7 @@ const SECTIONS: Array<{ to: string; label: string }> = [
   { to: "/admin/image-llm", label: "Image LLMs" },
   { to: "/admin/voice", label: "Voices" },
   { to: "/admin/topic-templates", label: "Topic templates" },
+  { to: "/admin/categories", label: "Categories" },
   { to: "/admin/youtube-settings", label: "YouTube settings" },
   { to: "/admin/test-llm", label: "Test LLM" },
   { to: "/admin/test-voice", label: "Test voice" },

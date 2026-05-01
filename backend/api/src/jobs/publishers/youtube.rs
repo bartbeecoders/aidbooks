@@ -80,6 +80,10 @@ impl JobHandler for PublishYoutubeHandler {
         let mode = pub_row.mode;
         let existing_playlist_id = pub_row.playlist_id;
         let review = pub_row.review;
+        // Shorts always upload as a single vertical clip. Even if the
+        // publication row was somehow flagged as `playlist`, override
+        // that here so the encoder + uploader take the single-video
+        // branch.
 
         // The description override is the only thing we still pull from the
         // payload because it doesn't live on the publication row.
@@ -173,8 +177,31 @@ impl JobHandler for PublishYoutubeHandler {
             }
         };
 
-        match mode.as_str() {
+        // The audiobook's podcast (if assigned + synced) provides an
+        // umbrella playlist that takes precedence over per-publication
+        // playlists in playlist mode and gets the single-mode video
+        // appended after upload.
+        let podcast_playlist_id = if review {
+            None
+        } else {
+            load_podcast_playlist(state, &audiobook_id).await.ok().flatten()
+        };
+
+        let effective_mode = if book.is_short.unwrap_or(false) {
+            "single"
+        } else {
+            mode.as_str()
+        };
+        match effective_mode {
             "playlist" => {
+                // Prefer the podcast's playlist over a per-publication one
+                // when both exist — the podcast is the more durable
+                // grouping. Falls back to the publication's `playlist_id`
+                // (resume support) and finally to creating a fresh one.
+                let from_podcast = podcast_playlist_id.is_some();
+                let playlist_for_run = podcast_playlist_id
+                    .as_deref()
+                    .or(existing_playlist_id.as_deref());
                 run_playlist(
                     state,
                     ctx,
@@ -188,7 +215,8 @@ impl JobHandler for PublishYoutubeHandler {
                     &book,
                     &chapters,
                     &cover_path,
-                    existing_playlist_id.as_deref(),
+                    playlist_for_run,
+                    from_podcast,
                     description_override.as_deref(),
                     footer.as_deref(),
                     review,
@@ -210,6 +238,7 @@ impl JobHandler for PublishYoutubeHandler {
                     &book,
                     &chapters,
                     &cover_path,
+                    podcast_playlist_id.as_deref(),
                     description_override.as_deref(),
                     footer.as_deref(),
                     review,
@@ -238,6 +267,7 @@ async fn run_single(
     book: &DbAudiobook,
     chapters: &[DbChapter],
     cover_path: &Path,
+    podcast_playlist_id: Option<&str>,
     description_override: Option<&str>,
     footer: Option<&str>,
     review: bool,
@@ -261,10 +291,26 @@ async fn run_single(
     // Image segments: paragraph-weighted slideshow per chapter, with
     // chapter cover tile lead-ins. Falls back to one segment per
     // chapter when no paragraph illustrations exist.
+    //
+    // Shorts skip the slideshow entirely and use the vertical cover for
+    // the whole clip — paragraph art doesn't fit a 9:16 frame and a
+    // ≤ 90 s clip rarely benefits from a slideshow anyway.
     let storage = &state.config().storage_path;
+    let is_short = book.is_short.unwrap_or(false);
     let mut image_segments: Vec<ImageSegment> = Vec::new();
-    for c in chapters {
-        image_segments.extend(build_chapter_image_segments(c, cover_path, storage));
+    if is_short {
+        let total_ms: u64 = chapters
+            .iter()
+            .map(|c| c.duration_ms.unwrap_or(0).max(0) as u64)
+            .sum();
+        image_segments.push(ImageSegment {
+            image_src: cover_path.to_path_buf(),
+            duration_ms: total_ms,
+        });
+    } else {
+        for c in chapters {
+            image_segments.extend(build_chapter_image_segments(c, cover_path, storage));
+        }
     }
 
     let wavs: Vec<PathBuf> = chapters
@@ -296,6 +342,7 @@ async fn run_single(
         &wavs,
         &mp4_path,
         total_ms,
+        is_short,
         move |frac| {
             let job = job_for_encode.clone();
             let ctx = ctx_for_encode.clone();
@@ -366,6 +413,55 @@ async fn run_single(
         warn!(error = %e, "publish_youtube: persist result failed");
     }
 
+    // Drop the new video into the audiobook's podcast playlist when one
+    // exists. Best-effort: a 4xx here is annoying but not worth rolling
+    // the upload back — the user can re-add the video on YouTube directly
+    // or re-trigger the publish, which is idempotent.
+    if let Some(playlist_id) = podcast_playlist_id {
+        match playlist::add_video(
+            access_token,
+            playlist_id,
+            &upload_result.video_id,
+            None,
+        )
+        .await
+        {
+            Ok(()) => {
+                let playlist_url =
+                    format!("https://www.youtube.com/playlist?list={playlist_id}");
+                if let Err(e) =
+                    mark_playlist_created(state, publication_id, playlist_id, &playlist_url)
+                        .await
+                {
+                    warn!(error = %e, "publish_youtube: persist podcast playlist failed");
+                }
+                // Now that the playlist has at least one episode, try to
+                // flip it into an actual YouTube podcast. Best-effort:
+                // YouTube can still reject this for other reasons (e.g.
+                // channel not eligible), and the user can always re-try
+                // via the manual sync button.
+                try_designate_podcast(state, access_token, playlist_id, &book.title, language)
+                    .await;
+            }
+            Err(Error::Unauthorized) => {
+                drop_account(state, user).await.ok();
+                // Don't fail the publish — the video is already up.
+                warn!(
+                    audiobook = %audiobook_id,
+                    "publish_youtube: podcast playlist add failed (unauthorized)"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    audiobook = %audiobook_id,
+                    playlist_id,
+                    "publish_youtube: podcast playlist add failed"
+                );
+            }
+        }
+    }
+
     // Best-effort caption upload — failures here don't roll back a
     // successful video publish. Uploads one CC track per language that
     // has chapter text on this audiobook (the viewer picks via CC menu);
@@ -410,6 +506,10 @@ async fn run_playlist(
     chapters: &[DbChapter],
     cover_path: &Path,
     existing_playlist_id: Option<&str>,
+    // `playlist_is_podcast`: true when the playlist we're publishing
+    // into is the podcast's umbrella playlist; we'll try to flip its
+    // `podcastStatus` to `enabled` after the first video lands.
+    playlist_is_podcast: bool,
     description_override: Option<&str>,
     footer: Option<&str>,
     review: bool,
@@ -441,7 +541,7 @@ async fn run_playlist(
         _ => {
             let title = trim_to(&book.title, 150);
             let description = trim_to(
-                &render_playlist_description(book, description_override, footer),
+                &render_playlist_description(book, description_override, footer, language),
                 5000,
             );
             match playlist::create_playlist(
@@ -450,6 +550,7 @@ async fn run_playlist(
                 &description,
                 privacy,
                 Some(language),
+                false,
             )
             .await
             {
@@ -544,6 +645,9 @@ async fn run_playlist(
             std::slice::from_ref(&chapter_wav),
             &mp4_path,
             encode_total_ms,
+            // Playlist mode is gated to non-Short books at the dispatch
+            // site, so a horizontal encode is always correct here.
+            false,
             move |frac| {
                 let job = job_for_encode.clone();
                 let ctx = ctx_for_encode.clone();
@@ -568,7 +672,8 @@ async fn run_playlist(
             warn!(error = %e, "publish_youtube: pre-persist chapter video failed");
         }
 
-        let metadata = build_chapter_metadata(book, ch, language, privacy, footer);
+        let metadata =
+            build_chapter_metadata(book, ch, chapters.len() as u32, language, privacy, footer);
         let upload_result = match upload_one(
             ctx,
             job,
@@ -622,7 +727,23 @@ async fn run_playlist(
         )
         .await
         {
-            Ok(()) => {}
+            Ok(()) => {
+                // Only the podcast's umbrella playlist gets the podcast
+                // designation flip; per-publication chapter playlists
+                // stay as regular playlists. We try once per run after
+                // the first video lands — the call is idempotent so
+                // repeating it on later episodes is cheap.
+                if playlist_is_podcast && idx == 0 {
+                    try_designate_podcast(
+                        state,
+                        access_token,
+                        &playlist.id,
+                        &book.title,
+                        language,
+                    )
+                    .await;
+                }
+            }
             Err(Error::Unauthorized) => {
                 drop_account(state, user).await.ok();
                 return Ok(fail(state, publication_id, Error::Unauthorized).await);
@@ -693,6 +814,9 @@ async fn run_playlist_preview(
             std::slice::from_ref(&chapter_wav),
             &mp4_path,
             encode_total_ms,
+            // Playlist preview always renders horizontal — Shorts use
+            // the single-video branch.
+            false,
             move |frac| {
                 let job = job_for_encode.clone();
                 let ctx = ctx_for_encode.clone();
@@ -869,6 +993,7 @@ async fn encode_mp4_segmented<F, Fut>(
     wavs: &[PathBuf],
     out_path: &Path,
     total_ms: u64,
+    vertical: bool,
     mut on_progress: F,
 ) -> Result<()>
 where
@@ -949,8 +1074,11 @@ where
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("bg");
-        let dest = parent.join(format!("youtube-bg-{stem}.png"));
-        compose_background(bin, &src_abs, &dest).await?;
+        // Distinct cache filename per orientation so a horizontal +
+        // vertical encode of the same source don't clobber each other.
+        let suffix = if vertical { "v" } else { "h" };
+        let dest = parent.join(format!("youtube-bg-{stem}-{suffix}.png"));
+        compose_background(bin, &src_abs, &dest, vertical).await?;
         let dest_abs = std::fs::canonicalize(&dest)
             .map_err(|e| Error::Other(anyhow::anyhow!("canonicalize composite: {e}")))?;
         composite_cache.insert(src_abs, dest_abs.clone());
@@ -1117,17 +1245,30 @@ where
     Ok(())
 }
 
-/// Render a single 1920×1080 background frame: the source image scaled +
-/// cropped + blurred as a backdrop, with the same image scaled crisply
-/// to 1080×1080 overlaid in the centre. Result is a static PNG that the
+/// Render a single background frame composited from `src`: the source
+/// image scaled + cropped + blurred as a backdrop, with the same image
+/// scaled crisply on top in the centre. Result is a static PNG that the
 /// encoder loops cheaply.
-async fn compose_background(bin: &str, src: &Path, dest: &Path) -> Result<()> {
-    let composite_filter = "[0:v]split=2[b][f];\
+///
+/// When `vertical` is true we produce a 1080×1920 frame for YouTube
+/// Shorts (the inset is 1080×1080 — the source is square). Otherwise
+/// the layout is the legacy 1920×1080 widescreen.
+async fn compose_background(bin: &str, src: &Path, dest: &Path, vertical: bool) -> Result<()> {
+    let composite_filter = if vertical {
+        "[0:v]split=2[b][f];\
+        [b]scale=1080:1920:force_original_aspect_ratio=increase,\
+            crop=1080:1920,boxblur=20:20,eq=brightness=-0.15[bg];\
+        [f]scale=1080:1080:force_original_aspect_ratio=decrease,\
+            setsar=1[fg];\
+        [bg][fg]overlay=x=(W-w)/2:y=(H-h)/2"
+    } else {
+        "[0:v]split=2[b][f];\
         [b]scale=1920:1080:force_original_aspect_ratio=increase,\
             crop=1920:1080,boxblur=20:20,eq=brightness=-0.15[bg];\
         [f]scale=1080:1080:force_original_aspect_ratio=decrease,\
             setsar=1[fg];\
-        [bg][fg]overlay=x=(W-w)/2:y=(H-h)/2";
+        [bg][fg]overlay=x=(W-w)/2:y=(H-h)/2"
+    };
     let started = std::time::Instant::now();
     let status = tokio::process::Command::new(bin)
         .arg("-y")
@@ -1215,13 +1356,33 @@ fn build_book_metadata(
     description_override: Option<&str>,
     footer: Option<&str>,
 ) -> upload::VideoMetadata {
-    let title = trim_to(&book.title, 100);
+    let is_short = book.is_short.unwrap_or(false);
+    // YouTube Shorts must have `#Shorts` somewhere in the title or
+    // description — the platform treats it as the opt-in signal for
+    // vertical playback. Prefer the title so it's visible at a glance,
+    // trimming the book title first to leave room.
+    let title = if is_short {
+        let head = trim_to(&book.title, 100 - " #Shorts".len());
+        format!("{head} #Shorts")
+    } else {
+        trim_to(&book.title, 100)
+    };
 
     let raw_desc = match description_override {
         Some(s) => s.to_string(),
-        None => render_description(book, chapters),
+        None => render_description(book, chapters, language),
     };
-    let description = trim_to(&append_footer(&raw_desc, footer), 5000);
+    let with_footer = append_footer(&raw_desc, footer);
+    // Belt-and-braces: also drop the hashtag at the end of the
+    // description in case YouTube's Shorts heuristic looks there.
+    let description = trim_to(
+        &if is_short {
+            format!("{}\n\n#Shorts", with_footer.trim_end())
+        } else {
+            with_footer
+        },
+        5000,
+    );
 
     let mut tags: Vec<String> = Vec::new();
     if let Some(g) = book.genre.as_deref().filter(|g| !g.trim().is_empty()) {
@@ -1230,6 +1391,9 @@ fn build_book_metadata(
     tags.push(language.to_string());
     tags.push("audiobook".into());
     tags.push("AidBooks".into());
+    if is_short {
+        tags.push("Shorts".into());
+    }
 
     upload::VideoMetadata {
         snippet: upload::Snippet {
@@ -1253,6 +1417,7 @@ fn build_book_metadata(
 fn build_chapter_metadata(
     book: &DbAudiobook,
     chapter: &DbChapter,
+    total_chapters: u32,
     language: &str,
     privacy: &str,
     footer: Option<&str>,
@@ -1267,17 +1432,19 @@ fn build_chapter_metadata(
     );
     let title = trim_to(&raw_title, 100);
 
+    let labels = crate::i18n::description_labels(language);
+
     let mut desc = String::new();
-    desc.push_str(&format!("From {}.\n\n", book.title.trim()));
+    desc.push_str(&(labels.from_book)(book.title.trim()));
+    desc.push_str("\n\n");
     if let Some(s) = chapter.synopsis.as_deref().filter(|s| !s.trim().is_empty()) {
         desc.push_str(s.trim());
         desc.push_str("\n\n");
     }
-    desc.push_str(&format!(
-        "Chapter {} of {}.\n\nGenerated with AidBooks.\n",
-        chapter.number,
-        book.title.trim()
-    ));
+    desc.push_str(&(labels.chapter_of)(chapter.number as u32, total_chapters));
+    desc.push_str(".\n\n");
+    desc.push_str(labels.generated_with);
+    desc.push('\n');
     let description = trim_to(&append_footer(&desc, footer), 5000);
 
     let mut tags: Vec<String> = Vec::new();
@@ -1304,18 +1471,40 @@ fn build_chapter_metadata(
     }
 }
 
-fn render_description(book: &DbAudiobook, chapters: &[DbChapter]) -> String {
+fn render_description(book: &DbAudiobook, chapters: &[DbChapter], language: &str) -> String {
+    let labels = crate::i18n::description_labels(language);
     let mut s = String::new();
-    if !book.topic.trim().is_empty() {
+
+    // Topic is the user's prompt. It's only persisted in the book's
+    // primary language — including it on a translated upload would mix
+    // languages, so we skip it when publishing a translation.
+    let primary = book.language.as_deref().unwrap_or("en");
+    if primary == language && !book.topic.trim().is_empty() {
         s.push_str(book.topic.trim());
         s.push_str("\n\n");
     }
+
     if let Some(g) = book.genre.as_deref().filter(|g| !g.trim().is_empty()) {
-        s.push_str("Genre: ");
+        s.push_str(labels.genre_label);
+        s.push(' ');
         s.push_str(g);
         s.push_str("\n\n");
     }
-    s.push_str("Chapters:\n");
+
+    // Lead with the translated chapter synopses — that's the actual
+    // book text in the publish language and the most useful context
+    // a YouTube viewer can scan before pressing play.
+    for ch in chapters {
+        if let Some(syn) = ch.synopsis.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            s.push_str(syn);
+            s.push_str("\n\n");
+        }
+    }
+
+    // Chapter listing with timestamps. Titles are already loaded in
+    // the publish language by `load_chapters(audiobook, language)`.
+    s.push_str(labels.chapters_heading);
+    s.push('\n');
     let mut running_ms: u64 = 0;
     for ch in chapters {
         s.push_str(&format!(
@@ -1325,7 +1514,10 @@ fn render_description(book: &DbAudiobook, chapters: &[DbChapter]) -> String {
         ));
         running_ms = running_ms.saturating_add(ch.duration_ms.unwrap_or(0).max(0) as u64);
     }
-    s.push_str("\nGenerated with AidBooks.\n");
+
+    s.push('\n');
+    s.push_str(labels.generated_with);
+    s.push('\n');
     s
 }
 
@@ -1333,21 +1525,26 @@ fn render_playlist_description(
     book: &DbAudiobook,
     override_text: Option<&str>,
     footer: Option<&str>,
+    language: &str,
 ) -> String {
     if let Some(s) = override_text.map(str::trim).filter(|s| !s.is_empty()) {
         return append_footer(s, footer);
     }
+    let labels = crate::i18n::description_labels(language);
     let mut s = String::new();
-    if !book.topic.trim().is_empty() {
+    let primary = book.language.as_deref().unwrap_or("en");
+    if primary == language && !book.topic.trim().is_empty() {
         s.push_str(book.topic.trim());
         s.push_str("\n\n");
     }
     if let Some(g) = book.genre.as_deref().filter(|g| !g.trim().is_empty()) {
-        s.push_str("Genre: ");
+        s.push_str(labels.genre_label);
+        s.push(' ');
         s.push_str(g);
         s.push_str("\n\n");
     }
-    s.push_str("Generated with AidBooks.\n");
+    s.push_str(labels.generated_with);
+    s.push('\n');
     append_footer(&s, footer)
 }
 
@@ -1425,6 +1622,19 @@ struct DbAudiobook {
     topic: String,
     #[serde(default)]
     genre: Option<String>,
+    /// BCP-47 of the language the book was originally generated in.
+    /// `topic` and `title` live in this language; chapter rows in any
+    /// other language are translations. The description builder uses
+    /// this to decide whether the user-supplied topic is safe to
+    /// include verbatim (publish language matches primary) or has to
+    /// be skipped (different language → topic would clash).
+    #[serde(default)]
+    language: Option<String>,
+    /// `true` for YouTube Shorts: vertical 1080×1920 encode and the
+    /// `#Shorts` hashtag appended to the description so the platform
+    /// classifies the upload correctly.
+    #[serde(default)]
+    is_short: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1513,12 +1723,46 @@ async fn find_publication(
     }))
 }
 
+/// Resolve the YouTube playlist this audiobook should publish into via
+/// its podcast assignment. Returns:
+///   * `Ok(Some(id))` — the audiobook is in a podcast that has a synced
+///     YouTube playlist.
+///   * `Ok(None)` — the audiobook isn't in a podcast, or its podcast
+///     hasn't been synced to YouTube yet.
+///
+/// Failures are non-fatal for the publish path; callers fall back to the
+/// per-publication playlist behaviour on `None`.
+async fn load_podcast_playlist(state: &AppState, audiobook_id: &str) -> Result<Option<String>> {
+    #[derive(Debug, Deserialize)]
+    struct Row {
+        #[serde(default)]
+        youtube_playlist_id: Option<String>,
+    }
+    let rows: Vec<Row> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT youtube_playlist_id FROM podcast \
+             WHERE id IN (SELECT VALUE podcast FROM audiobook:`{audiobook_id}` \
+                          WHERE podcast != NONE) LIMIT 1"
+        ))
+        .await
+        .map_err(|e| Error::Database(format!("yt podcast playlist: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("yt podcast playlist (decode): {e}")))?;
+    Ok(rows
+        .into_iter()
+        .next()
+        .and_then(|r| r.youtube_playlist_id)
+        .filter(|s| !s.trim().is_empty()))
+}
+
 async fn load_audiobook(state: &AppState, id: &str) -> Result<DbAudiobook> {
     let rows: Vec<DbAudiobook> = state
         .db()
         .inner()
         .query(format!(
-            "SELECT title, topic, genre FROM audiobook:`{id}`"
+            "SELECT title, topic, genre, language, is_short FROM audiobook:`{id}`"
         ))
         .await
         .map_err(|e| Error::Database(format!("yt load book: {e}")))?
@@ -1574,6 +1818,73 @@ async fn resolve_access_token(state: &AppState, user: &UserId) -> Result<String>
     let resp = oauth::refresh_access(&cfg.youtube_client_id, &cfg.youtube_client_secret, &refresh)
         .await?;
     Ok(resp.access_token)
+}
+
+/// Best-effort: attempt to flip a playlist's `podcastStatus` to
+/// `enabled`. Called from the publish job after the first video has
+/// successfully been added to the podcast's playlist. We swallow all
+/// errors here — the video is already up; the user can re-trigger via
+/// the manual `Sync to YouTube` button if YouTube still rejects this.
+async fn try_designate_podcast(
+    state: &AppState,
+    access_token: &str,
+    playlist_id: &str,
+    book_title: &str,
+    language: &str,
+) {
+    // Re-`PUT` the playlist with `podcastStatus = enabled`. We need a
+    // title to send (YouTube rejects partial PUTs); the audiobook's
+    // title is a serviceable placeholder when we don't have the
+    // podcast's row at hand. The handler-side sync flow always rewrites
+    // these fields with the true podcast title + description on the
+    // user's next save, so transient drift is fine.
+    let title = trim_to(book_title, 150);
+    match playlist::update_playlist(
+        access_token,
+        playlist_id,
+        &title,
+        "",
+        // Publish-time privacy comes from the publication; the playlist
+        // designation just needs *some* valid value here. Public
+        // matches handlers/podcasts.rs::PODCAST_PLAYLIST_PRIVACY.
+        "public",
+        Some(language),
+        true,
+    )
+    .await
+    {
+        Ok(()) => {
+            tracing::info!(
+                playlist_id,
+                "publish_youtube: podcast designation enabled"
+            );
+        }
+        Err(Error::Conflict(msg)) => {
+            // YouTube still considers the playlist ineligible (e.g.
+            // channel not allowed to host podcasts). Log + move on.
+            tracing::warn!(
+                playlist_id,
+                error = %msg,
+                "publish_youtube: podcast designation declined"
+            );
+        }
+        Err(Error::Unauthorized) => {
+            tracing::warn!(
+                playlist_id,
+                "publish_youtube: podcast designation unauthorized"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                playlist_id,
+                error = %e,
+                "publish_youtube: podcast designation failed"
+            );
+        }
+    }
+    // Touch state so the unused-import lint stays quiet on builds where
+    // the helper is the sole consumer of this module path. Cheap noop.
+    let _ = state;
 }
 
 async fn drop_account(state: &AppState, user: &UserId) -> Result<()> {

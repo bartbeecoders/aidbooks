@@ -14,8 +14,9 @@ use crate::handlers::admin::{
     AdminVoiceList, AdminVoiceRow, CreateLlmRequest, OpenRouterModelList, OpenRouterModelRow,
     RevokeSessionsResponse, SystemOverview, TestLlmRequest, TestLlmResponse, TestVoiceRequest,
     TestVoiceResponse, UpdateLlmRequest, UpdateUserRequest, UpdateVoiceRequest,
-    UpsertYoutubeFooterRequest, XaiImageModelList, XaiImageModelRow, XaiModelList, XaiModelRow,
-    YoutubeFooterList, YoutubeFooterRow,
+    AudiobookCategoryList, AudiobookCategoryRow, CreateAudiobookCategoryRequest,
+    UpdateAudiobookCategoryRequest, UpsertYoutubeFooterRequest, XaiImageModelList,
+    XaiImageModelRow, XaiModelList, XaiModelRow, YoutubeFooterList, YoutubeFooterRow,
 };
 use crate::handlers::audiobook::{
     AudiobookCostSummary, AudiobookDetail, AudiobookList, AudiobookSummary, ChapterSummary,
@@ -25,7 +26,9 @@ use crate::handlers::audiobook::{
 use crate::handlers::auth::{
     AuthResponse, LoginRequest, LogoutRequest, RefreshRequest, RegisterRequest,
 };
-use crate::handlers::catalog::{LlmList, VoiceList};
+use crate::handlers::catalog::{
+    AudiobookCategoryName, AudiobookCategoryNameList, LlmList, VoiceList,
+};
 use crate::handlers::health::{DbReadiness, Health, ReadinessReport};
 use crate::handlers::integrations::{
     ApprovePublicationResponse, OauthStartResponse, PublicationList, PublicationRow,
@@ -35,6 +38,10 @@ use crate::handlers::jobs::AudiobookJobList;
 use crate::handlers::me::{MeResponse, UpdateMeRequest};
 use crate::handlers::topic_templates::{
     CreateTopicTemplateRequest, TopicTemplate, TopicTemplateList, UpdateTopicTemplateRequest,
+};
+use crate::handlers::podcasts::{
+    CreatePodcastRequest, PodcastList, PodcastRow, PreviewPodcastImageRequest,
+    PreviewPodcastImageResponse, SyncPodcastResponse, UpdatePodcastRequest,
 };
 use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
 
@@ -103,6 +110,11 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         crate::handlers::admin::list_youtube_footers,
         crate::handlers::admin::upsert_youtube_footer,
         crate::handlers::admin::delete_youtube_footer,
+        crate::handlers::admin::list_audiobook_categories,
+        crate::handlers::admin::create_audiobook_category,
+        crate::handlers::admin::update_audiobook_category,
+        crate::handlers::admin::delete_audiobook_category,
+        crate::handlers::catalog::list_audiobook_categories,
         // --- Phase 8: integrations (YouTube) ---
         crate::handlers::integrations::youtube_oauth_start,
         crate::handlers::integrations::youtube_oauth_callback,
@@ -113,6 +125,15 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         crate::handlers::integrations::approve_publication,
         crate::handlers::integrations::cancel_publication,
         crate::handlers::integrations::preview_publication,
+        // --- Phase 11: podcasts ---
+        crate::handlers::podcasts::list,
+        crate::handlers::podcasts::create,
+        crate::handlers::podcasts::get_one,
+        crate::handlers::podcasts::patch,
+        crate::handlers::podcasts::delete,
+        crate::handlers::podcasts::preview_image,
+        crate::handlers::podcasts::image,
+        crate::handlers::podcasts::sync_youtube,
         // --- Phase 9: topic templates ---
         crate::handlers::topic_templates::list_public,
         crate::handlers::topic_templates::list_admin,
@@ -202,6 +223,12 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         YoutubeFooterRow,
         YoutubeFooterList,
         UpsertYoutubeFooterRequest,
+        AudiobookCategoryRow,
+        AudiobookCategoryList,
+        CreateAudiobookCategoryRequest,
+        UpdateAudiobookCategoryRequest,
+        AudiobookCategoryName,
+        AudiobookCategoryNameList,
         // integrations (YouTube)
         OauthStartResponse,
         YoutubeAccountStatus,
@@ -216,6 +243,14 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         TopicTemplateList,
         CreateTopicTemplateRequest,
         UpdateTopicTemplateRequest,
+        // podcasts
+        PodcastRow,
+        PodcastList,
+        CreatePodcastRequest,
+        UpdatePodcastRequest,
+        PreviewPodcastImageRequest,
+        PreviewPodcastImageResponse,
+        SyncPodcastResponse,
     )),
     modifiers(&SecurityAddon),
     tags(
@@ -228,6 +263,7 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         (name = "jobs", description = "Durable job inspection (WebSocket at /ws/audiobook/:id)."),
         (name = "admin", description = "Admin-only: runtime-editable LLMs, voices, users, jobs."),
         (name = "integrations", description = "Third-party integrations (YouTube publishing)."),
+        (name = "podcasts", description = "Podcasts: owner-scoped audiobook groupings with AI cover art."),
     ),
 )]
 pub struct ApiDoc;

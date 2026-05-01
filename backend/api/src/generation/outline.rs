@@ -23,6 +23,10 @@ struct OutlineJson {
     #[serde(default)]
     #[allow(dead_code)]
     subtitle: String,
+    /// X.ai TTS speech-tag palette the chapter writer should embed inline.
+    /// Filtered to the supported set in `sanitize_tags` before persisting.
+    #[serde(default)]
+    tags: Vec<String>,
     chapters: Vec<OutlineChapter>,
 }
 
@@ -40,6 +44,11 @@ const OUTLINE_MODEL_FALLBACK_HINT: &str = "outline LLM produced invalid JSON";
 
 /// Run the outline step. Mutates `audiobook:<id>` with title and the
 /// generated chapter rows on success.
+///
+/// `is_short`: when `true`, override the chapter count + per-chapter word
+/// budget so the result fits inside a 90-second YouTube Short — a single
+/// chapter capped at 225 words (~1.5 minutes of narration at 150 wpm).
+/// The `length` preset is ignored in that case.
 pub async fn run(
     state: &AppState,
     user: &UserId,
@@ -48,15 +57,32 @@ pub async fn run(
     length: AudiobookLength,
     genre: &str,
     language: &str,
+    is_short: bool,
 ) -> Result<()> {
     set_audiobook_status(state, audiobook_id, "outline_pending").await?;
 
+    // Shorts: one tiny chapter, ≤ 90 s of narration. 150 wpm × 1.5 min
+    // ≈ 225 words. Keeps the budget well under YouTube's 60 s Short
+    // baseline even at slower TTS pacing.
+    let (chapter_count, words_per_chapter) = if is_short {
+        (1u32, SHORT_WORDS_PER_CHAPTER)
+    } else {
+        (length.chapter_count(), length.words_per_chapter())
+    };
+
     let mut vars: HashMap<&str, String> = HashMap::new();
     vars.insert("topic", topic.to_string());
-    vars.insert("length", format!("{length:?}").to_lowercase());
+    vars.insert(
+        "length",
+        if is_short {
+            "short_form".to_string()
+        } else {
+            format!("{length:?}").to_lowercase()
+        },
+    );
     vars.insert("genre", genre.to_string());
-    vars.insert("chapter_count", length.chapter_count().to_string());
-    vars.insert("words_per_chapter", length.words_per_chapter().to_string());
+    vars.insert("chapter_count", chapter_count.to_string());
+    vars.insert("words_per_chapter", words_per_chapter.to_string());
     vars.insert("language", crate::i18n::label(language).to_string());
 
     let rendered = prompts::render(state, PromptRole::Outline, &vars).await?;
@@ -115,7 +141,7 @@ pub async fn run(
         }
     };
 
-    persist_outline(state, audiobook_id, &outline, length, language).await?;
+    persist_outline(state, audiobook_id, &outline, length, language, is_short).await?;
     set_audiobook_status(state, audiobook_id, "outline_ready").await?;
 
     info!(
@@ -132,6 +158,54 @@ fn parse_outline(content: &str) -> std::result::Result<OutlineJson, String> {
     // Some models wrap JSON in ```json ...``` despite being asked not to.
     let cleaned = strip_code_fences(content);
     serde_json::from_str::<OutlineJson>(cleaned).map_err(|e| e.to_string())
+}
+
+/// Filter LLM-suggested speech tags down to the X.ai-supported set, dedupe
+/// in input order, and cap length. Anything not on the allowlist is dropped
+/// silently — the chapter prompt still works without tags, so a sloppy
+/// outline shouldn't abort the run.
+fn sanitize_tags(raw: &[String]) -> Vec<String> {
+    const ALLOWED: &[&str] = &[
+        // Inline (single-point).
+        "[pause]",
+        "[long-pause]",
+        "[laugh]",
+        "[cry]",
+        "[cough]",
+        "[throat-clear]",
+        "[inhale]",
+        "[exhale]",
+        // Wrapping — store the opening form only; the chapter writer pairs
+        // it with the matching `</tag>` itself.
+        "<soft>",
+        "<loud>",
+        "<high>",
+        "<low>",
+        "<fast>",
+        "<slow>",
+        "<whisper>",
+        "<singing>",
+    ];
+    let mut out: Vec<String> = Vec::new();
+    for raw_tag in raw {
+        let t = raw_tag.trim().to_lowercase();
+        if t.is_empty() {
+            continue;
+        }
+        // Tolerate models that returned a closing wrapper form.
+        let normalized = if let Some(inner) = t.strip_prefix("</").and_then(|s| s.strip_suffix('>')) {
+            format!("<{inner}>")
+        } else {
+            t
+        };
+        if ALLOWED.contains(&normalized.as_str()) && !out.contains(&normalized) {
+            out.push(normalized);
+        }
+        if out.len() >= 12 {
+            break;
+        }
+    }
+    out
 }
 
 fn strip_code_fences(s: &str) -> &str {
@@ -165,21 +239,28 @@ async fn set_audiobook_status(state: &AppState, audiobook_id: &str, status: &str
     Ok(())
 }
 
+/// Word budget used for YouTube Short outlines. ~150 wpm × 1.5 minutes.
+/// Kept private — callers go through `run(..., is_short = true)`.
+const SHORT_WORDS_PER_CHAPTER: u32 = 225;
+
 async fn persist_outline(
     state: &AppState,
     audiobook_id: &str,
     outline: &OutlineJson,
     length: AudiobookLength,
     language: &str,
+    is_short: bool,
 ) -> Result<()> {
-    // Replace title.
+    let tags = sanitize_tags(&outline.tags);
+    // Replace title + speech-tag palette in one round-trip.
     state
         .db()
         .inner()
         .query(format!(
-            "UPDATE audiobook:`{audiobook_id}` SET title = $title"
+            "UPDATE audiobook:`{audiobook_id}` SET title = $title, tags = $tags"
         ))
         .bind(("title", outline.title.clone()))
+        .bind(("tags", tags))
         .await
         .map_err(|e| Error::Database(format!("persist title: {e}")))?
         .check()
@@ -226,8 +307,13 @@ async fn persist_outline(
             .bind(("synopsis", ch.synopsis.clone()))
             .bind((
                 "target_words",
-                ch.target_words
-                    .unwrap_or_else(|| length.words_per_chapter()) as i64,
+                ch.target_words.unwrap_or_else(|| {
+                    if is_short {
+                        SHORT_WORDS_PER_CHAPTER
+                    } else {
+                        length.words_per_chapter()
+                    }
+                }) as i64,
             ))
             .bind(("language", language.to_string()))
             .await

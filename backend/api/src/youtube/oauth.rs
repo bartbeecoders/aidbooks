@@ -24,7 +24,10 @@ const CHANNELS_URL: &str = "https://www.googleapis.com/youtube/v3/channels";
 
 // Three scopes cover the full publish surface:
 //   * `youtube.upload`   — video uploads (resumable upload session).
-//   * `youtube`          — playlist writes (`/playlists`, `/playlistItems`).
+//   * `youtube`          — playlist + podcast writes (`/playlists`,
+//     `/playlistItems`, including `status.podcastStatus`). Marking a
+//     playlist as a podcast also requires the broader `youtube` scope —
+//     `youtube.upload` alone is not enough.
 //   * `youtube.force-ssl`— captions writes (`/captions`); Google requires
 //     this exact scope for the captions endpoint.
 // `youtube.upload` stays listed explicitly so the consent screen names the

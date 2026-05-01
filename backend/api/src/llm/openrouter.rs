@@ -712,6 +712,9 @@ fn mock_outline(prompt: &str) -> String {
     serde_json::to_string(&json!({
         "title": format!("A Short Listen About {topic}"),
         "subtitle": "",
+        // Sample X.ai TTS speech-tag palette so dev runs without a real
+        // outline LLM still exercise the inline-tag path through to TTS.
+        "tags": ["[pause]", "<soft>", "<slow>"],
         "chapters": chapters,
     }))
     .unwrap_or_else(|_| "{}".into())

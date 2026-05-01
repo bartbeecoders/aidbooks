@@ -159,6 +159,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/voices", get(handlers::catalog::list_voices))
         .route("/llms", get(handlers::catalog::list_llms))
+        .route(
+            "/audiobook-categories",
+            get(handlers::catalog::list_audiobook_categories),
+        )
         // --- Phase 7: admin ---
         .route("/admin/system", get(handlers::admin::system_overview))
         .route(
@@ -221,6 +225,16 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(handlers::admin::delete_youtube_footer),
         )
         .route(
+            "/admin/audiobook-categories",
+            get(handlers::admin::list_audiobook_categories)
+                .post(handlers::admin::create_audiobook_category),
+        )
+        .route(
+            "/admin/audiobook-categories/:id",
+            axum::routing::patch(handlers::admin::update_audiobook_category)
+                .delete(handlers::admin::delete_audiobook_category),
+        )
+        .route(
             "/admin/topic-templates",
             get(handlers::topic_templates::list_admin)
                 .post(handlers::topic_templates::create),
@@ -229,6 +243,29 @@ pub fn build_router(state: AppState) -> Router {
             "/admin/topic-templates/:id",
             axum::routing::patch(handlers::topic_templates::patch)
                 .delete(handlers::topic_templates::delete),
+        )
+        // --- Phase 11: podcasts ---
+        .route(
+            "/podcasts",
+            get(handlers::podcasts::list).post(handlers::podcasts::create),
+        )
+        .route(
+            "/podcasts/preview-image",
+            post(handlers::podcasts::preview_image),
+        )
+        .route(
+            "/podcasts/:id",
+            get(handlers::podcasts::get_one)
+                .patch(handlers::podcasts::patch)
+                .delete(handlers::podcasts::delete),
+        )
+        .route(
+            "/podcasts/:id/image",
+            get(handlers::podcasts::image),
+        )
+        .route(
+            "/podcasts/:id/sync-youtube",
+            post(handlers::podcasts::sync_youtube),
         )
         // --- Phase 8: integrations (YouTube publishing) ---
         .route(

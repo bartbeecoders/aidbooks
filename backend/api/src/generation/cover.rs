@@ -15,8 +15,8 @@ use crate::llm::{pick_llm_for_role, ChatMessage, ChatRequest, ChatResponse};
 use crate::state::AppState;
 
 const SYSTEM: &str = "You generate audiobook cover artwork. Produce a single \
-square cover image. No text, no captions, no chapter numbers — purely \
-illustrative. Match the requested visual style precisely.";
+cover image in the requested aspect ratio. No text, no captions, no chapter \
+numbers — purely illustrative. Match the requested visual style precisely.";
 
 /// Default style applied when the caller doesn't specify one. Preserves the
 /// pre-existing behaviour (broadly cinematic compositions) for older books
@@ -32,6 +32,10 @@ pub const DEFAULT_ART_STYLE: &str = "cinematic";
 ///
 /// `user` and `audiobook_id` are persisted with the cost log; `audiobook_id`
 /// is `None` for the stateless `/cover-art/preview` path.
+///
+/// `is_short`: when true, the prompt requests a vertical 9:16 portrait
+/// composition for YouTube Shorts. Otherwise the prompt asks for a
+/// 1:1 square (the default thumbnail aspect).
 #[allow(clippy::too_many_arguments)]
 pub async fn generate(
     state: &AppState,
@@ -41,6 +45,7 @@ pub async fn generate(
     genre: Option<&str>,
     art_style: Option<&str>,
     llm_id_override: Option<&str>,
+    is_short: bool,
 ) -> Result<Vec<u8>> {
     let topic = topic.trim();
     if topic.is_empty() {
@@ -48,7 +53,7 @@ pub async fn generate(
     }
 
     let (llm_id, provider, model) = resolve_model(state, llm_id_override).await?;
-    let prompt = build_prompt(topic, genre, art_style);
+    let prompt = build_prompt(topic, genre, art_style, is_short);
     request_image(
         state,
         user,
@@ -60,6 +65,56 @@ pub async fn generate(
         &prompt,
     )
     .await
+}
+
+/// Generate a podcast-show cover image from a title + description.
+/// Returns the raw image bytes (typically PNG). Logs the generation event
+/// against the user (no audiobook id, since podcasts are owner-scoped).
+pub async fn generate_podcast(
+    state: &AppState,
+    user: &UserId,
+    title: &str,
+    description: Option<&str>,
+    llm_id_override: Option<&str>,
+) -> Result<Vec<u8>> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(Error::Validation("title must not be empty".into()));
+    }
+    let (llm_id, provider, model) = resolve_model(state, llm_id_override).await?;
+    let prompt = build_podcast_prompt(title, description);
+    request_image(
+        state,
+        user,
+        None,
+        &llm_id,
+        PromptRole::Cover,
+        &provider,
+        model,
+        &prompt,
+    )
+    .await
+}
+
+fn build_podcast_prompt(title: &str, description: Option<&str>) -> String {
+    let desc = description
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("");
+    let desc_line = if desc.is_empty() {
+        String::new()
+    } else {
+        format!("Show description: {desc}\n")
+    };
+    format!(
+        "Podcast show artwork.\n\
+         Show title: {title}\n\
+         {desc_line}\
+         Compose a striking, recognisable square cover suitable for a \
+         podcast platform thumbnail. Strong central focal point, bold \
+         colours, high contrast. No text, no captions, no logos, no \
+         numbers — purely illustrative."
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -76,6 +131,7 @@ pub async fn generate_chapter_art(
     chapter_title: &str,
     synopsis: Option<&str>,
     body_md: Option<&str>,
+    is_short: bool,
 ) -> Result<Vec<u8>> {
     let (llm_id, provider, model) = resolve_model(state, llm_id_override).await?;
     let prompt = build_chapter_prompt(
@@ -87,6 +143,7 @@ pub async fn generate_chapter_art(
         chapter_title,
         synopsis,
         body_md,
+        is_short,
     );
     request_image(
         state,
@@ -338,19 +395,25 @@ async fn lookup_cost_per_image(state: &AppState, llm_id: &str) -> Option<f64> {
     rows.into_iter().next().map(|r| r.cost_per_megapixel)
 }
 
-fn build_prompt(topic: &str, genre: Option<&str>, art_style: Option<&str>) -> String {
+fn build_prompt(
+    topic: &str,
+    genre: Option<&str>,
+    art_style: Option<&str>,
+    is_short: bool,
+) -> String {
     let style = resolve_style(art_style);
     let genre_line = match genre.map(str::trim).filter(|g| !g.is_empty()) {
         Some(g) => format!("Genre: {g}\n"),
         None => String::new(),
     };
+    let format_line = aspect_clause(is_short);
     format!(
         "Audiobook cover artwork.\n\
          Topic: {topic}\n\
          {genre_line}\
          Visual style: {style}\n\
          Compose a striking, atmospheric image that captures the mood, \
-         executed entirely in the requested visual style. Square format. \
+         executed entirely in the requested visual style. {format_line} \
          No lettering of any kind."
     )
 }
@@ -365,23 +428,39 @@ fn build_chapter_prompt(
     chapter_title: &str,
     synopsis: Option<&str>,
     body_md: Option<&str>,
+    is_short: bool,
 ) -> String {
     let excerpt = body_md
         .map(|b| b.chars().take(1200).collect::<String>())
         .filter(|b| !b.trim().is_empty());
     let style = resolve_style(art_style);
+    let format_line = aspect_clause(is_short);
     format!(
         "Audiobook chapter artwork.\n\
          Book title: {book_title}\nBook topic: {book_topic}\nGenre: {genre}\n\
          Visual style: {style}\n\
          Chapter {chapter_number}: {chapter_title}\nSynopsis: {synopsis}\nExcerpt: {excerpt}\n\
          Compose a single illustration for this chapter, executed entirely \
-         in the requested visual style. Square format. No lettering, no \
+         in the requested visual style. {format_line} No lettering, no \
          captions, no numbers.",
         genre = genre.unwrap_or("any"),
         synopsis = synopsis.unwrap_or(""),
         excerpt = excerpt.as_deref().unwrap_or(""),
     )
+}
+
+/// Aspect-ratio directive embedded in image prompts. Most multimodal
+/// image models honour an explicit aspect ratio in the prompt; we prefer
+/// 9:16 portrait for YouTube Shorts and 1:1 square for normal covers.
+fn aspect_clause(is_short: bool) -> &'static str {
+    if is_short {
+        "Vertical 9:16 portrait format (1080×1920) suitable for a YouTube \
+         Short — compose every important element in the central column \
+         and leave generous safe-zone padding at top and bottom for UI \
+         overlays."
+    } else {
+        "Square 1:1 format."
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

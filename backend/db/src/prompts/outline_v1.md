@@ -16,6 +16,7 @@ Required shape:
 {
   "title": "<short, evocative title — 2 to 8 words>",
   "subtitle": "<single-sentence teaser, optional — use empty string if none>",
+  "tags": ["<x.ai speech tag>", "..."],
   "chapters": [
     {
       "number": 1,
@@ -31,3 +32,10 @@ Constraints:
 - Chapters should flow in a logical, listenable order — no major repetition, no loose threads.
 - Keep titles readable aloud — avoid special characters beyond commas, colons, and dashes.
 - Avoid real individuals' private lives. No hate, slurs, or sexual content involving minors.
+
+Speech tags ("tags" field):
+- Pick 3 to 8 X.ai TTS speech tags that fit the book's tone and genre. The chapter writer will embed these inline in the prose so the narrator delivers them.
+- Inline tags (insert at a single point): "[pause]", "[long-pause]", "[laugh]", "[cry]", "[cough]", "[throat-clear]", "[inhale]", "[exhale]".
+- Wrapping tags (wrap a phrase, e.g. "<whisper>like this</whisper>"): "<soft>", "<loud>", "<high>", "<low>", "<fast>", "<slow>", "<whisper>", "<singing>".
+- Output the tags exactly as shown above, including the brackets/angle-brackets. Wrapping tags go in as the bare opening form (e.g. "<whisper>") — the chapter writer pairs them with the matching closer.
+- Choose tags that match the genre: a thriller might use "[pause]", "<whisper>", "<fast>"; a children's bedtime story might use "<soft>", "<slow>", "[long-pause]". Don't pick tags that clash with the tone.

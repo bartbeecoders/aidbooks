@@ -1728,6 +1728,309 @@ fn is_valid_lang(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
+// =========================================================================
+// Audiobook category catalog (admin-curated)
+// =========================================================================
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AudiobookCategoryRow {
+    pub id: String,
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    /// Number of audiobooks currently using this category.
+    pub usage_count: u32,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AudiobookCategoryList {
+    pub items: Vec<AudiobookCategoryRow>,
+}
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct CreateAudiobookCategoryRequest {
+    #[validate(length(min = 1, max = 60))]
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct UpdateAudiobookCategoryRequest {
+    #[validate(length(min = 1, max = 60))]
+    pub name: String,
+}
+
+#[utoipa::path(
+    get, path = "/admin/audiobook-categories", tag = "admin",
+    responses(
+        (status = 200, body = AudiobookCategoryList),
+        (status = 403)
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_audiobook_categories(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+) -> ApiResult<Json<AudiobookCategoryList>> {
+    Ok(Json(AudiobookCategoryList {
+        items: load_categories(&state).await?,
+    }))
+}
+
+#[utoipa::path(
+    post, path = "/admin/audiobook-categories", tag = "admin",
+    request_body = CreateAudiobookCategoryRequest,
+    responses(
+        (status = 201, body = AudiobookCategoryRow),
+        (status = 400, description = "Validation failed"),
+        (status = 409, description = "Name already exists"),
+        (status = 403)
+    ),
+    security(("bearer" = []))
+)]
+pub async fn create_audiobook_category(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    Json(body): Json<CreateAudiobookCategoryRequest>,
+) -> ApiResult<(StatusCode, Json<AudiobookCategoryRow>)> {
+    body.validate().map_err(|e| Error::Validation(e.to_string()))?;
+    let name = body.name.trim().to_string();
+    if name.is_empty() {
+        return Err(Error::Validation("name must not be empty".into()).into());
+    }
+    if category_exists(&state, &name).await? {
+        return Err(Error::Conflict(format!("category `{name}` already exists")).into());
+    }
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    state
+        .db()
+        .inner()
+        .query(format!(
+            r#"CREATE audiobook_category:`{id}` CONTENT {{
+                name: $name,
+                created_at: time::now(),
+                updated_at: time::now()
+            }}"#
+        ))
+        .bind(("name", name.clone()))
+        .await
+        .map_err(|e| Error::Database(format!("create category: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("create category: {e}")))?;
+    let row = read_category(&state, &id).await?;
+    Ok((StatusCode::CREATED, Json(row)))
+}
+
+#[utoipa::path(
+    patch, path = "/admin/audiobook-categories/{id}", tag = "admin",
+    params(("id" = String, Path)),
+    request_body = UpdateAudiobookCategoryRequest,
+    responses(
+        (status = 200, body = AudiobookCategoryRow),
+        (status = 400, description = "Validation failed"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Name already exists"),
+        (status = 403)
+    ),
+    security(("bearer" = []))
+)]
+pub async fn update_audiobook_category(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateAudiobookCategoryRequest>,
+) -> ApiResult<Json<AudiobookCategoryRow>> {
+    body.validate().map_err(|e| Error::Validation(e.to_string()))?;
+    if !is_safe_record_id(&id) {
+        return Err(Error::Validation("invalid id".into()).into());
+    }
+    let new_name = body.name.trim().to_string();
+    if new_name.is_empty() {
+        return Err(Error::Validation("name must not be empty".into()).into());
+    }
+    let old_name = read_category_name(&state, &id).await?;
+    if old_name == new_name {
+        return Ok(Json(read_category(&state, &id).await?));
+    }
+    if category_exists(&state, &new_name).await? {
+        return Err(Error::Conflict(format!("category `{new_name}` already exists")).into());
+    }
+    state
+        .db()
+        .inner()
+        .query(format!(
+            "UPDATE audiobook_category:`{id}` SET name = $name, updated_at = time::now()"
+        ))
+        .bind(("name", new_name.clone()))
+        .await
+        .map_err(|e| Error::Database(format!("rename category: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("rename category: {e}")))?;
+    // Cascade: every audiobook that referenced the old name moves to the
+    // new one. Without this, a rename would silently orphan books.
+    state
+        .db()
+        .inner()
+        .query("UPDATE audiobook SET category = $new WHERE category = $old")
+        .bind(("old", old_name))
+        .bind(("new", new_name.clone()))
+        .await
+        .map_err(|e| Error::Database(format!("cascade category rename: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("cascade category rename: {e}")))?;
+    Ok(Json(read_category(&state, &id).await?))
+}
+
+#[utoipa::path(
+    delete, path = "/admin/audiobook-categories/{id}", tag = "admin",
+    params(("id" = String, Path)),
+    responses(
+        (status = 204),
+        (status = 404, description = "Not found"),
+        (status = 403)
+    ),
+    security(("bearer" = []))
+)]
+pub async fn delete_audiobook_category(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    if !is_safe_record_id(&id) {
+        return Err(Error::Validation("invalid id".into()).into());
+    }
+    let name = read_category_name(&state, &id).await?;
+    // Cascade: clear `category` on any audiobook that referenced this row
+    // — they move to "Uncategorized" rather than vanishing from the view.
+    state
+        .db()
+        .inner()
+        .query("UPDATE audiobook SET category = NONE WHERE category = $name")
+        .bind(("name", name))
+        .await
+        .map_err(|e| Error::Database(format!("cascade category delete: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("cascade category delete: {e}")))?;
+    state
+        .db()
+        .inner()
+        .query(format!("DELETE audiobook_category:`{id}`"))
+        .await
+        .map_err(|e| Error::Database(format!("delete category: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("delete category: {e}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Helper: load all categories with usage counts.
+pub(crate) async fn load_categories(state: &AppState) -> Result<Vec<AudiobookCategoryRow>> {
+    #[derive(Deserialize)]
+    struct Row {
+        id: Thing,
+        name: String,
+        created_at: DateTime<Utc>,
+        updated_at: DateTime<Utc>,
+    }
+    let rows: Vec<Row> = state
+        .db()
+        .inner()
+        .query("SELECT id, name, created_at, updated_at FROM audiobook_category ORDER BY name ASC")
+        .await
+        .map_err(|e| Error::Database(format!("list categories: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("list categories (decode): {e}")))?;
+
+    // One pass over `audiobook` to count usage per category. Aggregating
+    // in Rust beats running N counts when the catalog has a handful of
+    // entries; the table is small.
+    #[derive(Deserialize)]
+    struct UsageRow {
+        category: Option<String>,
+    }
+    let usage_rows: Vec<UsageRow> = state
+        .db()
+        .inner()
+        .query("SELECT category FROM audiobook")
+        .await
+        .map_err(|e| Error::Database(format!("count categories: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("count categories (decode): {e}")))?;
+    let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for u in usage_rows {
+        if let Some(c) = u.category.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            *counts.entry(c.to_string()).or_default() += 1;
+        }
+    }
+
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let id = r.id.id.to_raw();
+            let usage_count = counts.get(&r.name).copied().unwrap_or(0);
+            AudiobookCategoryRow {
+                id,
+                name: r.name,
+                created_at: r.created_at,
+                updated_at: r.updated_at,
+                usage_count,
+            }
+        })
+        .collect())
+}
+
+async fn category_exists(state: &AppState, name: &str) -> Result<bool> {
+    #[derive(Deserialize)]
+    struct Row {
+        #[allow(dead_code)]
+        name: String,
+    }
+    let rows: Vec<Row> = state
+        .db()
+        .inner()
+        .query("SELECT name FROM audiobook_category WHERE name = $n LIMIT 1")
+        .bind(("n", name.to_string()))
+        .await
+        .map_err(|e| Error::Database(format!("category exists: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("category exists (decode): {e}")))?;
+    Ok(!rows.is_empty())
+}
+
+async fn read_category(state: &AppState, id: &str) -> Result<AudiobookCategoryRow> {
+    let all = load_categories(state).await?;
+    all.into_iter()
+        .find(|r| r.id == id)
+        .ok_or_else(|| Error::NotFound {
+            resource: format!("audiobook_category:{id}"),
+        })
+}
+
+async fn read_category_name(state: &AppState, id: &str) -> Result<String> {
+    #[derive(Deserialize)]
+    struct Row {
+        name: String,
+    }
+    let rows: Vec<Row> = state
+        .db()
+        .inner()
+        .query(format!("SELECT name FROM audiobook_category:`{id}`"))
+        .await
+        .map_err(|e| Error::Database(format!("read category: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("read category (decode): {e}")))?;
+    rows.into_iter().next().map(|r| r.name).ok_or_else(|| Error::NotFound {
+        resource: format!("audiobook_category:{id}"),
+    })
+}
+
+/// SurrealDB record-id charset filter — matches what `is_valid_llm_id`
+/// uses elsewhere. Keeps embedded `audiobook_category:`<id>`` injection-safe.
+fn is_safe_record_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
 /// Encode PCM i16 mono to an in-memory WAV blob using the same `hound`
 /// spec the on-disk chapter writer uses. Kept inline (rather than added to
 /// the `audio` module) because the rest of the pipeline never needs the

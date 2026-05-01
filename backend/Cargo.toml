@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["api", "core", "db", "jobs"]
+members = ["api", "core", "db", "jobs", "mcp"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,7 +10,7 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "process", "io-util", "fs"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "process", "io-util", "io-std", "fs"] }
 axum = "0.7"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip", "timeout", "request-id", "util"] }
@@ -50,6 +50,7 @@ tokio-tungstenite = { version = "0.24", default-features = false, features = ["c
 hound = "3"
 futures-util = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 # added in Phase 8 (YouTube publishing): AEAD for refresh-token storage,
 # percent-encoding for OAuth URL building.

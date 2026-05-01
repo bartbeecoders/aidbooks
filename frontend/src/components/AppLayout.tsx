@@ -24,13 +24,12 @@ export function AppLayout(): JSX.Element {
   return (
     <div className="min-h-screen">
       <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-3">
+        <div className="mx-auto flex max-w-[1600px] items-center justify-between px-6 py-3">
           <Link to="/app" className="text-lg font-semibold tracking-tight">
             ListenAI
           </Link>
           <nav className="flex items-center gap-2 text-sm">
             <NavItem to="/app">Library</NavItem>
-            <NavItem to="/app/new">New</NavItem>
             <NavItem to="/app/settings">Settings</NavItem>
             {user?.role === "admin" && <NavItem to="/admin">Admin</NavItem>}
             <div className="mx-3 h-5 w-px bg-slate-800" />
@@ -48,7 +47,7 @@ export function AppLayout(): JSX.Element {
           </nav>
         </div>
       </header>
-      <main className="mx-auto max-w-5xl px-6 py-8">
+      <main className="mx-auto max-w-[1600px] px-6 py-8">
         <Outlet />
       </main>
     </div>

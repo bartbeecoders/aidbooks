@@ -345,7 +345,7 @@ pub async fn publish_youtube(
             Error::Validation("privacy_status must be private/unlisted/public".into()).into(),
         );
     }
-    let mode = body
+    let mut mode = body
         .mode
         .as_deref()
         .map(str::trim)
@@ -359,6 +359,13 @@ pub async fn publish_youtube(
 
     // Ownership + readiness checks.
     assert_owner(&state, &audiobook_id, &user.id).await?;
+
+    // Shorts always upload as a single vertical clip — silently
+    // override the request rather than error out so a stale UI or
+    // older client can't accidentally land a Short in playlist mode.
+    if load_audiobook_is_short(&state, &audiobook_id).await? {
+        mode = "single".to_string();
+    }
     if !language_ready_for_publish(&state, &audiobook_id, language).await? {
         return Err(Error::Conflict(format!(
             "language `{language}` is not fully narrated yet"
@@ -1064,6 +1071,33 @@ async fn assert_owner(state: &AppState, audiobook_id: &str, user: &UserId) -> Re
         });
     }
     Ok(())
+}
+
+/// Read the `is_short` flag off `audiobook:<id>`. Defaults to `false`
+/// when the field is absent (older rows pre-migration 0031). Used by
+/// the publish handler to clamp Shorts to single-video mode regardless
+/// of what the request asked for.
+async fn load_audiobook_is_short(state: &AppState, audiobook_id: &str) -> Result<bool> {
+    #[derive(Debug, Deserialize)]
+    struct Row {
+        #[serde(default)]
+        is_short: Option<bool>,
+    }
+    let rows: Vec<Row> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT is_short FROM audiobook:`{audiobook_id}`"
+        ))
+        .await
+        .map_err(|e| Error::Database(format!("yt pub is_short: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("yt pub is_short (decode): {e}")))?;
+    Ok(rows
+        .into_iter()
+        .next()
+        .and_then(|r| r.is_short)
+        .unwrap_or(false))
 }
 
 async fn language_ready_for_publish(

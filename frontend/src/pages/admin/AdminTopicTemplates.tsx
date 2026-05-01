@@ -165,6 +165,7 @@ export function AdminTopicTemplates(): JSX.Element {
 
 function DefaultsBadges({ row }: { row: TopicTemplate }): JSX.Element {
   const items: string[] = [];
+  if (row.is_short) items.push("YouTube Short");
   if (row.length) items.push(row.length);
   if (row.genre) items.push(row.genre);
   if (row.language) items.push(row.language);
@@ -203,6 +204,7 @@ function TemplateDialog({
   const [language, setLanguage] = useState<string>(initial?.language ?? "");
   const [sortOrder, setSortOrder] = useState<number>(initial?.sort_order ?? 0);
   const [enabled, setEnabled] = useState<boolean>(initial?.enabled ?? true);
+  const [isShort, setIsShort] = useState<boolean>(initial?.is_short ?? false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -223,6 +225,7 @@ function TemplateDialog({
           language: language || null,
           sort_order: sortOrder,
           enabled,
+          is_short: isShort,
         };
         return admin.topicTemplates.create(body);
       } else {
@@ -235,6 +238,7 @@ function TemplateDialog({
           language: language,
           sort_order: sortOrder,
           enabled,
+          is_short: isShort,
         };
         return admin.topicTemplates.patch(initial!.id, body);
       }
@@ -339,6 +343,17 @@ function TemplateDialog({
                 className="h-4 w-4 cursor-pointer accent-sky-500"
               />
               {enabled ? "Visible to users" : "Hidden from users"}
+            </label>
+          </Labelled>
+          <Labelled label="YouTube Short" hint="Single ≤ 90 s vertical clip">
+            <label className="mt-1 inline-flex cursor-pointer items-center gap-2 text-sm text-slate-200">
+              <input
+                type="checkbox"
+                checked={isShort}
+                onChange={(e) => setIsShort(e.target.checked)}
+                className="h-4 w-4 cursor-pointer accent-rose-500"
+              />
+              {isShort ? "Short by default" : "Full audiobook"}
             </label>
           </Labelled>
         </div>

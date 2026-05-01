@@ -8,6 +8,7 @@ import {
   coverImageUrl,
   integrations,
   jobs as jobsApi,
+  podcasts as podcastsApi,
   publicationPreviewUrl,
   ApiError,
 } from "../api";
@@ -16,6 +17,7 @@ import type {
   ChapterSummary,
   JobSnapshot,
   Llm,
+  PodcastRow,
   PublicationRow,
   Voice,
 } from "../api";
@@ -100,6 +102,30 @@ export function BookDetail(): JSX.Element {
     mutationFn: (next: string) =>
       audiobooks.patch(id!, { cover_llm_id: next }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["audiobook", id] }),
+  });
+  const setCategory = useMutation({
+    mutationFn: (next: string) => audiobooks.patch(id!, { category: next }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["audiobook", id] });
+      // The library list groups by category, so refresh it too.
+      qc.invalidateQueries({ queryKey: ["audiobooks"] });
+    },
+  });
+  const setPodcast = useMutation({
+    mutationFn: (next: string) => audiobooks.patch(id!, { podcast_id: next }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["audiobook", id] });
+      qc.invalidateQueries({ queryKey: ["audiobooks"] });
+      qc.invalidateQueries({ queryKey: ["podcasts"] });
+    },
+  });
+  const categoriesQuery = useQuery({
+    queryKey: ["audiobook-categories"],
+    queryFn: () => catalog.audiobookCategories(),
+  });
+  const podcastsQuery = useQuery({
+    queryKey: ["podcasts"],
+    queryFn: () => podcastsApi.list(),
   });
   const llmsQuery = useQuery({
     queryKey: ["llms"],
@@ -289,6 +315,18 @@ export function BookDetail(): JSX.Element {
             >
               🎙 {voiceLabel}
             </button>
+            <CategoryPicker
+              current={data.category ?? null}
+              options={categoriesQuery.data?.items.map((c) => c.name) ?? []}
+              onChange={(next) => setCategory.mutate(next)}
+              saving={setCategory.isPending}
+            />
+            <PodcastPicker
+              current={data.podcast_id ?? null}
+              options={podcastsQuery.data?.items ?? []}
+              onChange={(next) => setPodcast.mutate(next)}
+              saving={setPodcast.isPending}
+            />
             <CostBadge data={costsQuery.data} />
             <ConnectionBadge readyState={progress.readyState} />
           </div>
@@ -335,6 +373,8 @@ export function BookDetail(): JSX.Element {
             : "Could not delete audiobook"}
         </p>
       )}
+
+      <SpeechTagsRow tags={data.tags ?? []} />
 
       <LanguageTabs
         languages={data.available_languages}
@@ -532,6 +572,28 @@ function Pill({ icon, text }: { icon: string; text: string }): JSX.Element {
       <span>{icon}</span>
       <span>{text}</span>
     </span>
+  );
+}
+
+function SpeechTagsRow({ tags }: { tags: string[] }): JSX.Element | null {
+  if (tags.length === 0) return null;
+  return (
+    <div
+      className="mb-4 flex flex-wrap items-center gap-2"
+      title="X.ai TTS speech tags embedded inline in the chapter prose to shape narration."
+    >
+      <span className="text-[11px] uppercase tracking-wide text-slate-500">
+        Speech tags
+      </span>
+      {tags.map((t) => (
+        <span
+          key={t}
+          className="rounded-full border border-violet-900/60 bg-violet-950/40 px-2 py-0.5 font-mono text-[11px] text-violet-300"
+        >
+          {t}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -950,6 +1012,104 @@ function ConnectionBadge({
   );
 }
 
+// Native <select> popups render via OS chrome — Tailwind on the
+// <select> doesn't reach the dropdown items. Set the colours on each
+// <option> so the popup reads against the dark theme on every platform.
+const OPTION_CLS = "bg-slate-900 text-slate-100";
+
+function CategoryPicker({
+  current,
+  options,
+  onChange,
+  saving,
+}: {
+  current: string | null;
+  options: string[];
+  onChange: (next: string) => void;
+  saving: boolean;
+}): JSX.Element {
+  // Inline native <select> rendered as a pill so it sits next to the
+  // other metadata badges. Empty value means "Uncategorized" (clears
+  // the field server-side via empty-string semantics on patch).
+  return (
+    <label
+      title="Change category"
+      className="inline-flex items-center gap-1 rounded-full border border-slate-800 bg-slate-900/40 px-2 py-0.5 text-[11px] hover:border-slate-700"
+    >
+      <span aria-hidden>🏷</span>
+      <select
+        value={current ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={saving}
+        className="bg-transparent text-slate-200 outline-none [appearance:none]"
+      >
+        <option value="" className={OPTION_CLS}>
+          Uncategorized
+        </option>
+        {/* If the current category isn't in the curated list anymore
+            (e.g. it was just deleted), still show it so the user knows
+            what they're sitting on. */}
+        {current && !options.includes(current) && (
+          <option value={current} className={OPTION_CLS}>
+            {current} (legacy)
+          </option>
+        )}
+        {options.map((c) => (
+          <option key={c} value={c} className={OPTION_CLS}>
+            {c}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function PodcastPicker({
+  current,
+  options,
+  onChange,
+  saving,
+}: {
+  current: string | null;
+  options: PodcastRow[];
+  onChange: (next: string) => void;
+  saving: boolean;
+}): JSX.Element {
+  // Mirror CategoryPicker — empty value means "no podcast" and the
+  // patch endpoint maps an empty string to a NONE update server-side.
+  const knownIds = new Set(options.map((p) => p.id));
+  return (
+    <label
+      title="Assign to podcast"
+      className="inline-flex items-center gap-1 rounded-full border border-slate-800 bg-slate-900/40 px-2 py-0.5 text-[11px] hover:border-slate-700"
+    >
+      <span aria-hidden>🎙</span>
+      <select
+        value={current ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={saving}
+        className="bg-transparent text-slate-200 outline-none [appearance:none]"
+      >
+        <option value="" className={OPTION_CLS}>
+          No podcast
+        </option>
+        {/* Surface a dangling reference (e.g. the podcast was deleted)
+            so the user can still see + clear it. */}
+        {current && !knownIds.has(current) && (
+          <option value={current} className={OPTION_CLS}>
+            (deleted podcast)
+          </option>
+        )}
+        {options.map((p) => (
+          <option key={p.id} value={p.id} className={OPTION_CLS}>
+            {p.title}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function CostBadge({
   data,
 }: {
@@ -1238,6 +1398,15 @@ function ActivityLog({
   const failedCount = parentJobs.filter(
     (j) => j.status === "failed" || j.status === "dead",
   ).length;
+  const completedCount = parentJobs.filter(
+    (j) => j.status === "completed",
+  ).length;
+  // Completed jobs are noisy once they pile up — hide them by default
+  // and let the user opt back in with the toggle.
+  const [showCompleted, setShowCompleted] = useState(false);
+  const visibleParentJobs = showCompleted
+    ? parentJobs
+    : parentJobs.filter((j) => j.status !== "completed");
 
   return (
     <details
@@ -1280,9 +1449,30 @@ function ActivityLog({
         <div className="space-y-4 border-t border-slate-800 px-4 py-4">
           {hasJobs && (
             <div className="space-y-2">
-              {parentJobs.length > 0
-                ? parentJobs.map((j) => <ParentJobRow key={j.id} job={j} />)
-                : pendingKind && <PendingJobRow kind={pendingKind} />}
+              {parentJobs.length > 0 && completedCount > 0 && (
+                <div className="flex items-center justify-end">
+                  <label className="inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-400">
+                    <input
+                      type="checkbox"
+                      checked={showCompleted}
+                      onChange={(e) => setShowCompleted(e.target.checked)}
+                      className="h-3.5 w-3.5 accent-sky-500"
+                    />
+                    Show completed ({completedCount})
+                  </label>
+                </div>
+              )}
+              {parentJobs.length > 0 ? (
+                visibleParentJobs.length > 0 ? (
+                  visibleParentJobs.map((j) => <ParentJobRow key={j.id} job={j} />)
+                ) : (
+                  <p className="text-center text-xs text-slate-500">
+                    All {completedCount} job{completedCount === 1 ? "" : "s"} completed.
+                  </p>
+                )
+              ) : (
+                pendingKind && <PendingJobRow kind={pendingKind} />
+              )}
             </div>
           )}
           {hasPubs && (

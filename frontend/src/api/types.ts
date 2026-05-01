@@ -19,6 +19,29 @@ type WithArtStyle = {
   cover_llm_id?: string | null;
   /** Tiles per visual paragraph (0..=3). */
   images_per_paragraph?: number | null;
+  /** User-defined library bucket. `null` = "Uncategorized". */
+  category?: string | null;
+  /** Podcast id this audiobook is assigned to, or `null` when unassigned. */
+  podcast_id?: string | null;
+  /**
+   * X.ai TTS speech-tag palette suggested by the outline LLM
+   * (e.g. `["[pause]", "<whisper>", "<soft>"]`). The chapter
+   * writer embeds these inline in the prose so the narrator
+   * delivers them. Empty = plain narration.
+   */
+  tags?: string[] | null;
+  /**
+   * Total narration runtime for the primary-language chapters,
+   * in milliseconds. `null` until at least one chapter has been
+   * narrated.
+   */
+  duration_ms?: number | null;
+  /**
+   * `true` when the book is rendered as a YouTube Short: a single
+   * ≤ 90 s chapter with a vertical 9:16 cover, uploaded as a
+   * single vertical video.
+   */
+  is_short?: boolean | null;
 };
 
 export interface ParagraphSummary {
@@ -46,7 +69,9 @@ export type AudiobookDetail = Omit<S["AudiobookDetail"], "chapters"> &
   WithArtStyle & {
     chapters: ChapterSummary[];
   };
-export type AudiobookList = S["AudiobookList"];
+export type AudiobookList = Omit<S["AudiobookList"], "items"> & {
+  items: AudiobookSummary[];
+};
 export type AudiobookLength = S["AudiobookLength"];
 export type AudiobookStatus = S["AudiobookStatus"];
 export type ChapterStatus = S["ChapterStatus"];
@@ -114,6 +139,8 @@ export type RandomTopicResponse = S["RandomTopicResponse"];
 export type CoverPreviewRequest = S["CoverPreviewRequest"] & WithArtStyle & {
   /** Override the picker for this preview. */
   llm_id?: string | null;
+  /** Render a vertical 9:16 cover for a YouTube Short. Defaults to false. */
+  is_short?: boolean | null;
 };
 export type CoverPreviewResponse = S["CoverPreviewResponse"];
 export type LlmRole = S["LlmRole"];
@@ -238,6 +265,39 @@ export interface UpsertYoutubeFooterRequest {
   text: string;
 }
 
+// --- audiobook categories ------------------------------------------------
+// Hand-written; mirrors `backend/api/src/handlers/admin.rs` and
+// `catalog.rs`.
+
+export interface AudiobookCategoryRow {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  /** How many audiobooks currently use this category. */
+  usage_count: number;
+}
+
+export interface AudiobookCategoryList {
+  items: AudiobookCategoryRow[];
+}
+
+export interface CreateAudiobookCategoryRequest {
+  name: string;
+}
+
+export interface UpdateAudiobookCategoryRequest {
+  name: string;
+}
+
+export interface AudiobookCategoryName {
+  name: string;
+}
+
+export interface AudiobookCategoryNameList {
+  items: AudiobookCategoryName[];
+}
+
 // --- audiobook costs -----------------------------------------------------
 // Hand-written; mirrors `backend/api/src/handlers/audiobook.rs::costs`.
 
@@ -270,6 +330,8 @@ export interface TopicTemplate {
   language: string | null;
   sort_order: number;
   enabled: boolean;
+  /** Defaults the New Audiobook form's "YouTube Short" toggle on apply. */
+  is_short: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -286,6 +348,7 @@ export interface CreateTopicTemplateRequest {
   language?: string | null;
   sort_order?: number | null;
   enabled?: boolean | null;
+  is_short?: boolean | null;
 }
 
 export interface UpdateTopicTemplateRequest {
@@ -297,6 +360,7 @@ export interface UpdateTopicTemplateRequest {
   language?: string | null;
   sort_order?: number | null;
   enabled?: boolean | null;
+  is_short?: boolean | null;
 }
 
 // --- integrations (YouTube) ----------------------------------------------
@@ -393,4 +457,58 @@ export interface TestVoiceResponse {
   sample_rate_hz: number;
   duration_ms: number;
   mocked: boolean;
+}
+
+// --- podcasts ------------------------------------------------------------
+// Hand-written; mirrors `backend/api/src/handlers/podcasts.rs`.
+
+export interface PodcastRow {
+  id: string;
+  title: string;
+  description: string;
+  has_image: boolean;
+  audiobook_count: number;
+  /** YouTube playlist id mirrored from this podcast — `null` until the
+   *  user has connected YouTube + the playlist has been synced. */
+  youtube_playlist_id: string | null;
+  /** Convenience link, derived server-side from `youtube_playlist_id`. */
+  youtube_playlist_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SyncPodcastResponse {
+  /** `"created"`, `"updated"`, or `"unchanged"`. */
+  action: string;
+  youtube_playlist_id: string | null;
+  youtube_playlist_url: string | null;
+}
+
+export interface PodcastList {
+  items: PodcastRow[];
+}
+
+export interface CreatePodcastRequest {
+  title: string;
+  description?: string | null;
+  /** Optional pre-generated cover, raw base64 (no `data:` prefix). */
+  image_base64?: string | null;
+}
+
+export interface UpdatePodcastRequest {
+  title?: string | null;
+  description?: string | null;
+  /** New cover bytes, raw base64. Empty / null leaves the existing image. */
+  image_base64?: string | null;
+}
+
+export interface PreviewPodcastImageRequest {
+  title: string;
+  description?: string | null;
+  llm_id?: string | null;
+}
+
+export interface PreviewPodcastImageResponse {
+  image_base64: string;
+  mime_type: string;
 }

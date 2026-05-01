@@ -76,7 +76,7 @@ async fn seed_prompts(db: &Db) -> Result<()> {
             "variables": [
                 "book_title", "chapter_number", "chapter_title",
                 "chapter_synopsis", "target_words", "genre",
-                "previous_ending", "language"
+                "previous_ending", "language", "tags"
             ],
             "body": include_str!("prompts/chapter_v1.md"),
         }),

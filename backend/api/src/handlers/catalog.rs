@@ -151,6 +151,51 @@ pub async fn list_llms(
     Ok(Json(LlmList { items }))
 }
 
+/// Public listing of audiobook categories — used by the New Audiobook
+/// form and the per-book category picker. Admin endpoints (`/admin/...`)
+/// also expose this list with usage counts.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AudiobookCategoryName {
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AudiobookCategoryNameList {
+    pub items: Vec<AudiobookCategoryName>,
+}
+
+#[utoipa::path(
+    get, path = "/audiobook-categories", tag = "audiobook",
+    responses(
+        (status = 200, body = AudiobookCategoryNameList),
+        (status = 401)
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_audiobook_categories(
+    State(state): State<AppState>,
+    Authenticated(_user): Authenticated,
+) -> ApiResult<Json<AudiobookCategoryNameList>> {
+    #[derive(Deserialize)]
+    struct Row {
+        name: String,
+    }
+    let rows: Vec<Row> = state
+        .db()
+        .inner()
+        .query("SELECT name FROM audiobook_category ORDER BY name ASC")
+        .await
+        .map_err(|e| Error::Database(format!("list categories: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("list categories (decode): {e}")))?;
+    Ok(Json(AudiobookCategoryNameList {
+        items: rows
+            .into_iter()
+            .map(|r| AudiobookCategoryName { name: r.name })
+            .collect(),
+    }))
+}
+
 fn parse_gender(s: &str) -> Result<VoiceGender> {
     Ok(match s {
         "female" => VoiceGender::Female,

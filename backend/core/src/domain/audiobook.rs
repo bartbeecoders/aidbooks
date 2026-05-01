@@ -69,6 +69,12 @@ pub struct Audiobook {
     /// BCP-47 language code, e.g. `"en"`, `"nl"`, `"de"`. Drives both LLM
     /// content generation and TTS narration.
     pub language: String,
+    /// X.ai TTS speech-tag palette suggested by the outline LLM (e.g.
+    /// `["[pause]", "<whisper>", "<soft>"]`). The chapter generator embeds
+    /// these inline in `chapter.body_md`; the X.ai TTS endpoint consumes
+    /// them directly from the text. Empty = no tags suggested.
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
