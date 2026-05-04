@@ -75,6 +75,16 @@ pub struct CreateAudiobookRequest {
     /// publish step renders a vertical 1080×1920 video and forces
     /// `mode = single`.
     pub is_short: Option<bool>,
+    /// Optional multi-voice narration toggle. When `true`, the
+    /// per-chapter narration job runs an extra LLM extract pass to
+    /// split prose into role-tagged segments and renders each
+    /// segment with its mapped voice from `voice_roles`. Defaults to
+    /// `false`.
+    pub multi_voice_enabled: Option<bool>,
+    /// Voice mapping per role for multi-voice narration. Keys are
+    /// canonical role names (`narrator`, `dialogue_male`,
+    /// `dialogue_female`); values are voice ids (e.g. `"eve"`).
+    pub voice_roles: Option<std::collections::HashMap<String, String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Validate, ToSchema, Clone)]
@@ -162,6 +172,29 @@ pub struct AudiobookSummary {
     /// `true` when the book is rendered as a YouTube Short (≤ 90 s of
     /// narration, vertical 9:16 artwork, single-video upload).
     pub is_short: bool,
+    /// `true` when this audiobook narrates with per-role voices
+    /// (narrator + dialogue_male + dialogue_female). The role-to-voice
+    /// map lives in `voice_roles`.
+    pub multi_voice_enabled: bool,
+    /// `{role: voice_id}` map. Empty when multi-voice isn't
+    /// configured. Always serialised so the UI can render the picker
+    /// without a separate fetch.
+    pub voice_roles: std::collections::HashMap<String, String>,
+    /// LLM verdict on whether the topic is STEM (math / physics /
+    /// chemistry / biology / CS / engineering). Set during outline
+    /// generation. `None` until the outline LLM runs (legacy rows or
+    /// fresh drafts).
+    pub stem_detected: Option<bool>,
+    /// Explicit user override that wins over `stem_detected`. `None`
+    /// means "trust the LLM verdict". Settable through
+    /// `PATCH /audiobook/:id` with three states: absent (don't
+    /// touch), null (clear), or bool (force).
+    pub stem_override: Option<bool>,
+    /// Effective STEM flag the renderer actually uses:
+    /// `stem_override.unwrap_or(stem_detected.unwrap_or(false))`.
+    /// Pre-computed here so the frontend doesn't have to repeat the
+    /// fallback logic.
+    pub is_stem: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -211,6 +244,12 @@ pub struct ParagraphSummary {
     /// Tiles persisted so far for this paragraph (range `1..=image_count`
     /// addressable on the stream endpoint).
     pub image_count: u32,
+    /// Phase G — diagram template id chosen by the per-paragraph
+    /// visual classifier (`function_plot`, `free_body`, …). `None`
+    /// for prose paragraphs and for non-STEM books that never ran the
+    /// classifier. Frontend uses this to badge chapters with diagram
+    /// counts and to drive the future Manim render path.
+    pub visual_kind: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -256,6 +295,27 @@ pub struct UpdateAudiobookRequest {
     /// not auto-regenerated — flip this before regenerating outline +
     /// cover to take effect.
     pub is_short: Option<bool>,
+    /// Toggle multi-voice narration. When `true`, the next narration
+    /// of any chapter runs the LLM extract pass to split prose into
+    /// role-tagged segments and renders each segment with the role's
+    /// mapped voice from `voice_roles`. Switching this on/off doesn't
+    /// re-render existing audio — call `regenerate-audio` per chapter
+    /// or use the audiobook-level audio job to apply the change.
+    pub multi_voice_enabled: Option<bool>,
+    /// Voice mapping per role. Keys are canonical role names
+    /// (`narrator`, `dialogue_male`, `dialogue_female`); values are
+    /// voice ids (e.g. `"eve"`). Roles missing from the map fall back
+    /// to the narrator (or the primary voice if narrator isn't
+    /// mapped). Pass an empty object to clear.
+    pub voice_roles: Option<std::collections::HashMap<String, String>>,
+    /// User override of the LLM-detected STEM flag. Three-state:
+    /// absent (field not in body) = don't change; JSON `null` =
+    /// clear the override (use LLM verdict); `true` / `false` =
+    /// force the value. We use `serde_json::Value` because plain
+    /// `Option<Option<bool>>` collapses absent and null into the
+    /// same shape on the wire.
+    #[serde(default)]
+    pub stem_override: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -299,6 +359,14 @@ struct DbAudiobook {
     tags: Option<Vec<String>>,
     #[serde(default)]
     is_short: Option<bool>,
+    #[serde(default)]
+    multi_voice_enabled: Option<bool>,
+    #[serde(default)]
+    voice_roles: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    stem_detected: Option<bool>,
+    #[serde(default)]
+    stem_override: Option<bool>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -321,7 +389,7 @@ struct DbChapter {
     language: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub(crate) struct DbParagraph {
     #[serde(default)]
     pub(crate) index: i64,
@@ -333,6 +401,27 @@ pub(crate) struct DbParagraph {
     pub(crate) scene_description: Option<String>,
     #[serde(default)]
     pub(crate) image_paths: Vec<String>,
+    /// Phase G — diagram template id ("function_plot", "free_body",
+    /// …) the LLM picked for this paragraph. `None` for prose
+    /// paragraphs and for non-STEM books that never ran the
+    /// classifier.
+    #[serde(default)]
+    pub(crate) visual_kind: Option<String>,
+    /// Template-specific parameters. Free-form JSON because each
+    /// `visual_kind` owns its own param schema; the renderer
+    /// validates per-template at draw time. Persisted now (G.2) and
+    /// consumed by the Manim sidecar in G.5.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub(crate) visual_params: Option<serde_json::Value>,
+    /// Phase H — bespoke Manim code block, only set when
+    /// `visual_kind == "custom_manim"`. The publisher reads it via
+    /// `load_paragraph_tiles`; the chapter detail endpoint exposes
+    /// just a "has manim code" boolean to the frontend so we don't
+    /// blow up the JSON payload with full source bodies.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub(crate) manim_code: Option<String>,
 }
 
 impl DbAudiobook {
@@ -381,6 +470,14 @@ impl DbAudiobook {
             // are aggregated. `None` here means "not yet computed".
             duration_ms: None,
             is_short: self.is_short.unwrap_or(false),
+            multi_voice_enabled: self.multi_voice_enabled.unwrap_or(false),
+            voice_roles: self.voice_roles.clone().unwrap_or_default(),
+            stem_detected: self.stem_detected,
+            stem_override: self.stem_override,
+            // Effective STEM = override > detected > false.
+            is_stem: self
+                .stem_override
+                .unwrap_or_else(|| self.stem_detected.unwrap_or(false)),
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -427,6 +524,11 @@ impl DbChapter {
                                 .iter()
                                 .filter(|s| !s.trim().is_empty())
                                 .count() as u32,
+                            visual_kind: p
+                                .visual_kind
+                                .clone()
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty()),
                         })
                         .collect()
                 })
@@ -573,6 +675,12 @@ pub async fn create(
         assert_category_exists(&state, c).await?;
     }
     let is_short = body.is_short.unwrap_or(false);
+    let multi_voice_enabled = body.multi_voice_enabled.unwrap_or(false);
+    let voice_roles_json: Option<serde_json::Value> = body
+        .voice_roles
+        .as_ref()
+        .filter(|m| !m.is_empty())
+        .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
     let sql = format!(
         r#"CREATE audiobook:`{id}` CONTENT {{
             owner: user:`{user_id}`,
@@ -587,6 +695,8 @@ pub async fn create(
             images_per_paragraph: $images_per_paragraph,
             auto_pipeline: $auto_pipeline,
             is_short: $is_short,
+            multi_voice_enabled: $multi_voice_enabled,
+            voice_roles: $voice_roles,
             {voice_clause}
             status: "draft"
         }}"#,
@@ -613,6 +723,8 @@ pub async fn create(
         .bind(("images_per_paragraph", images_per_paragraph))
         .bind(("auto_pipeline", auto_pipeline.clone()))
         .bind(("is_short", is_short))
+        .bind(("multi_voice_enabled", multi_voice_enabled))
+        .bind(("voice_roles", voice_roles_json))
         .await
         .map_err(|e| Error::Database(format!("create audiobook: {e}")))?
         .check()
@@ -979,6 +1091,64 @@ pub async fn patch(
             .map_err(|e| Error::Database(format!("patch is_short: {e}")))?
             .check()
             .map_err(|e| Error::Database(format!("patch is_short: {e}")))?;
+    }
+    if let Some(enabled) = body.multi_voice_enabled {
+        state
+            .db()
+            .inner()
+            .query(format!(
+                "UPDATE audiobook:`{id}` SET multi_voice_enabled = $v"
+            ))
+            .bind(("v", enabled))
+            .await
+            .map_err(|e| Error::Database(format!("patch multi_voice_enabled: {e}")))?
+            .check()
+            .map_err(|e| Error::Database(format!("patch multi_voice_enabled: {e}")))?;
+    }
+    if let Some(roles) = body.voice_roles {
+        // Empty map clears the override (back to single-voice fallback).
+        let value: Option<serde_json::Value> = if roles.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_value(&roles).unwrap_or(serde_json::Value::Null))
+        };
+        state
+            .db()
+            .inner()
+            .query(format!("UPDATE audiobook:`{id}` SET voice_roles = $r"))
+            .bind(("r", value))
+            .await
+            .map_err(|e| Error::Database(format!("patch voice_roles: {e}")))?
+            .check()
+            .map_err(|e| Error::Database(format!("patch voice_roles: {e}")))?;
+    }
+    // Three-state stem_override:
+    //   field absent          → body.stem_override = None         → no-op
+    //   field present, null   → Some(Value::Null)                 → clear
+    //   field present, bool   → Some(Value::Bool(b))              → set
+    //   anything else (number, string, object) → 400.
+    if let Some(raw) = body.stem_override {
+        let new_value: Option<bool> = match raw {
+            serde_json::Value::Null => None,
+            serde_json::Value::Bool(b) => Some(b),
+            other => {
+                return Err(Error::Validation(format!(
+                    "stem_override must be a bool or null, got {other:?}"
+                ))
+                .into())
+            }
+        };
+        state
+            .db()
+            .inner()
+            .query(format!(
+                "UPDATE audiobook:`{id}` SET stem_override = $v"
+            ))
+            .bind(("v", new_value))
+            .await
+            .map_err(|e| Error::Database(format!("patch stem_override: {e}")))?
+            .check()
+            .map_err(|e| Error::Database(format!("patch stem_override: {e}")))?;
     }
     if let Some(podcast_id) = body.podcast_id {
         let trimmed = podcast_id.trim();
@@ -1382,6 +1552,331 @@ pub async fn generate_audio(
 }
 
 // -------------------------------------------------------------------------
+// POST /audiobook/:id/animate  — render animated companion video per chapter
+// -------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct AnimateQuery {
+    /// Audiobook language version to animate. Defaults to the
+    /// audiobook's primary language.
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Theme preset for the renderer. One of `library` (default),
+    /// `parchment`, or `minimal`. Unknown presets 400.
+    #[serde(default)]
+    pub theme: Option<String>,
+}
+
+/// Kick off the animation pipeline for one language: a parent
+/// `Animate` job that fans out one `AnimateChapter` per chapter.
+/// Output lands at `<storage>/<audiobook>/<language>/ch-<n>.video.mp4`,
+/// ready for the YouTube publisher to mux in (Phase D).
+///
+/// Phase A: gated on `audio_ready` so we never animate against a
+/// missing WAV.
+#[utoipa::path(
+    post,
+    path = "/audiobook/{id}/animate",
+    tag = "audiobook",
+    params(("id" = String, Path)),
+    responses(
+        (status = 202, description = "Accepted, animation queued in background"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Audio not ready or animation already in flight")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn animate(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<AnimateQuery>,
+    IdempotencyKey(idem): IdempotencyKey,
+) -> ApiResult<StatusCode> {
+    if let Some(cached) = idempotency::lookup(&state, &user.id, idem.as_deref()).await? {
+        return Ok(StatusCode::from_u16(cached.status_code)
+            .unwrap_or(StatusCode::ACCEPTED));
+    }
+
+    let book = load_audiobook(&state, &id).await?;
+    if book.owner_id() != user.id {
+        return Err(Error::NotFound {
+            resource: format!("audiobook:{id}"),
+        }
+        .into());
+    }
+    let status = parse_status(&book.status)?;
+    if !matches!(status, AudiobookStatus::AudioReady) {
+        return Err(Error::Conflict(format!(
+            "audiobook is in state {:?}; narrate first (audio_ready required)",
+            status
+        ))
+        .into());
+    }
+
+    let language = q
+        .language
+        .unwrap_or_else(|| book.language.clone().unwrap_or_else(|| "en".to_string()));
+    if !is_supported_language(&language) {
+        return Err(Error::Validation(format!(
+            "unsupported language `{language}`"
+        ))
+        .into());
+    }
+
+    if has_live_job(&state, &id, JobKind::Animate).await? {
+        return Err(Error::Conflict("animation already in flight".into()).into());
+    }
+
+    // Validate the theme preset before enqueueing — saves the worker a
+    // round trip and gives the UI a clear 400 instead of a Phase-A
+    // fallback render.
+    let theme = q
+        .theme
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if let Some(t) = theme.as_deref() {
+        if !matches!(t, "library" | "parchment" | "minimal") {
+            return Err(Error::Validation(format!(
+                "unsupported theme `{t}` (expected library, parchment, or minimal)"
+            ))
+            .into());
+        }
+    }
+
+    let mut req = EnqueueRequest::new(JobKind::Animate)
+        .with_user(user.id.clone())
+        .with_audiobook(AudiobookId(id.clone()))
+        .with_language(language)
+        // Parent is just coordination; only the children do real work.
+        .with_max_attempts(2);
+    if let Some(t) = theme {
+        req = req.with_payload(serde_json::json!({ "theme": t }));
+    }
+    state.jobs().enqueue(req).await?;
+
+    idempotency::record(
+        &state,
+        &user.id,
+        idem.as_deref(),
+        "POST",
+        &format!("/audiobook/{id}/animate"),
+        StatusCode::ACCEPTED.as_u16(),
+        "",
+    )
+    .await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+// -------------------------------------------------------------------------
+// POST /audiobook/:id/chapter/:n/animate  — re-render one chapter only
+// -------------------------------------------------------------------------
+
+/// Re-render a single chapter's animated MP4. Mirrors
+/// `POST /audiobook/:id/animate` but skips the parent fan-out: a
+/// single `AnimateChapter` job runs end-to-end against the supplied
+/// chapter number, with the same theme + language validation as the
+/// full-book endpoint.
+///
+/// Importantly, this **invalidates the F.1e spec-hash cache** for the
+/// chapter — without that, the cache hit would short-circuit the
+/// render and the user wouldn't see any change. We delete both the
+/// `<mp4>.hash` sidecar and the `<mp4>` itself so the frontend's
+/// inline `<video>` 404s mid-rerender (signalling "regenerating")
+/// instead of showing a stale frame.
+#[utoipa::path(
+    post,
+    path = "/audiobook/{id}/chapter/{n}/animate",
+    tag = "audiobook",
+    params(("id" = String, Path), ("n" = u32, Path)),
+    responses(
+        (status = 202, description = "Accepted, chapter re-render queued"),
+        (status = 400, description = "Unsupported language or theme"),
+        (status = 404, description = "Audiobook or chapter not found"),
+        (status = 409, description = "Audio not ready or chapter render already in flight")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn animate_chapter(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path((id, n)): Path<(String, u32)>,
+    axum::extract::Query(q): axum::extract::Query<AnimateQuery>,
+    IdempotencyKey(idem): IdempotencyKey,
+) -> ApiResult<StatusCode> {
+    if let Some(cached) = idempotency::lookup(&state, &user.id, idem.as_deref()).await? {
+        return Ok(StatusCode::from_u16(cached.status_code).unwrap_or(StatusCode::ACCEPTED));
+    }
+
+    let book = load_audiobook(&state, &id).await?;
+    if book.owner_id() != user.id {
+        return Err(Error::NotFound {
+            resource: format!("audiobook:{id}"),
+        }
+        .into());
+    }
+    let status = parse_status(&book.status)?;
+    if !matches!(status, AudiobookStatus::AudioReady) {
+        return Err(Error::Conflict(format!(
+            "audiobook is in state {:?}; narrate first (audio_ready required)",
+            status
+        ))
+        .into());
+    }
+
+    let language = q
+        .language
+        .unwrap_or_else(|| book.language.clone().unwrap_or_else(|| "en".to_string()));
+    if !is_supported_language(&language) {
+        return Err(Error::Validation(format!(
+            "unsupported language `{language}`"
+        ))
+        .into());
+    }
+
+    // Ensure the chapter actually exists in the requested language —
+    // otherwise the worker would 404 internally and surface a less
+    // helpful "Fatal" status to the UI. We `count()` rather than
+    // selecting `id` because SurrealDB returns a record id as a
+    // `Thing` enum, which doesn't decode into `serde_json::Value`.
+    #[derive(Deserialize)]
+    struct CountRow {
+        count: i64,
+    }
+    let rows: Vec<CountRow> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT count() AS count FROM chapter \
+             WHERE audiobook = audiobook:`{id}` \
+               AND number = $n AND language = $lang \
+             GROUP ALL"
+        ))
+        .bind(("n", n as i64))
+        .bind(("lang", language.clone()))
+        .await
+        .map_err(|e| Error::Database(format!("animate_chapter chapter check: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("animate_chapter chapter check (decode): {e}")))?;
+    let chapter_count = rows.first().map(|r| r.count).unwrap_or(0);
+    if chapter_count == 0 {
+        return Err(Error::NotFound {
+            resource: format!("audiobook:{id}/chapter:{n}/{language}"),
+        }
+        .into());
+    }
+
+    if has_live_animate_chapter(&state, &id, n, &language).await? {
+        return Err(Error::Conflict(format!(
+            "chapter {n} animation already in flight"
+        ))
+        .into());
+    }
+
+    let theme = q
+        .theme
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if let Some(t) = theme.as_deref() {
+        if !matches!(t, "library" | "parchment" | "minimal") {
+            return Err(Error::Validation(format!(
+                "unsupported theme `{t}` (expected library, parchment, or minimal)"
+            ))
+            .into());
+        }
+    }
+
+    // Bust the F.1e cache so the worker's hash check doesn't short-
+    // circuit the render. Best-effort — a missing hash sidecar means
+    // the render proceeds anyway, which is exactly what we want.
+    bust_chapter_cache(&state, &id, &language, n);
+
+    let mut req = EnqueueRequest::new(JobKind::AnimateChapter)
+        .with_user(user.id.clone())
+        .with_audiobook(AudiobookId(id.clone()))
+        .with_chapter(n)
+        .with_language(language)
+        .with_max_attempts(2);
+    if let Some(t) = theme {
+        req = req.with_payload(serde_json::json!({ "theme": t }));
+    }
+    state.jobs().enqueue(req).await?;
+
+    idempotency::record(
+        &state,
+        &user.id,
+        idem.as_deref(),
+        "POST",
+        &format!("/audiobook/{id}/chapter/{n}/animate"),
+        StatusCode::ACCEPTED.as_u16(),
+        "",
+    )
+    .await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+/// Check whether *this specific chapter+language* has an in-flight
+/// `AnimateChapter` job. The full-book live-job check on
+/// `JobKind::Animate` doesn't catch a parentless re-render because
+/// the new endpoint enqueues `AnimateChapter` directly without a
+/// parent.
+async fn has_live_animate_chapter(
+    state: &AppState,
+    audiobook_id: &str,
+    chapter_number: u32,
+    language: &str,
+) -> Result<bool> {
+    #[derive(Deserialize)]
+    struct CountRow {
+        count: i64,
+    }
+    let rows: Vec<CountRow> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT count() AS count FROM job \
+             WHERE audiobook = audiobook:`{audiobook_id}` \
+               AND kind = $kind \
+               AND chapter_number = $n \
+               AND language = $lang \
+               AND status IN [\"queued\", \"running\"] \
+             GROUP ALL"
+        ))
+        .bind(("kind", JobKind::AnimateChapter.as_str().to_string()))
+        .bind(("n", chapter_number as i64))
+        .bind(("lang", language.to_string()))
+        .await
+        .map_err(|e| Error::Database(format!("animate_chapter live check: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("animate_chapter live check (decode): {e}")))?;
+    Ok(rows.first().map(|r| r.count).unwrap_or(0) > 0)
+}
+
+/// Delete the rendered MP4 + the F.1e hash sidecar for the given
+/// chapter so the next render produces a fresh artefact. Best
+/// effort — missing files are normal (chapter never rendered) and
+/// not an error.
+fn bust_chapter_cache(state: &AppState, audiobook_id: &str, language: &str, chapter_number: u32) {
+    let storage = match std::fs::canonicalize(&state.config().storage_path) {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let mp4 = crate::animation::planner::output_mp4_path(
+        &storage,
+        audiobook_id,
+        language,
+        chapter_number,
+    );
+    let hash = crate::animation::cache::cache_path(&mp4);
+    let _ = std::fs::remove_file(&mp4);
+    let _ = std::fs::remove_file(&hash);
+}
+
+// -------------------------------------------------------------------------
 // POST /audiobook/:id/cancel-pipeline  — abort everything in flight
 // -------------------------------------------------------------------------
 
@@ -1573,6 +2068,724 @@ pub async fn regenerate_chapter_art(
 }
 
 // -------------------------------------------------------------------------
+// POST /audiobook/:id/chapter/:n/classify-visuals  — backfill visual_kind
+// -------------------------------------------------------------------------
+
+/// Tiny helper: keep the merged paragraph list together with the
+/// labelled-paragraph count so both the backfill and re-classify
+/// branches can return the same shape to the persistence step.
+fn merged_with_visual_count(
+    merged: Vec<serde_json::Value>,
+    labelled: usize,
+) -> (Vec<serde_json::Value>, usize) {
+    (merged, labelled)
+}
+
+/// Re-run the per-paragraph visual classifier (Phase G.2's
+/// `paragraphs::extract_visual_kinds`) against an existing chapter's
+/// paragraphs without rewriting the chapter body.
+///
+/// Why this exists: STEM detection runs at outline time and the
+/// classifier fires from `chapter_paragraphs` only when the book is
+/// STEM at that moment. Books generated before STEM was toggled on
+/// (or before Phase G shipped) have empty `visual_kind` columns,
+/// which makes `segments::has_diagram_scenes(spec)` return false and
+/// the publisher routes around Manim. This endpoint backfills the
+/// labels so the next animate render can pick them up.
+///
+/// Operates on the primary language's chapter only — translations
+/// share the primary's paragraph metadata.
+#[utoipa::path(
+    post,
+    path = "/audiobook/{id}/chapter/{n}/classify-visuals",
+    tag = "audiobook",
+    params(("id" = String, Path), ("n" = u32, Path)),
+    responses(
+        (status = 200, description = "Classifier ran; chapter summary returned with updated paragraph badges", body = ChapterSummary),
+        (status = 400, description = "Book is not STEM (effective is_stem=false); refused"),
+        (status = 404, description = "Audiobook or chapter not found"),
+        (status = 502, description = "Upstream LLM error")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn classify_chapter_visuals(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path((id, n)): Path<(String, u32)>,
+) -> ApiResult<Json<ChapterSummary>> {
+    assert_owner(&state, &id, &user.id).await?;
+    let book = load_audiobook(&state, &id).await?;
+    let summary = book.to_summary()?;
+    if !summary.is_stem {
+        return Err(Error::Validation(
+            "book is not STEM (set stem_override=true or wait for the LLM to detect it) — \
+             classifier refused"
+                .into(),
+        )
+        .into());
+    }
+
+    let chapter = load_chapter_by_number(&state, &id, n as i64).await?;
+    let paragraphs_json = chapter.paragraphs.clone().unwrap_or_default();
+    let chapter_id = chapter.id.id.to_raw();
+
+    let (paragraphs, scenes, updated) = if paragraphs_json.is_empty() {
+        // Backfill path: this chapter never had its paragraph
+        // metadata written (book pre-dates the paragraphs feature, or
+        // the chapter_paragraphs job failed). Run the full
+        // split → extract_scenes + extract_visual_kinds → merge
+        // pipeline so the row gets populated correctly. Equivalent
+        // to `chapter_paragraphs` job for STEM books.
+        let body = chapter.body_md.as_deref().unwrap_or("");
+        if body.trim().is_empty() {
+            return Err(Error::Validation(
+                "chapter body is empty — generate it first".into(),
+            )
+            .into());
+        }
+        let paragraphs = crate::generation::paragraphs::split(body);
+        if paragraphs.is_empty() {
+            return Err(Error::Validation(
+                "chapter body has no extractable paragraphs (every block is below the minimum length)".into(),
+            )
+            .into());
+        }
+
+        let scenes = crate::generation::paragraphs::extract_scenes(
+            &state,
+            &user.id,
+            &id,
+            &book.title,
+            &book.topic,
+            book.genre.as_deref(),
+            &chapter.title,
+            &paragraphs,
+        )
+        .await;
+
+        let visuals = crate::generation::paragraphs::extract_visual_kinds(
+            &state,
+            &user.id,
+            &id,
+            &book.title,
+            &book.topic,
+            book.genre.as_deref(),
+            &chapter.title,
+            &paragraphs,
+        )
+        .await;
+
+        // Re-classify path skips the manim code-gen step — the user
+        // can trigger that separately via the dedicated regen endpoint
+        // (cheaper + clearer than coupling them).
+        let codes = std::collections::HashMap::new();
+        let merged = crate::generation::paragraphs::merge_for_persist(
+            &paragraphs,
+            &scenes,
+            &visuals,
+            &codes,
+        );
+        (paragraphs.len(), scenes.len(), merged_with_visual_count(merged, visuals.len()))
+    } else {
+        // Re-classify path: paragraphs already exist; only update
+        // visual_kind / visual_params, preserve everything else.
+        let mut classifier_input: Vec<crate::generation::paragraphs::Paragraph> =
+            Vec::with_capacity(paragraphs_json.len());
+        for p in &paragraphs_json {
+            let idx = p.index.max(0) as u32;
+            let text = p.text.clone();
+            if text.trim().is_empty() {
+                continue;
+            }
+            let char_count = p
+                .char_count
+                .unwrap_or_else(|| text.chars().count() as i64)
+                .max(0) as u32;
+            classifier_input.push(crate::generation::paragraphs::Paragraph {
+                index: idx,
+                text,
+                char_count,
+            });
+        }
+
+        let visuals = crate::generation::paragraphs::extract_visual_kinds(
+            &state,
+            &user.id,
+            &id,
+            &book.title,
+            &book.topic,
+            book.genre.as_deref(),
+            &chapter.title,
+            &classifier_input,
+        )
+        .await;
+
+        let updated: Vec<serde_json::Value> = paragraphs_json
+            .iter()
+            .map(|p| {
+                let idx = p.index.max(0) as u32;
+                let mut entry = serde_json::Map::new();
+                entry.insert("index".into(), serde_json::json!(idx));
+                entry.insert("text".into(), serde_json::json!(p.text));
+                let cc = p
+                    .char_count
+                    .unwrap_or_else(|| p.text.chars().count() as i64);
+                entry.insert("char_count".into(), serde_json::json!(cc));
+                entry.insert(
+                    "scene_description".into(),
+                    serde_json::json!(p.scene_description.clone()),
+                );
+                entry.insert(
+                    "image_paths".into(),
+                    serde_json::json!(p.image_paths.clone()),
+                );
+                if let Some(v) = visuals.get(&idx) {
+                    entry.insert(
+                        "visual_kind".into(),
+                        serde_json::json!(v.visual_kind.clone()),
+                    );
+                    entry.insert("visual_params".into(), v.visual_params.clone());
+                    // Phase H — preserve any existing `manim_code`
+                    // when the classifier still considers this
+                    // paragraph custom_manim. If the kind changed to
+                    // anything else, the old code is irrelevant and
+                    // we drop it on the floor (re-classifying is a
+                    // full overwrite of the diagram label, but the
+                    // code is keyed *to* that label so we'd be
+                    // shipping mismatched data otherwise).
+                    if v.visual_kind == "custom_manim" {
+                        if let Some(prev) = p.manim_code.as_deref() {
+                            if !prev.trim().is_empty() {
+                                entry.insert(
+                                    "manim_code".into(),
+                                    serde_json::json!(prev),
+                                );
+                            }
+                        }
+                    }
+                }
+                // If the classifier returned nothing for this paragraph we
+                // intentionally drop any prior label — re-classifying is a
+                // full overwrite, not an append.
+                serde_json::Value::Object(entry)
+            })
+            .collect();
+        (paragraphs_json.len(), 0, merged_with_visual_count(updated, visuals.len()))
+    };
+
+    let labelled = updated.1;
+    crate::generation::paragraphs::persist(&state, &chapter_id, updated.0).await?;
+
+    tracing::info!(
+        audiobook = %id,
+        chapter = n,
+        paragraphs = paragraphs,
+        scenes_added = scenes,
+        labelled,
+        "classify_chapter_visuals: classifier complete"
+    );
+
+    let after = load_chapter_by_number(&state, &id, n as i64).await?;
+    Ok(Json(after.to_summary()?))
+}
+
+// -------------------------------------------------------------------------
+// POST /audiobook/:id/chapter/:n/regenerate-manim-code  (Phase H)
+// -------------------------------------------------------------------------
+
+/// Re-run the bespoke Manim code-gen LLM on every paragraph in this
+/// chapter that's currently labelled `custom_manim`. Used both as a
+/// backfill (books generated before Phase H landed) and a
+/// "regenerate this chapter's diagrams with a different model" knob
+/// after the user changes the `LlmRole::ManimCode` assignment in the
+/// admin UI.
+///
+/// Returns 400 when the chapter has no `custom_manim` paragraphs to
+/// regenerate (the response would otherwise silently no-op, which is
+/// confusing UX). The frontend hides the button in that case.
+#[utoipa::path(
+    post,
+    path = "/audiobook/{id}/chapter/{n}/regenerate-manim-code",
+    tag = "audiobook",
+    params(("id" = String, Path), ("n" = u32, Path)),
+    responses(
+        (status = 200, description = "Code-gen ran; chapter summary returned", body = ChapterSummary),
+        (status = 400, description = "Chapter has no custom_manim paragraphs"),
+        (status = 404, description = "Audiobook or chapter not found"),
+        (status = 502, description = "Upstream LLM error")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn regenerate_chapter_manim_code(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path((id, n)): Path<(String, u32)>,
+) -> ApiResult<Json<ChapterSummary>> {
+    assert_owner(&state, &id, &user.id).await?;
+    let book = load_audiobook(&state, &id).await?;
+    let chapter = load_chapter_by_number(&state, &id, n as i64).await?;
+    let chapter_id = chapter.id.id.to_raw();
+    let paragraphs_json = chapter.paragraphs.clone().unwrap_or_default();
+
+    // Collect the paragraphs the classifier marked custom_manim. The
+    // ManimCode LLM only ever runs against these — every other
+    // visual_kind is template-driven and the code-gen would just
+    // waste tokens.
+    let custom_indices: Vec<u32> = paragraphs_json
+        .iter()
+        .filter(|p| p.visual_kind.as_deref() == Some("custom_manim"))
+        .map(|p| p.index.max(0) as u32)
+        .collect();
+
+    if custom_indices.is_empty() {
+        return Err(Error::Validation(
+            "no custom_manim paragraphs in this chapter — \
+             classify diagrams first or pick custom_manim in the override"
+                .into(),
+        )
+        .into());
+    }
+
+    let custom_paragraphs: Vec<crate::generation::manim_code::CustomParagraph> =
+        paragraphs_json
+            .iter()
+            .filter(|p| p.visual_kind.as_deref() == Some("custom_manim"))
+            .map(|p| crate::generation::manim_code::CustomParagraph {
+                index: p.index.max(0) as u32,
+                text: p.text.as_str(),
+                // No per-paragraph audio plan here either; the
+                // publisher floors `run_seconds` at MIN_RUN_SECONDS
+                // anyway (Python side, _base.py).
+                run_seconds: 8.0,
+            })
+            .collect();
+
+    let codes = crate::generation::manim_code::generate_manim_code(
+        &state,
+        &user.id,
+        &id,
+        &book.title,
+        &book.topic,
+        book.genre.as_deref(),
+        &chapter.title,
+        // Theme is per-publication, not per-paragraph; we use the
+        // library default here so the generated code matches what
+        // every other animation path uses today.
+        "library",
+        &custom_paragraphs,
+    )
+    .await;
+
+    // Stitch the codes back into the existing paragraph list.
+    // Paragraphs we didn't touch keep their prior fields verbatim;
+    // the custom_manim ones get a fresh `manim_code`. Empty/whitespace
+    // generations are dropped — the publisher will fall back to prose.
+    let updated: Vec<serde_json::Value> = paragraphs_json
+        .iter()
+        .map(|p| {
+            let idx = p.index.max(0) as u32;
+            let mut entry = serde_json::Map::new();
+            entry.insert("index".into(), serde_json::json!(idx));
+            entry.insert("text".into(), serde_json::json!(p.text));
+            let cc = p
+                .char_count
+                .unwrap_or_else(|| p.text.chars().count() as i64);
+            entry.insert("char_count".into(), serde_json::json!(cc));
+            entry.insert(
+                "scene_description".into(),
+                serde_json::json!(p.scene_description.clone()),
+            );
+            entry.insert(
+                "image_paths".into(),
+                serde_json::json!(p.image_paths.clone()),
+            );
+            if let Some(kind) = p.visual_kind.as_deref() {
+                entry.insert("visual_kind".into(), serde_json::json!(kind));
+                if let Some(params) = p.visual_params.as_ref() {
+                    entry.insert("visual_params".into(), params.clone());
+                }
+            }
+            // Apply the freshly-generated code (when any) and drop
+            // empty results. Paragraphs that aren't custom_manim
+            // never had code in the first place; no-op for them.
+            if let Some(code) = codes.get(&idx) {
+                if !code.code.trim().is_empty() {
+                    entry.insert(
+                        "manim_code".into(),
+                        serde_json::json!(code.code),
+                    );
+                }
+            } else if let Some(prev) = p.manim_code.as_deref() {
+                // LLM didn't produce anything fresh for this index;
+                // preserve the prior code so a partial re-gen
+                // failure doesn't wipe working diagrams.
+                if !prev.trim().is_empty() {
+                    entry.insert("manim_code".into(), serde_json::json!(prev));
+                }
+            }
+            serde_json::Value::Object(entry)
+        })
+        .collect();
+
+    crate::generation::paragraphs::persist(&state, &chapter_id, updated).await?;
+
+    tracing::info!(
+        audiobook = %id,
+        chapter = n,
+        custom_paragraphs = custom_indices.len(),
+        generated = codes.len(),
+        "regenerate_chapter_manim_code: complete"
+    );
+
+    let after = load_chapter_by_number(&state, &id, n as i64).await?;
+    Ok(Json(after.to_summary()?))
+}
+
+// -------------------------------------------------------------------------
+// POST /audiobook/:id/chapter/:n/test-manim-llm  — owner-scoped dry-run
+// -------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct TestChapterManimLlmRequest {
+    /// LLM record id (e.g. `claude_sonnet_4_6`). Backend resolves it
+    /// to find provider + upstream model slug. Doesn't have to be
+    /// tagged `default_for: ["manim_code"]` — the whole point is to
+    /// audition models the user hasn't committed to yet.
+    #[validate(length(min = 1, max = 120))]
+    pub llm_id: String,
+    /// Optional paragraph index to test against. Defaults to the
+    /// first `custom_manim` paragraph if any, otherwise paragraph 0.
+    pub paragraph_index: Option<u32>,
+    /// Theme name passed to the prompt. Defaults to `library` to
+    /// match the production code-gen path.
+    #[validate(length(max = 40))]
+    pub theme: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TestChapterManimLlmResponse {
+    /// Display name of the LLM that ran (e.g. "Claude Sonnet 4.6").
+    pub llm_name: String,
+    /// Upstream model slug (e.g. "anthropic/claude-sonnet-4.6").
+    pub model_id: String,
+    /// Rendered prompt body sent to the LLM, with all `{{markers}}`
+    /// already substituted. Useful for spotting prompt bugs without
+    /// digging into the template editor.
+    pub prompt: String,
+    /// Raw response string from the LLM. The production path expects
+    /// `{"summary":"…","code":"…"}`; surface whatever came back so the
+    /// user can see when a model emits non-JSON or refuses.
+    pub response: String,
+    /// USD cost. Mirrors the `generation_event` cost rule: `usage.cost`
+    /// when the upstream populated it, else token-pricing × usage.
+    /// Always `0.0` for mocked calls.
+    pub cost_usd: f64,
+    /// Wall-clock time the `chat()` call took (request → response
+    /// fully decoded).
+    pub elapsed_ms: u64,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    /// True when the provider for this LLM has no API key configured;
+    /// the response is fabricated locally.
+    pub mocked: bool,
+    /// Index of the paragraph the test ran against.
+    pub paragraph_index: u32,
+    /// First 200 chars of the paragraph text. Saves the UI a second
+    /// round-trip just to label the dialog.
+    pub paragraph_preview: String,
+}
+
+#[utoipa::path(
+    post,
+    path = "/audiobook/{id}/chapter/{n}/test-manim-llm",
+    tag = "audiobook",
+    params(("id" = String, Path), ("n" = u32, Path)),
+    request_body = TestChapterManimLlmRequest,
+    responses(
+        (status = 200, description = "LLM ran; prompt/response/metrics returned", body = TestChapterManimLlmResponse),
+        (status = 400, description = "No paragraphs to test against, or unknown llm_id"),
+        (status = 404, description = "Audiobook or chapter not found"),
+        (status = 502, description = "Upstream LLM error")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn test_chapter_manim_llm(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path((id, n)): Path<(String, u32)>,
+    Json(body): Json<TestChapterManimLlmRequest>,
+) -> ApiResult<Json<TestChapterManimLlmResponse>> {
+    body.validate().map_err(|e| Error::Validation(e.to_string()))?;
+    assert_owner(&state, &id, &user.id).await?;
+
+    let book = load_audiobook(&state, &id).await?;
+    let chapter = load_chapter_by_number(&state, &id, n as i64).await?;
+    let paragraphs_json = chapter.paragraphs.clone().unwrap_or_default();
+    if paragraphs_json.is_empty() {
+        return Err(Error::Validation(
+            "chapter has no paragraphs — split the body first (the chapter_paragraphs job)".into(),
+        )
+        .into());
+    }
+
+    // Paragraph selection: explicit > first custom_manim > first row.
+    // We never silently fall through when the explicit index is wrong —
+    // that'd produce a confusing "ran the wrong paragraph" result.
+    let pick = match body.paragraph_index {
+        Some(idx) => paragraphs_json
+            .iter()
+            .find(|p| p.index.max(0) as u32 == idx)
+            .cloned()
+            .ok_or_else(|| {
+                Error::Validation(format!("paragraph {idx} not found in chapter {n}"))
+            })?,
+        None => paragraphs_json
+            .iter()
+            .find(|p| p.visual_kind.as_deref() == Some("custom_manim"))
+            .cloned()
+            .unwrap_or_else(|| paragraphs_json[0].clone()),
+    };
+
+    // Resolve LLM by id. Inline the query so we don't have to expose
+    // admin's `load_llm` to non-admin handlers.
+    #[derive(Deserialize)]
+    struct LlmRow {
+        name: String,
+        provider: String,
+        model_id: String,
+        #[serde(default)]
+        cost_prompt_per_1k: f64,
+        #[serde(default)]
+        cost_completion_per_1k: f64,
+    }
+    let llm_id = body.llm_id.trim();
+    if !llm_id
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
+        return Err(Error::Validation("invalid llm_id charset".into()).into());
+    }
+    let llm: LlmRow = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT name, provider, model_id, cost_prompt_per_1k, cost_completion_per_1k \
+             FROM llm:`{llm_id}`"
+        ))
+        .await
+        .map_err(|e| Error::Database(format!("test-manim-llm load llm: {e}")))?
+        .take::<Vec<LlmRow>>(0)
+        .map_err(|e| Error::Database(format!("test-manim-llm decode llm: {e}")))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::NotFound {
+            resource: format!("llm:{llm_id}"),
+        })?;
+
+    // Render the manim_code prompt with the same vars the production
+    // code-gen path uses; only `theme` and `run_seconds` differ in
+    // that we don't have a per-paragraph audio plan here, so we use
+    // the same defaults the regen handler uses.
+    let theme = body
+        .theme
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("library");
+    let mut vars: std::collections::HashMap<&str, String> =
+        std::collections::HashMap::new();
+    vars.insert("book_title", book.title.clone());
+    vars.insert("book_topic", book.topic.clone());
+    vars.insert("genre", book.genre.clone().unwrap_or_else(|| "any".into()));
+    vars.insert("chapter_title", chapter.title.clone());
+    vars.insert("theme", theme.to_string());
+    vars.insert("run_seconds", "8.0".into());
+    vars.insert("paragraph_text", pick.text.clone());
+    let rendered = crate::generation::prompts::render(
+        &state,
+        listenai_core::domain::prompt::PromptRole::ManimCode,
+        &vars,
+    )
+    .await?;
+
+    // Call the LLM directly using the resolved model_id + provider.
+    // Bypasses `pick_llm_for_role` so the user can audition any
+    // enabled model, not just the one tagged `default_for: manim_code`.
+    use crate::llm::{ChatMessage, ChatRequest};
+    let req = ChatRequest {
+        model: llm.model_id.clone(),
+        messages: vec![
+            ChatMessage::system(
+                "You write Manim Community Edition code for one diagram. \
+                 Reply with strict JSON: {\"summary\": \"...\", \"code\": \"...\"}. \
+                 No markdown fences, no prose outside the JSON.",
+            ),
+            ChatMessage::user(rendered.body.clone()),
+        ],
+        temperature: Some(0.4),
+        max_tokens: Some(4_000),
+        json_mode: Some(true),
+        modalities: None,
+        provider: Some(llm.provider.clone()),
+    };
+    let started = std::time::Instant::now();
+    let resp = state.llm().chat(&req).await?;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+
+    // Cost — same priority order as `outline::log_generation_event`,
+    // minus the `mocked` short-circuit (already 0).
+    let cost_usd = if resp.mocked {
+        0.0
+    } else if resp.usage.cost > 0.0 {
+        resp.usage.cost
+    } else {
+        let pt = resp.usage.prompt_tokens as f64;
+        let ct = resp.usage.completion_tokens as f64;
+        (pt / 1000.0) * llm.cost_prompt_per_1k
+            + (ct / 1000.0) * llm.cost_completion_per_1k
+    };
+
+    let preview: String = pick.text.chars().take(200).collect();
+
+    Ok(Json(TestChapterManimLlmResponse {
+        llm_name: llm.name,
+        model_id: llm.model_id,
+        prompt: rendered.body,
+        response: resp.content,
+        cost_usd,
+        elapsed_ms,
+        prompt_tokens: resp.usage.prompt_tokens,
+        completion_tokens: resp.usage.completion_tokens,
+        mocked: resp.mocked,
+        paragraph_index: pick.index.max(0) as u32,
+        paragraph_preview: preview,
+    }))
+}
+
+// -------------------------------------------------------------------------
+// POST /audiobook/:id/chapter/:n/test-manim-render
+//   — render Manim code straight into a throwaway MP4 so the test
+//     dialog can preview what the audition LLM produced. No DB writes.
+// -------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct RenderTestManimRequest {
+    /// Raw Python source for one `class Scene(TemplateScene): …`. Same
+    /// shape the production `manim_code` path persists; the sidecar
+    /// AST-screens before exec'ing.
+    #[validate(length(min = 1, max = 200_000))]
+    pub code: String,
+    /// Target run length. Defaults to 8 s — matches the placeholder
+    /// the test-manim-llm prompt uses, and is well within the
+    /// MIN_RUN_SECONDS floor the sidecar enforces.
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RenderTestManimResponse {
+    /// Opaque id (UUID) the frontend uses with the matching `GET
+    /// /audiobook/:id/test-manim/:test_id` stream endpoint to fetch
+    /// the rendered MP4.
+    pub test_id: String,
+    /// Wall-clock time the Manim sidecar took (spawn → MP4 done).
+    pub elapsed_ms: u64,
+}
+
+#[utoipa::path(
+    post,
+    path = "/audiobook/{id}/chapter/{n}/test-manim-render",
+    tag = "audiobook",
+    params(("id" = String, Path), ("n" = u32, Path)),
+    request_body = RenderTestManimRequest,
+    responses(
+        (status = 200, description = "Rendered MP4 ready; fetch via test-manim/:test_id", body = RenderTestManimResponse),
+        (status = 400, description = "Manim sidecar not configured or code rejected"),
+        (status = 404, description = "Audiobook not found"),
+        (status = 502, description = "Render failed")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn render_test_manim(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path((id, _n)): Path<(String, u32)>,
+    Json(body): Json<RenderTestManimRequest>,
+) -> ApiResult<Json<RenderTestManimResponse>> {
+    body.validate().map_err(|e| Error::Validation(e.to_string()))?;
+    assert_owner(&state, &id, &user.id).await?;
+
+    let cfg = state.config();
+    if cfg.animate_manim_cmd.trim().is_empty() {
+        return Err(Error::Validation(
+            "animate_manim_cmd is empty — Manim sidecar not configured on this server"
+                .into(),
+        )
+        .into());
+    }
+
+    // Per-audiobook test-manim directory under storage. Reusing
+    // storage_path keeps these throwaway clips on the same disk as
+    // chapter audio/video, so the streaming handler doesn't need
+    // a second base.
+    let storage = std::fs::canonicalize(&cfg.storage_path).map_err(|e| {
+        Error::Other(anyhow::anyhow!(
+            "canonicalize storage_path {:?}: {e}",
+            cfg.storage_path
+        ))
+    })?;
+    let test_dir = storage.join(&id).join("test-manim");
+    std::fs::create_dir_all(&test_dir).map_err(|e| {
+        Error::Other(anyhow::anyhow!(
+            "create test-manim dir {}: {e}",
+            test_dir.display()
+        ))
+    })?;
+    let test_id = uuid::Uuid::new_v4().simple().to_string();
+    let output_mp4 = test_dir.join(format!("{test_id}.mp4"));
+
+    // One-shot sidecar pool. Capacity 1 — testing is sequential, the
+    // user clicks Run, waits, repeats. Sidecar startup is ~3–5 s
+    // (Manim Python imports), which we eat each test; sharing across
+    // requests would speed it up but means storing a pool on AppState
+    // and tracking shutdown — overkill for an audition feature.
+    use crate::animation::manim_sidecar::{
+        ManimRendererPool, ManimRequest, ManimSidecarCfg,
+    };
+    let pool = ManimRendererPool::new(
+        ManimSidecarCfg::new(
+            cfg.animate_manim_python_bin.clone(),
+            std::path::PathBuf::from(&cfg.animate_manim_cmd),
+            cfg.animate_manim_ld_preload.clone(),
+        ),
+        1,
+    );
+
+    let duration_ms = body.duration_ms.unwrap_or(8_000).max(1_000);
+    let req = ManimRequest::RawScene {
+        code: body.code,
+        duration_ms,
+        output_mp4: output_mp4.clone(),
+    };
+
+    let started = std::time::Instant::now();
+    let render_result = pool.render(&req).await;
+    pool.shutdown().await;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+
+    if let Err(e) = render_result {
+        // Best-effort cleanup so a failed render doesn't leave a
+        // 0-byte stub the stream endpoint would happily serve.
+        let _ = std::fs::remove_file(&output_mp4);
+        return Err(Error::Upstream(format!("manim render failed: {e:?}")).into());
+    }
+
+    Ok(Json(RenderTestManimResponse {
+        test_id,
+        elapsed_ms,
+    }))
+}
+
+// -------------------------------------------------------------------------
 // PATCH /audiobook/:id/chapter/:n
 // -------------------------------------------------------------------------
 
@@ -1625,11 +2838,16 @@ pub async fn patch_chapter(
             .map_err(|e| Error::Database(format!("patch chapter synopsis: {e}")))?;
     }
     if let Some(bm) = body.body_md {
+        // Body change invalidates the cached voice_segments (the old
+        // segmentation no longer matches the prose). Cleared in the
+        // same statement so a subsequent multi-voice narration
+        // re-runs the extract pass against the fresh body.
         state
             .db()
             .inner()
             .query(format!(
-                "UPDATE chapter:`{raw}` SET body_md = $b, status = \"text_ready\""
+                "UPDATE chapter:`{raw}` SET body_md = $b, status = \"text_ready\", \
+                 voice_segments = NONE"
             ))
             .bind(("b", Some(bm)))
             .await
@@ -1680,6 +2898,19 @@ pub struct CostByRole {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub cost_usd: f64,
+    /// LLM record id (`llm:<id>`'s key portion). `None` for events whose
+    /// FK couldn't be resolved (notably the `_default_` fallback path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_id: Option<String>,
+    /// LLM display name (e.g. "Claude Sonnet 4.6"). For TTS rows, this
+    /// holds the voice id parsed from the event's note instead — the
+    /// stored `llm` link is a placeholder, not the actual narrator.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_name: Option<String>,
+    /// Upstream model slug (e.g. "anthropic/claude-sonnet-4.6"). Empty
+    /// for TTS rows for the same reason as `llm_name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1689,6 +2920,9 @@ pub struct AudiobookCostSummary {
     pub total_prompt_tokens: u64,
     pub total_completion_tokens: u64,
     pub event_count: u32,
+    /// Per-role rollup. Now also keyed by LLM, so a role that used two
+    /// different models (e.g. an admin swapped the chapter LLM mid-way)
+    /// produces two entries with the same `role`.
     pub by_role: Vec<CostByRole>,
 }
 
@@ -1717,13 +2951,23 @@ pub async fn costs(
         completion_tokens: i64,
         #[serde(default)]
         cost_usd: f64,
+        /// FK into `llm`. Always populated by the writers — either a real
+        /// row id, the `_default_` placeholder when the role pick fell
+        /// through to the env-configured fallback, or the TTS placeholder.
+        #[serde(default)]
+        llm: Option<Thing>,
+        /// TTS rows stash `voice=<id> duration_ms=… chars=…` in here on
+        /// success so the admin panel can show the narrator without a
+        /// dedicated column. We pull it out below to populate `llm_name`.
+        #[serde(default)]
+        error: Option<String>,
     }
 
     let rows: Vec<EventRow> = state
         .db()
         .inner()
         .query(format!(
-            "SELECT role, prompt_tokens, completion_tokens, cost_usd \
+            "SELECT role, prompt_tokens, completion_tokens, cost_usd, llm, error \
              FROM generation_event WHERE audiobook = audiobook:`{id}`"
         ))
         .await
@@ -1731,8 +2975,62 @@ pub async fn costs(
         .take(0)
         .map_err(|e| Error::Database(format!("load costs (decode): {e}")))?;
 
-    use std::collections::BTreeMap;
-    let mut by_role: BTreeMap<String, CostByRole> = BTreeMap::new();
+    // Group key includes the llm record id so a role that used two
+    // different models renders as two rows in the breakdown. `_default_`
+    // and missing rows collapse into a single key — the dialog will show
+    // them as "fallback" / unnamed.
+    use std::collections::{BTreeMap, BTreeSet};
+
+    #[derive(Debug, Deserialize)]
+    struct LlmMeta {
+        id: Thing,
+        name: String,
+        model_id: String,
+    }
+
+    // Distinct llm ids referenced by the events, minus the `_default_`
+    // placeholder (no DB row exists for it) and any TTS rows (whose
+    // stored llm link is a hardcoded stand-in, not the narrator).
+    let mut wanted: BTreeSet<String> = BTreeSet::new();
+    for r in &rows {
+        if r.role == "tts" {
+            continue;
+        }
+        if let Some(t) = &r.llm {
+            let raw = t.id.to_raw();
+            if raw != "_default_" {
+                wanted.insert(raw);
+            }
+        }
+    }
+
+    // One round-trip to fetch the display names + upstream model slugs.
+    // `record::id(id) INSIDE $ids` avoids string-splicing record-link
+    // literals — the ids stay a bound param, which is also cheaper for
+    // SurrealDB to validate.
+    let mut llm_meta: BTreeMap<String, (String, String)> = BTreeMap::new();
+    if !wanted.is_empty() {
+        let ids: Vec<String> = wanted.iter().cloned().collect();
+        let metas: Vec<LlmMeta> = state
+            .db()
+            .inner()
+            .query(
+                "SELECT id, name, model_id FROM llm \
+                 WHERE record::id(id) INSIDE $ids",
+            )
+            .bind(("ids", ids))
+            .await
+            .map_err(|e| Error::Database(format!("load llm meta: {e}")))?
+            .take(0)
+            .map_err(|e| Error::Database(format!("load llm meta (decode): {e}")))?;
+        for m in metas {
+            llm_meta.insert(m.id.id.to_raw(), (m.name, m.model_id));
+        }
+    }
+
+    // Group by (role, llm_id). The key is what we sort by — alphabetical
+    // role keeps callers' UIs deterministic across reloads.
+    let mut by_key: BTreeMap<(String, String), CostByRole> = BTreeMap::new();
     let mut total_cost = 0.0;
     let mut total_pt: u64 = 0;
     let mut total_ct: u64 = 0;
@@ -1743,12 +3041,42 @@ pub async fn costs(
         total_cost += r.cost_usd;
         total_pt += pt;
         total_ct += ct;
-        let entry = by_role.entry(r.role.clone()).or_insert(CostByRole {
+
+        // Resolve the human-readable model fields. For TTS we ignore the
+        // placeholder llm link and parse `voice=<id>` out of the note; for
+        // everything else we look up the joined `llm` row, falling back
+        // to the raw id when the row was deleted/renamed.
+        let (llm_id_opt, llm_name_opt, model_id_opt) = if r.role == "tts" {
+            let voice = r
+                .error
+                .as_deref()
+                .and_then(|s| s.split_whitespace().find_map(|t| t.strip_prefix("voice=")))
+                .map(str::to_string);
+            (None, voice, None)
+        } else {
+            let raw = r.llm.as_ref().map(|t| t.id.to_raw());
+            match raw {
+                None => (None, None, None),
+                Some(id) if id == "_default_" => (Some(id), None, None),
+                Some(id) => match llm_meta.get(&id) {
+                    Some((name, model)) => {
+                        (Some(id), Some(name.clone()), Some(model.clone()))
+                    }
+                    None => (Some(id), None, None),
+                },
+            }
+        };
+
+        let key = (r.role.clone(), llm_id_opt.clone().unwrap_or_default());
+        let entry = by_key.entry(key).or_insert(CostByRole {
             role: r.role,
             count: 0,
             prompt_tokens: 0,
             completion_tokens: 0,
             cost_usd: 0.0,
+            llm_id: llm_id_opt,
+            llm_name: llm_name_opt,
+            model_id: model_id_opt,
         });
         entry.count += 1;
         entry.prompt_tokens += pt;
@@ -1762,7 +3090,7 @@ pub async fn costs(
         total_prompt_tokens: total_pt,
         total_completion_tokens: total_ct,
         event_count,
-        by_role: by_role.into_values().collect(),
+        by_role: by_key.into_values().collect(),
     }))
 }
 

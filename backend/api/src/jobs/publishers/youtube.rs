@@ -93,6 +93,18 @@ impl JobHandler for PublishYoutubeHandler {
             .and_then(|p| p.get("description"))
             .and_then(|v| v.as_str())
             .map(str::to_string);
+        // animate=true → use the per-chapter `ch-N.video.mp4` companion
+        // videos as the visual track instead of the cover loop. The
+        // HTTP handler already verifies they exist on disk before
+        // enqueueing; we re-check inside the encoder to handle a stale
+        // job whose chapter MP4s have been GC'd between enqueue and
+        // pick-up.
+        let animate = job
+            .payload
+            .as_ref()
+            .and_then(|p| p.get("animate"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         tracing::debug!(
             job_id = %job.id,
@@ -119,7 +131,29 @@ impl JobHandler for PublishYoutubeHandler {
         // Load once here so single/playlist/per-chapter builders below all
         // see the same value and a transient DB issue doesn't get retried
         // mid-publish.
-        let footer = load_description_footer(state, &language).await;
+        let footer_raw = load_description_footer(state, &language).await;
+        // Optional "Models used" credits block. Off by default, opt-in via
+        // /admin/youtube-publish-settings. We splice it into the same
+        // string we hand downstream as `footer` so every description
+        // builder picks it up without new parameters; the order in the
+        // final description is: body → credits → admin footer.
+        let publish_settings = crate::handlers::admin::load_youtube_publish_settings(state)
+            .await
+            .ok();
+        let include_credits = publish_settings
+            .as_ref()
+            .map(|s| s.include_credits)
+            .unwrap_or(false);
+        let like_subscribe_overlay = publish_settings
+            .as_ref()
+            .map(|s| s.like_subscribe_overlay)
+            .unwrap_or(false);
+        let credits = if include_credits {
+            load_credits_block(state, &audiobook_id).await
+        } else {
+            None
+        };
+        let footer = combine_credits_and_footer(credits.as_deref(), footer_raw.as_deref());
         if chapters.is_empty() {
             return Ok(fail(
                 state,
@@ -192,6 +226,19 @@ impl JobHandler for PublishYoutubeHandler {
         } else {
             mode.as_str()
         };
+        // Shorts use a 9:16 cover composite which the 16:9 per-chapter
+        // animation videos can't contribute to. Refuse rather than
+        // produce a letterboxed frame the platform might down-rank.
+        if animate && book.is_short.unwrap_or(false) {
+            return Ok(fail(
+                state,
+                &publication_id,
+                Error::Conflict(
+                    "animate=true is incompatible with Shorts (vertical 9:16 not supported by the 16:9 chapter renders)".into(),
+                ),
+            )
+            .await);
+        }
         match effective_mode {
             "playlist" => {
                 // Prefer the podcast's playlist over a per-publication one
@@ -220,6 +267,8 @@ impl JobHandler for PublishYoutubeHandler {
                     description_override.as_deref(),
                     footer.as_deref(),
                     review,
+                    animate,
+                    like_subscribe_overlay,
                 )
                 .await
             }
@@ -242,6 +291,8 @@ impl JobHandler for PublishYoutubeHandler {
                     description_override.as_deref(),
                     footer.as_deref(),
                     review,
+                    animate,
+                    like_subscribe_overlay,
                 )
                 .await
             }
@@ -271,15 +322,20 @@ async fn run_single(
     description_override: Option<&str>,
     footer: Option<&str>,
     review: bool,
+    animate: bool,
+    like_subscribe_overlay: bool,
 ) -> Result<JobOutcome> {
     // ---- ffmpeg encode. ----------------------------------------------------
     //
-    // Build one segment per chapter: each holds its own image (chapter art
-    // when present, cover otherwise) for the chapter's audio duration,
-    // and they're spliced together into a single MP4 with the concat
-    // filter. Chapters that don't have art all reuse the cover composite,
-    // so this stays as cheap as the old single-image path on books with
-    // no art.
+    // Two paths:
+    //   * `animate=false` (the original): build one image-loop segment per
+    //     chapter (chapter art when present, cover otherwise) and splice
+    //     them together with their per-chapter WAVs. Chapters that don't
+    //     have art all reuse the cover composite, so this stays as cheap
+    //     as the old single-image path on books with no art.
+    //   * `animate=true` (Phase D): the per-chapter `ch-N.video.mp4`
+    //     companions already have visuals + audio baked in. Just concat
+    //     them with `-c copy`, no re-encode.
     ctx.progress(job, "encoding", 0.1).await;
     let mp4_path = state
         .config()
@@ -288,74 +344,101 @@ async fn run_single(
         .join(language)
         .join("youtube.mp4");
 
-    // Image segments: paragraph-weighted slideshow per chapter, with
-    // chapter cover tile lead-ins. Falls back to one segment per
-    // chapter when no paragraph illustrations exist.
-    //
-    // Shorts skip the slideshow entirely and use the vertical cover for
-    // the whole clip — paragraph art doesn't fit a 9:16 frame and a
-    // ≤ 90 s clip rarely benefits from a slideshow anyway.
     let storage = &state.config().storage_path;
     let is_short = book.is_short.unwrap_or(false);
-    let mut image_segments: Vec<ImageSegment> = Vec::new();
-    if is_short {
+
+    if animate {
+        let chapter_videos: Vec<PathBuf> = chapters
+            .iter()
+            .map(|c| {
+                storage
+                    .join(audiobook_id)
+                    .join(language)
+                    .join(format!("ch-{}.video.mp4", c.number))
+            })
+            .collect();
+        for p in &chapter_videos {
+            if !p.exists() {
+                return Ok(fail(
+                    state,
+                    publication_id,
+                    Error::Conflict(format!(
+                        "animation missing on disk: {} (re-run /animate)",
+                        p.display()
+                    )),
+                )
+                .await);
+            }
+        }
+        if let Err(e) = concat_animated_chapters(state, &chapter_videos, &mp4_path).await
+        {
+            return Ok(fail(state, publication_id, e).await);
+        }
+    } else {
+        // Image segments: paragraph-weighted slideshow per chapter, with
+        // chapter art lead-ins. Falls back to one segment per chapter
+        // when no paragraph illustrations exist. Shorts use the same
+        // build path — the encoder composites each tile onto the 9:16
+        // blurred-backdrop layout so square paragraph art displays as a
+        // 1080×1080 inset, identical treatment to the cover. Books
+        // without paragraph art (or Shorts with `images_per_paragraph =
+        // 0`) get a single full-duration cover/chapter-art segment via
+        // the same fallback as before.
+        let mut image_segments: Vec<ImageSegment> = Vec::new();
+        for c in chapters {
+            image_segments.extend(build_chapter_image_segments(
+                c,
+                cover_path,
+                storage,
+                is_short,
+            ));
+        }
+
+        let wavs: Vec<PathBuf> = chapters
+            .iter()
+            .map(|c| {
+                state
+                    .config()
+                    .storage_path
+                    .join(audiobook_id)
+                    .join(language)
+                    .join(format!("ch-{}.wav", c.number))
+            })
+            .collect();
+
+        // Map ffmpeg's [0..1] encode progress onto [0.10..0.30] of the
+        // overall publish progress so the bar moves smoothly through the
+        // longest phase. Sum chapter durations to give the parser something
+        // to compute against.
         let total_ms: u64 = chapters
             .iter()
             .map(|c| c.duration_ms.unwrap_or(0).max(0) as u64)
             .sum();
-        image_segments.push(ImageSegment {
-            image_src: cover_path.to_path_buf(),
-            duration_ms: total_ms,
-        });
-    } else {
-        for c in chapters {
-            image_segments.extend(build_chapter_image_segments(c, cover_path, storage));
+
+        let job_for_encode = job.clone();
+        let ctx_for_encode = ctx.clone();
+        let encode_result = encode_mp4_segmented(
+            state,
+            &image_segments,
+            &wavs,
+            &mp4_path,
+            total_ms,
+            is_short,
+            like_subscribe_overlay,
+            move |frac| {
+                let job = job_for_encode.clone();
+                let ctx = ctx_for_encode.clone();
+                async move {
+                    let overall = 0.10 + (frac * 0.20);
+                    ctx.progress(&job, "encoding", overall.clamp(0.0, 0.30))
+                        .await;
+                }
+            },
+        )
+        .await;
+        if let Err(e) = encode_result {
+            return Ok(fail(state, publication_id, e).await);
         }
-    }
-
-    let wavs: Vec<PathBuf> = chapters
-        .iter()
-        .map(|c| {
-            state
-                .config()
-                .storage_path
-                .join(audiobook_id)
-                .join(language)
-                .join(format!("ch-{}.wav", c.number))
-        })
-        .collect();
-
-    // Map ffmpeg's [0..1] encode progress onto [0.10..0.30] of the
-    // overall publish progress so the bar moves smoothly through the
-    // longest phase. Sum chapter durations to give the parser something
-    // to compute against.
-    let total_ms: u64 = chapters
-        .iter()
-        .map(|c| c.duration_ms.unwrap_or(0).max(0) as u64)
-        .sum();
-
-    let job_for_encode = job.clone();
-    let ctx_for_encode = ctx.clone();
-    let encode_result = encode_mp4_segmented(
-        state,
-        &image_segments,
-        &wavs,
-        &mp4_path,
-        total_ms,
-        is_short,
-        move |frac| {
-            let job = job_for_encode.clone();
-            let ctx = ctx_for_encode.clone();
-            async move {
-                let overall = 0.10 + (frac * 0.20);
-                ctx.progress(&job, "encoding", overall.clamp(0.0, 0.30))
-                    .await;
-            }
-        },
-    )
-    .await;
-    if let Err(e) = encode_result {
-        return Ok(fail(state, publication_id, e).await);
     }
     ctx.progress(job, "encoded", 0.3).await;
 
@@ -513,6 +596,8 @@ async fn run_playlist(
     description_override: Option<&str>,
     footer: Option<&str>,
     review: bool,
+    animate: bool,
+    like_subscribe_overlay: bool,
 ) -> Result<JobOutcome> {
     // Review mode: just encode every chapter MP4 and stop. We deliberately
     // don't create the playlist on YouTube here — that's a side effect the
@@ -527,6 +612,8 @@ async fn run_playlist(
             publication_id,
             chapters,
             cover_path,
+            animate,
+            like_subscribe_overlay,
         )
         .await;
     }
@@ -611,60 +698,96 @@ async fn run_playlist(
             }
         }
 
-        // Build the per-chapter slideshow: paragraph-weighted segments
-        // when the chapter has paragraph illustrations, otherwise a
-        // single full-chapter segment with chapter art (or cover).
         let storage = &state.config().storage_path;
-        let image_segments = build_chapter_image_segments(ch, cover_path, storage);
 
-        let chapter_wav = state
-            .config()
-            .storage_path
-            .join(audiobook_id)
-            .join(language)
-            .join(format!("ch-{}.wav", ch.number));
-
-        // Per-chapter MP4 in its own subdir so retries don't trip over a
-        // half-written file from the previous attempt.
-        let mp4_path = state
-            .config()
-            .storage_path
-            .join(audiobook_id)
-            .join(language)
-            .join(format!("youtube-ch-{}.mp4", ch.number));
-
-        // Map ffmpeg progress onto [span_start .. span_start + 30% of span].
-        let encode_span_end = span_start + (span_end - span_start) * 0.30;
-        let encode_total_ms = ch.duration_ms.unwrap_or(0).max(0) as u64;
-        let job_for_encode = job.clone();
-        let ctx_for_encode = ctx.clone();
-        let stage_label = format!("ch{} encoding", ch.number);
-        let encode_result = encode_mp4_segmented(
-            state,
-            &image_segments,
-            std::slice::from_ref(&chapter_wav),
-            &mp4_path,
-            encode_total_ms,
+        // animate=true: the per-chapter `ch-N.video.mp4` from the
+        // animate job already has visuals + audio. Use it directly
+        // (no re-encode). For the original path, build a per-chapter
+        // slideshow + encode from cover + WAV.
+        let mp4_path = if animate {
+            let p = storage
+                .join(audiobook_id)
+                .join(language)
+                .join(format!("ch-{}.video.mp4", ch.number));
+            if !p.exists() {
+                let err = Error::Conflict(format!(
+                    "animation missing on disk: {} (re-run /animate)",
+                    p.display()
+                ));
+                mark_chapter_video_error(state, publication_id, ch, &err.to_string()).await;
+                return Ok(fail(state, publication_id, err).await);
+            }
+            // Encode-stage progress jumps straight to the encode-end
+            // milestone since there's no encode happening.
+            let span_30 = span_start + (span_end - span_start) * 0.30;
+            ctx.progress(
+                job,
+                &format!("ch{} ready", ch.number),
+                span_30.clamp(0.0, 0.99),
+            )
+            .await;
+            p
+        } else {
+            // Build the per-chapter slideshow: paragraph-weighted segments
+            // when the chapter has paragraph illustrations, otherwise a
+            // single full-chapter segment with chapter art (or cover).
             // Playlist mode is gated to non-Short books at the dispatch
-            // site, so a horizontal encode is always correct here.
-            false,
-            move |frac| {
-                let job = job_for_encode.clone();
-                let ctx = ctx_for_encode.clone();
-                let label = stage_label.clone();
-                async move {
-                    let overall = span_start + frac * (encode_span_end - span_start);
-                    ctx.progress(&job, &label, overall.clamp(0.0, 0.99)).await;
-                }
-            },
-        )
-        .await;
-        if let Err(e) = encode_result {
-            // Persist the per-chapter error so the UI can show which one
-            // broke without losing the chapters that already succeeded.
-            mark_chapter_video_error(state, publication_id, ch, &e.to_string()).await;
-            return Ok(fail(state, publication_id, e).await);
-        }
+            // site, so the standard slideshow tuning applies.
+            let image_segments =
+                build_chapter_image_segments(ch, cover_path, storage, false);
+
+            let chapter_wav = state
+                .config()
+                .storage_path
+                .join(audiobook_id)
+                .join(language)
+                .join(format!("ch-{}.wav", ch.number));
+
+            // Per-chapter MP4 in its own subdir so retries don't trip over a
+            // half-written file from the previous attempt.
+            let path = state
+                .config()
+                .storage_path
+                .join(audiobook_id)
+                .join(language)
+                .join(format!("youtube-ch-{}.mp4", ch.number));
+
+            // Map ffmpeg progress onto [span_start .. span_start + 30% of span].
+            let encode_span_end = span_start + (span_end - span_start) * 0.30;
+            let encode_total_ms = ch.duration_ms.unwrap_or(0).max(0) as u64;
+            let job_for_encode = job.clone();
+            let ctx_for_encode = ctx.clone();
+            let stage_label = format!("ch{} encoding", ch.number);
+            let encode_result = encode_mp4_segmented(
+                state,
+                &image_segments,
+                std::slice::from_ref(&chapter_wav),
+                &path,
+                encode_total_ms,
+                // Playlist mode is gated to non-Short books at the dispatch
+                // site, so a horizontal encode is always correct here.
+                false,
+                like_subscribe_overlay,
+                move |frac| {
+                    let job = job_for_encode.clone();
+                    let ctx = ctx_for_encode.clone();
+                    let label = stage_label.clone();
+                    async move {
+                        let overall = span_start + frac * (encode_span_end - span_start);
+                        ctx.progress(&job, &label, overall.clamp(0.0, 0.99)).await;
+                    }
+                },
+            )
+            .await;
+            if let Err(e) = encode_result {
+                // Persist the per-chapter error so the UI can show which one
+                // broke without losing the chapters that already succeeded.
+                mark_chapter_video_error(state, publication_id, ch, &e.to_string()).await;
+                return Ok(fail(state, publication_id, e).await);
+            }
+            path
+        };
+        let encode_span_end = span_start + (span_end - span_start) * 0.30;
 
         // Pre-persist the chapter video row (without an id) so a half-
         // failed upload still leaves a marker the UI can show.
@@ -709,6 +832,18 @@ async fn run_playlist(
         {
             warn!(error = %e, "publish_youtube: persist chapter video failed");
         }
+
+        // Best-effort custom thumbnail so each chapter tile in the
+        // playlist shows its own art rather than YouTube's auto-pick
+        // (which collapses to a near-identical frame across chapters).
+        upload_chapter_thumbnail(
+            state,
+            access_token,
+            &upload_result.video_id,
+            ch,
+            cover_path,
+        )
+        .await;
 
         // Best-effort caption upload — failures here don't fail the
         // chapter publish, but they're logged so admins can re-attempt.
@@ -773,6 +908,7 @@ async fn run_playlist(
 /// uploads, and there are none in review mode. The user previews the MP4s
 /// via the streaming endpoint, then approves to enqueue the real upload
 /// run.
+#[allow(clippy::too_many_arguments)]
 async fn run_playlist_preview(
     state: &AppState,
     ctx: &JobContext,
@@ -782,6 +918,8 @@ async fn run_playlist_preview(
     publication_id: &str,
     chapters: &[DbChapter],
     cover_path: &Path,
+    animate: bool,
+    like_subscribe_overlay: bool,
 ) -> Result<JobOutcome> {
     let total = chapters.len().max(1);
     for (idx, ch) in chapters.iter().enumerate() {
@@ -789,7 +927,38 @@ async fn run_playlist_preview(
         let span_end = 0.10 + ((idx + 1) as f32 / total as f32) * 0.89;
 
         let storage = &state.config().storage_path;
-        let image_segments = build_chapter_image_segments(ch, cover_path, storage);
+
+        if animate {
+            // Animation already exists on disk; nothing to do but
+            // verify and bump progress. Preview UI streams it from the
+            // existing path.
+            let p = storage
+                .join(audiobook_id)
+                .join(language)
+                .join(format!("ch-{}.video.mp4", ch.number));
+            if !p.exists() {
+                return Ok(fail(
+                    state,
+                    publication_id,
+                    Error::Conflict(format!(
+                        "animation missing on disk: {} (re-run /animate)",
+                        p.display()
+                    )),
+                )
+                .await);
+            }
+            ctx.progress(
+                job,
+                &format!("ch{} ready", ch.number),
+                span_end.clamp(0.0, 0.99),
+            )
+            .await;
+            continue;
+        }
+
+        // Playlist preview is gated to non-Short books (Shorts force
+        // single mode), so the standard slideshow tuning applies.
+        let image_segments = build_chapter_image_segments(ch, cover_path, storage, false);
 
         let chapter_wav = state
             .config()
@@ -817,6 +986,7 @@ async fn run_playlist_preview(
             // Playlist preview always renders horizontal — Shorts use
             // the single-video branch.
             false,
+            like_subscribe_overlay,
             move |frac| {
                 let job = job_for_encode.clone();
                 let ctx = ctx_for_encode.clone();
@@ -878,10 +1048,18 @@ const MIN_SEGMENT_MS: u64 = 2000;
 /// — this is the legacy behaviour and what publications in translated
 /// languages get (paragraph illustrations are anchored to the primary
 /// chapter row).
+///
+/// `is_short` tunes the algorithm for ≤ 90 s vertical clips: the
+/// chapter-art "establishing shot" lead-in is skipped (each slot is
+/// too precious to spend on a near-duplicate of the cover) and the
+/// per-slide minimum drops to 700 ms (TikTok-paced viewers tolerate
+/// quick cuts, and the lower floor lets every generated tile fit even
+/// in a 30 s clip).
 fn build_chapter_image_segments(
     chapter: &DbChapter,
     cover_path: &Path,
     storage_path: &Path,
+    is_short: bool,
 ) -> Vec<ImageSegment> {
     let chapter_duration_ms = chapter.duration_ms.unwrap_or(0).max(0) as u64;
 
@@ -895,18 +1073,15 @@ fn build_chapter_image_segments(
 
     // Visual paragraphs that actually have at least one persisted tile.
     // We resolve and `exists()`-check tile paths up front so a half-
-    // failed image-gen doesn't feed ffmpeg a missing file.
+    // failed image-gen doesn't feed ffmpeg a missing file. The
+    // `scene_description` filter is intentionally permissive — older
+    // tiles generated before that field landed are still kept as long
+    // as the file exists on disk.
     let visual: Vec<(u64, Vec<PathBuf>)> = chapter
         .paragraphs
         .as_ref()
         .map(|ps| {
             ps.iter()
-                .filter(|p| {
-                    p.scene_description
-                        .as_deref()
-                        .map(|s| !s.trim().is_empty())
-                        .unwrap_or(false)
-                })
                 .filter_map(|p| {
                     let tiles: Vec<PathBuf> = p
                         .image_paths
@@ -932,14 +1107,16 @@ fn build_chapter_image_segments(
         }];
     }
 
-    // Weighted slides: chapter-art lead-in + every paragraph tile.
-    // Cover slot is sized like one average visual paragraph so the
-    // chapter art has a clear "establishing shot" moment.
-    let total_chars: u64 = visual.iter().map(|(c, _)| *c).sum();
-    let avg_chars = (total_chars / visual.len() as u64).max(1);
-
     let mut slides: Vec<(PathBuf, u64)> = Vec::new();
-    slides.push((chapter_art.clone(), avg_chars));
+    if !is_short {
+        // Establishing-shot lead-in for full-length books — sized like
+        // one average visual paragraph so the chapter art gets a clear
+        // moment before the slideshow starts. Shorts skip this so every
+        // slot can host a generated tile.
+        let total_chars: u64 = visual.iter().map(|(c, _)| *c).sum();
+        let avg_chars = (total_chars / visual.len() as u64).max(1);
+        slides.push((chapter_art.clone(), avg_chars));
+    }
     for (chars, tiles) in &visual {
         let per_tile = (chars / tiles.len() as u64).max(1);
         for tile_path in tiles {
@@ -947,11 +1124,14 @@ fn build_chapter_image_segments(
         }
     }
 
-    // Cap so each segment gets at least MIN_SEGMENT_MS on screen. Drop
-    // the tail rather than silently squeezing every slot below the
-    // minimum — earlier slides (cover + first paragraphs) are the most
-    // important and survive.
-    let max_slides = ((chapter_duration_ms / MIN_SEGMENT_MS).max(1)) as usize;
+    // Cap so each segment gets at least the chosen minimum on screen.
+    // Shorts use a smaller floor because the format expects quick cuts,
+    // and the lower floor lets every generated tile fit in a 30–90 s
+    // clip. Drop the tail rather than silently squeezing every slot
+    // below the minimum — earlier slides are the most narratively
+    // important.
+    let min_segment_ms = if is_short { 700 } else { MIN_SEGMENT_MS };
+    let max_slides = ((chapter_duration_ms / min_segment_ms).max(1)) as usize;
     if slides.len() > max_slides {
         slides.truncate(max_slides);
     }
@@ -987,6 +1167,103 @@ fn build_chapter_image_segments(
 /// `-loop 1 -t <d> -i <png>` input per image segment plus a `concat`
 /// filter to splice them. The audio side uses the concat demuxer over
 /// the wav list.
+/// Concatenate per-chapter animated companion MP4s (produced by the
+/// `animate` job) into a single book-wide MP4 with `-c copy` — no
+/// re-encode, ~instant on multi-GB inputs because we're just rewriting
+/// the container.
+///
+/// Inputs must already be in a uniform format (H.264 + AAC at the same
+/// resolution + sample rate); the renderer enforces this. If they
+/// drift, ffmpeg surfaces a stream-property mismatch and we surface
+/// the error verbatim.
+async fn concat_animated_chapters(
+    state: &AppState,
+    chapter_videos: &[PathBuf],
+    out_path: &Path,
+) -> Result<()> {
+    let bin = state.config().ffmpeg_bin.trim();
+    if bin.is_empty() {
+        return Err(Error::Config("ffmpeg_bin is empty".into()));
+    }
+    if chapter_videos.is_empty() {
+        return Err(Error::Conflict("no chapter videos to concat".into()));
+    }
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::Other(anyhow::anyhow!("create yt out dir: {e}")))?;
+    }
+
+    // ffmpeg's `concat` demuxer expects a text file of `file '<path>'`
+    // entries. Two gotchas the canonicalize step below handles:
+    //   1. **Path resolution.** ffmpeg resolves *relative* entries
+    //      against the *list file's directory*, not the process CWD.
+    //      Our `chapter_videos` come from the storage builder as
+    //      `./storage/audio/<id>/<lang>/ch-N.video.mp4` (relative to
+    //      CWD) and the list itself lives at
+    //      `./storage/audio/<id>/<lang>/youtube.concat.txt`, so a
+    //      naive write produces `<list_dir>/./storage/audio/...` —
+    //      doubled prefix, no such file.
+    //   2. Single-quote escaping is rare in ffmpeg-friendly paths
+    //      but we handle it for safety.
+    // The chapter MP4s have already been existence-checked by the
+    // caller, so canonicalize is safe (it requires existence).
+    let list_path = out_path.with_extension("concat.txt");
+    let mut list = String::new();
+    for v in chapter_videos {
+        let abs = std::fs::canonicalize(v).map_err(|e| {
+            Error::Other(anyhow::anyhow!(
+                "canonicalize chapter video {}: {e}",
+                v.display()
+            ))
+        })?;
+        let escaped = abs.display().to_string().replace('\'', r"'\''");
+        list.push_str("file '");
+        list.push_str(&escaped);
+        list.push_str("'\n");
+    }
+    std::fs::write(&list_path, list)
+        .map_err(|e| Error::Other(anyhow::anyhow!("write concat list: {e}")))?;
+
+    let mut cmd = tokio::process::Command::new(bin);
+    cmd.arg("-y")
+        .arg("-f")
+        .arg("concat")
+        .arg("-safe")
+        .arg("0")
+        .arg("-i")
+        .arg(&list_path)
+        .arg("-c")
+        .arg("copy")
+        // Always re-mux into mp4 (the inputs are mp4 too, so this is
+        // ~free). +faststart pulls the moov atom to the front so
+        // YouTube can begin processing the upload before it's done.
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg(out_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| Error::Other(anyhow::anyhow!("spawn ffmpeg (animate concat): {e}")))?;
+
+    // Best-effort cleanup; failure to unlink the list is not fatal.
+    let _ = std::fs::remove_file(&list_path);
+
+    if !output.status.success() {
+        let tail = String::from_utf8_lossy(&output.stderr).into_owned();
+        return Err(Error::Other(anyhow::anyhow!(
+            "ffmpeg (animate concat) exited with {}: {}",
+            output.status,
+            tail.trim_end()
+        )));
+    }
+    Ok(())
+}
+
 async fn encode_mp4_segmented<F, Fut>(
     state: &AppState,
     images: &[ImageSegment],
@@ -994,6 +1271,7 @@ async fn encode_mp4_segmented<F, Fut>(
     out_path: &Path,
     total_ms: u64,
     vertical: bool,
+    like_subscribe_overlay: bool,
     mut on_progress: F,
 ) -> Result<()>
 where
@@ -1121,17 +1399,43 @@ where
     // [0:v][1:v]…[N-1:v]concat=n=N:v=1:a=0[v]. Single-segment encodes
     // skip the filter and map [0:v] directly — saves a filter graph
     // setup for the common single-image case (translations, art-less
-    // chapters).
-    if images.len() == 1 {
-        cmd.arg("-map").arg("0:v");
-    } else {
-        let mut filter = String::new();
-        for i in 0..images.len() {
-            filter.push_str(&format!("[{i}:v]"));
+    // chapters). When the like-and-subscribe overlay is enabled we
+    // always force a filter graph so we can chain the drawtext on the
+    // end.
+    let overlay_clause = like_subscribe_overlay
+        .then(|| build_like_subscribe_drawtext(total_ms))
+        .flatten();
+    match (images.len(), overlay_clause.as_deref()) {
+        // Single image, no overlay: cheapest path — direct map, no filter.
+        (1, None) => {
+            cmd.arg("-map").arg("0:v");
         }
-        filter.push_str(&format!("concat=n={}:v=1:a=0[v]", images.len()));
-        cmd.arg("-filter_complex").arg(&filter);
-        cmd.arg("-map").arg("[v]");
+        // Single image, with overlay: one drawtext filter.
+        (1, Some(draw)) => {
+            cmd.arg("-filter_complex").arg(format!("[0:v]{draw}[v]"));
+            cmd.arg("-map").arg("[v]");
+        }
+        // Multi-segment, no overlay: concat directly into [v].
+        (_, None) => {
+            let mut filter = String::new();
+            for i in 0..images.len() {
+                filter.push_str(&format!("[{i}:v]"));
+            }
+            filter.push_str(&format!("concat=n={}:v=1:a=0[v]", images.len()));
+            cmd.arg("-filter_complex").arg(&filter);
+            cmd.arg("-map").arg("[v]");
+        }
+        // Multi-segment, with overlay: concat → drawtext.
+        (_, Some(draw)) => {
+            let mut filter = String::new();
+            for i in 0..images.len() {
+                filter.push_str(&format!("[{i}:v]"));
+            }
+            filter.push_str(&format!("concat=n={}:v=1:a=0[vc];", images.len()));
+            filter.push_str(&format!("[vc]{draw}[v]"));
+            cmd.arg("-filter_complex").arg(&filter);
+            cmd.arg("-map").arg("[v]");
+        }
     }
     cmd.arg("-map").arg(format!("{audio_input_index}:a"));
 
@@ -1243,6 +1547,59 @@ where
         let _ = tokio::fs::remove_file(&p).await;
     }
     Ok(())
+}
+
+/// Build the `drawtext=…` clause for the "Like & Subscribe!" overlay,
+/// or `None` if the video is too short to host it cleanly. Pure string
+/// builder — no I/O. Two visibility windows when the runtime is long
+/// enough (early: 5–13 s, late: last 10 s); a single early window for
+/// shorter clips so the call-to-action still appears once.
+///
+/// We resolve the font via fontconfig (`font=Sans-Bold`) rather than a
+/// hard-coded `fontfile` path so this works across distros without a
+/// new config option. Distros with an ffmpeg built without freetype +
+/// fontconfig will surface the failure at encode time; the user can
+/// then disable the toggle.
+fn build_like_subscribe_drawtext(total_ms: u64) -> Option<String> {
+    // Anything shorter than ~6 s would either flash and disappear or
+    // collide with the start. Skip rather than produce a janky result.
+    if total_ms < 6_000 {
+        return None;
+    }
+    let total_s = (total_ms as f64) / 1000.0;
+    // Late-window threshold: last 10 s of the video, but never closer
+    // than 5 s after the early window so the two don't overlap.
+    let early_start = 5.0_f64;
+    let early_end = (early_start + 8.0).min(total_s - 0.5);
+    let want_late = total_s >= 25.0;
+    let enable_expr = if want_late {
+        let late_start = (total_s - 10.0).max(early_end + 5.0);
+        format!(
+            "between(t\\,{e0:.2}\\,{e1:.2})+gte(t\\,{ls:.2})",
+            e0 = early_start,
+            e1 = early_end,
+            ls = late_start,
+        )
+    } else {
+        format!(
+            "between(t\\,{e0:.2}\\,{e1:.2})",
+            e0 = early_start,
+            e1 = early_end,
+        )
+    };
+
+    // Inside `-filter_complex`, drawtext value separators are `:` and
+    // each value is wrapped in single quotes. The `&` and `,` inside
+    // `enable=` are escaped with `\\` because they're filter-graph
+    // metacharacters — the explicit escapes above already handle the
+    // commas inside `between()`.
+    Some(format!(
+        "drawtext=font=Sans-Bold:text='LIKE \\& SUBSCRIBE!'\
+         :fontsize=h*0.06:fontcolor=white\
+         :box=1:boxcolor=black@0.6:boxborderw=24\
+         :x=(w-text_w)/2:y=h-text_h-h*0.10\
+         :enable='{enable_expr}'"
+    ))
 }
 
 /// Render a single background frame composited from `src`: the source
@@ -1592,6 +1949,167 @@ async fn load_description_footer(state: &AppState, language: &str) -> Option<Str
     rows.into_iter().next().map(|r| r.text).filter(|s| !s.trim().is_empty())
 }
 
+/// Builds a compact "Models used" block from `generation_event`, or
+/// `None` when the audiobook hasn't accumulated any successful events
+/// (e.g. a fully mocked book in dev). Lines are bucketed by activity —
+/// text / cover / illustrations / narration / animation — and only
+/// emitted when at least one model contributed to that bucket. Distinct
+/// model names within a bucket are de-duplicated and joined with ", ".
+async fn load_credits_block(state: &AppState, audiobook_id: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Row {
+        role: String,
+        #[serde(default)]
+        llm: Option<surrealdb::sql::Thing>,
+        // TTS rows stash `voice=<id> duration_ms=… chars=…` here; for
+        // narration we read this rather than the placeholder llm link.
+        #[serde(default)]
+        error: Option<String>,
+    }
+    let rows: Vec<Row> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT role, llm, error FROM generation_event \
+             WHERE audiobook = audiobook:`{audiobook_id}` AND success = true"
+        ))
+        .await
+        .ok()?
+        .take(0)
+        .ok()?;
+    if rows.is_empty() {
+        return None;
+    }
+
+    // Look up display names for the unique non-TTS llm ids in one shot.
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut wanted: BTreeSet<String> = BTreeSet::new();
+    for r in &rows {
+        if r.role == "tts" {
+            continue;
+        }
+        if let Some(t) = &r.llm {
+            let raw = t.id.to_raw();
+            if raw != "_default_" {
+                wanted.insert(raw);
+            }
+        }
+    }
+    let mut name_by_id: BTreeMap<String, String> = BTreeMap::new();
+    if !wanted.is_empty() {
+        #[derive(Deserialize)]
+        struct Meta {
+            id: surrealdb::sql::Thing,
+            name: String,
+        }
+        let ids: Vec<String> = wanted.iter().cloned().collect();
+        let metas: Vec<Meta> = state
+            .db()
+            .inner()
+            .query(
+                "SELECT id, name FROM llm \
+                 WHERE record::id(id) INSIDE $ids",
+            )
+            .bind(("ids", ids))
+            .await
+            .ok()?
+            .take(0)
+            .ok()?;
+        for m in metas {
+            name_by_id.insert(m.id.id.to_raw(), m.name);
+        }
+    }
+
+    // Bucket the unique model names per category. We use BTreeSet to keep
+    // ordering stable across renders so reuploads don't churn the
+    // description for cosmetic reasons.
+    let mut text: BTreeSet<String> = BTreeSet::new();
+    let mut cover: BTreeSet<String> = BTreeSet::new();
+    let mut illust: BTreeSet<String> = BTreeSet::new();
+    let mut narr: BTreeSet<String> = BTreeSet::new();
+    let mut anim: BTreeSet<String> = BTreeSet::new();
+    for r in rows {
+        let label_for_llm = || -> Option<String> {
+            let id = r.llm.as_ref()?.id.to_raw();
+            if id == "_default_" {
+                return None;
+            }
+            name_by_id.get(&id).cloned().or(Some(id))
+        };
+        match r.role.as_str() {
+            "outline" | "chapter" | "title" | "translate" => {
+                if let Some(n) = label_for_llm() {
+                    text.insert(n);
+                }
+            }
+            "cover" => {
+                if let Some(n) = label_for_llm() {
+                    cover.insert(n);
+                }
+            }
+            "paragraph_image" => {
+                if let Some(n) = label_for_llm() {
+                    illust.insert(n);
+                }
+            }
+            "manim_code" | "paragraph_visual" => {
+                if let Some(n) = label_for_llm() {
+                    anim.insert(n);
+                }
+            }
+            "tts" => {
+                // Voice id parsed from `voice=<id> …` is the most useful
+                // label here — the stored llm link is a placeholder.
+                if let Some(voice) = r
+                    .error
+                    .as_deref()
+                    .and_then(|s| s.split_whitespace().find_map(|t| t.strip_prefix("voice=")))
+                {
+                    narr.insert(voice.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    let push_bucket = |lines: &mut Vec<String>, label: &str, set: &BTreeSet<String>| {
+        if set.is_empty() {
+            return;
+        }
+        let joined = set.iter().cloned().collect::<Vec<_>>().join(", ");
+        lines.push(format!("• {label}: {joined}"));
+    };
+    push_bucket(&mut lines, "Text", &text);
+    push_bucket(&mut lines, "Cover", &cover);
+    push_bucket(&mut lines, "Illustrations", &illust);
+    push_bucket(&mut lines, "Narration", &narr);
+    push_bucket(&mut lines, "Animation", &anim);
+    if lines.is_empty() {
+        return None;
+    }
+    let mut out = String::from("Models used:\n");
+    out.push_str(&lines.join("\n"));
+    Some(out)
+}
+
+/// Splices an optional credits block into the existing per-language
+/// admin footer so the rest of the publisher's plumbing stays unchanged.
+/// The two are joined by a blank line; either side may be absent.
+fn combine_credits_and_footer(
+    credits: Option<&str>,
+    footer: Option<&str>,
+) -> Option<String> {
+    let c = credits.map(str::trim).filter(|s| !s.is_empty());
+    let f = footer.map(str::trim).filter(|s| !s.is_empty());
+    match (c, f) {
+        (None, None) => None,
+        (Some(c), None) => Some(c.to_string()),
+        (None, Some(f)) => Some(f.to_string()),
+        (Some(c), Some(f)) => Some(format!("{c}\n\n{f}")),
+    }
+}
+
 fn format_timestamp(ms: u64) -> String {
     let total_secs = ms / 1000;
     let h = total_secs / 3600;
@@ -1671,7 +2189,12 @@ struct DbParagraph {
     char_count: Option<i64>,
     /// Empty / `None` for non-visual paragraphs the LLM extract pass
     /// skipped — those never get tile jobs and the encoder ignores them.
+    /// Loaded but not read at the moment: the slideshow builder gates
+    /// inclusion on `image_paths` non-empty + on-disk existence rather
+    /// than on this metadata, so older tiles generated before the
+    /// extract field landed still get displayed.
     #[serde(default)]
+    #[allow(dead_code)]
     scene_description: Option<String>,
     #[serde(default)]
     image_paths: Vec<String>,
@@ -2253,6 +2776,66 @@ async fn load_chapter_texts_by_language(
         out.entry(r.language).or_default().insert(r.number, body);
     }
     Ok(out)
+}
+
+/// Set a custom thumbnail on a chapter video so the YouTube tile shows
+/// the chapter's own art rather than whatever frame YouTube auto-picks
+/// (which tends to converge on the same near-cover frame across every
+/// chapter). Mirrors the first-frame logic in
+/// `build_chapter_image_segments` — chapter art when present, cover
+/// fallback otherwise — so the tile and the slideshow agree.
+///
+/// Best-effort: YouTube rejects custom thumbnails on un-verified
+/// channels (phone-confirmation required), and the file may exceed
+/// the 2 MiB cap. Both cases log a warning and leave YouTube to
+/// auto-pick.
+async fn upload_chapter_thumbnail(
+    state: &AppState,
+    access_token: &str,
+    video_id: &str,
+    chapter: &DbChapter,
+    cover_path: &Path,
+) {
+    let storage = &state.config().storage_path;
+    let path = chapter
+        .chapter_art_path
+        .as_deref()
+        .map(|rel| storage.join(rel))
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| cover_path.to_path_buf());
+
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, ?path, video_id, "yt chapter thumbnail read failed");
+            return;
+        }
+    };
+    // YouTube caps custom thumbnails at 2 MiB. Skip oversize images
+    // rather than upload-and-fail; the video tile falls back to the
+    // auto-picked frame, which is at least the chapter's own art
+    // because we put it at the head of the slideshow.
+    const MAX_THUMBNAIL_BYTES: usize = 2 * 1024 * 1024;
+    if bytes.len() > MAX_THUMBNAIL_BYTES {
+        warn!(
+            size = bytes.len(),
+            ?path,
+            video_id,
+            "yt chapter thumbnail exceeds 2 MiB cap; skipping"
+        );
+        return;
+    }
+    let mime = crate::handlers::cover::detect_mime(&bytes);
+    if let Err(e) =
+        upload::upload_thumbnail(access_token, video_id, bytes, mime).await
+    {
+        warn!(
+            error = %e,
+            video_id,
+            chapter = chapter.number,
+            "yt chapter thumbnail upload failed"
+        );
+    }
 }
 
 async fn upload_chapter_captions(

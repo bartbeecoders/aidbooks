@@ -46,6 +46,9 @@ pub async fn render(
         PromptRole::ParagraphImage => "paragraph_image",
         PromptRole::Translate => "translate",
         PromptRole::SceneExtract => "scene_extract",
+        PromptRole::ParagraphVisual => "paragraph_visual",
+        PromptRole::ManimCode => "manim_code",
+        PromptRole::VoiceExtract => "voice_extract",
     };
 
     let rows: Vec<DbPrompt> = state

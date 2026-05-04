@@ -202,11 +202,16 @@ async fn run_one(
     .await?;
 
     let body = response.content.trim().to_string();
+    // Body change invalidates the multi-voice extract cache — the
+    // segmentation was anchored to the previous prose. Cleared in the
+    // same statement so a subsequent multi-voice narration re-runs
+    // the extract pass against the freshly written body.
     state
         .db()
         .inner()
         .query(format!(
-            "UPDATE chapter:`{chapter_raw_id}` SET body_md = $body, status = \"text_ready\""
+            "UPDATE chapter:`{chapter_raw_id}` SET body_md = $body, \
+             status = \"text_ready\", voice_segments = NONE"
         ))
         .bind(("body", body.clone()))
         .await

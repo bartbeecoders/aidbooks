@@ -1,0 +1,63 @@
+# Phase G — Manim diagram render path. This package is the Python
+# half of the animation pipeline; the Rust publisher (`backend/api/
+# src/jobs/publishers/animate.rs`) drives it as a sidecar in G.5.
+#
+# Toolchain: `uv sync` for native dev (one venv per workstation),
+# `podman build -f Containerfile -t listenai-manim` for prod / CI.
+[project]
+name = "listenai-manim"
+version = "0.1.0"
+description = "Manim CE renderer for ListenAI's STEM diagram path"
+readme = "README.md"
+# Manim's `manimpango` extension publishes prebuilt wheels for
+# CPython 3.9–3.12 only. On 3.13 / 3.14 it falls back to a source
+# build that needs the system Pango/Cairo headers + a non-conda
+# compiler — both fragile, neither faster than just using 3.11.
+# Lock to 3.11 here and pin via .python-version so re-runs always
+# pick the same interpreter.
+requires-python = ">=3.11,<3.13"
+license = { text = "MIT" }
+
+# Pin Manim to the active 0.18 line. Patch upgrades (0.18.x) are
+# encouraged — they're bug fixes; a major bump (0.19+) needs a manual
+# audit because Manim CE has historically broken APIs across minors.
+dependencies = [
+  "manim>=0.18,<0.19",
+  # numpy comes in via manim but pin explicitly so a Manim 0.18.x bug
+  # fix that loosens its constraint doesn't drag a 2.x in unawares.
+  "numpy>=1.26,<3.0",
+]
+
+[project.scripts]
+listenai-manim-smoke = "listenai_manim.smoke:main"
+listenai-manim-templates-smoke = "listenai_manim.templates_smoke:main"
+listenai-manim-server = "listenai_manim.server:main"
+listenai-manim-server-smoke = "listenai_manim.server_smoke:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["listenai_manim"]
+
+# uv settings — pin index URL so a misconfigured shell can't pull from
+# a private mirror by accident.
+[tool.uv]
+index-url = "https://pypi.org/simple"
+
+# Originally we tried `no-build-package = ["manimpango", "pycairo"]`
+# here to force wheels and dodge the conda-compiler trap. Turns out
+# manimpango 0.6.1's published wheels don't match every Python+
+# platform combo uv resolves to (notably python-build-standalone
+# under newer manylinux tags), so forcing wheel-only just turned a
+# fixable build into a hard "no binary distribution" failure.
+#
+# Source-build is fine as long as the build env points at system
+# gcc + system Pango/Cairo. The `env -u CC -u LDFLAGS …` wrapper in
+# `scripts/manim-install.sh` (and the `manim-build` justfile recipe)
+# strips conda's compiler vars so setuptools falls back to system
+# tooling, which finds /usr/lib/libpango-1.0.so.0 etc. correctly.
+# Bonus: a source-built manimpango links against system libs at
+# build time, so the libfontconfig-version drift you'd hit with a
+# wheel that bundles older libs goes away entirely.

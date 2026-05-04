@@ -8,3 +8,5 @@ If it is a youtube short, always publish it as a single video, never as a playli
 
 Publishing a video on youtube should use the text/description of the audiobook as the video description in the correct language.
 If we publish the dutch version, we should use the dutch description.
+
+Add the possibility to include more illustrations to youtube shorts (like with normal audiobooks)

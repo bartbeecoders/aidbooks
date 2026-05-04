@@ -141,6 +141,38 @@ const MIGRATIONS: &[Migration] = &[
         name: "0031_audiobook_short",
         sql: include_str!("../migrations/0031_audiobook_short.surql"),
     },
+    Migration {
+        name: "0032_animate",
+        sql: include_str!("../migrations/0032_animate.surql"),
+    },
+    Migration {
+        name: "0033_audiobook_stem",
+        sql: include_str!("../migrations/0033_audiobook_stem.surql"),
+    },
+    Migration {
+        name: "0034_prompt_visual_role",
+        sql: include_str!("../migrations/0034_prompt_visual_role.surql"),
+    },
+    Migration {
+        name: "0035_manim_code_role",
+        sql: include_str!("../migrations/0035_manim_code_role.surql"),
+    },
+    Migration {
+        name: "0036_youtube_publish_settings",
+        sql: include_str!("../migrations/0036_youtube_publish_settings.surql"),
+    },
+    Migration {
+        name: "0037_idea",
+        sql: include_str!("../migrations/0037_idea.surql"),
+    },
+    Migration {
+        name: "0038_multi_voice",
+        sql: include_str!("../migrations/0038_multi_voice.surql"),
+    },
+    Migration {
+        name: "0039_youtube_like_subscribe_overlay",
+        sql: include_str!("../migrations/0039_youtube_like_subscribe_overlay.surql"),
+    },
 ];
 
 /// Run any pending migrations. Safe to call on every startup.

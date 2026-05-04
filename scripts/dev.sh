@@ -35,6 +35,91 @@ fi
 : "${LISTENAI_MCP_BIND:=0.0.0.0:8788}"
 export LISTENAI_MCP_BIND
 
+# Phase G — Manim diagram render path (STEM only). Re-sync the venv
+# on every boot so newly-added console scripts (e.g. `listenai-manim-
+# server`) land on disk without the user having to remember a
+# separate command. Cheap when nothing changed (`uv sync` is a no-op
+# in that case); fails loudly if `uv` isn't installed but doesn't
+# block backend startup.
+sync_manim_venv() {
+    local manim_dir="$ROOT/backend/manim"
+    if [[ ! -f "$manim_dir/pyproject.toml" ]]; then
+        return 0
+    fi
+
+    # uv installs to ~/.local/bin by default; some shells don't have
+    # it on PATH unless explicitly added. Prepend defensively.
+    export PATH="$HOME/.local/bin:$PATH"
+    if ! command -v uv >/dev/null 2>&1; then
+        echo "Note: uv not on PATH — skipping Manim venv sync."
+        echo "  Install once with: curl -LsSf https://astral.sh/uv/install.sh | sh"
+        echo "  Then re-run dev.sh; the STEM diagram path is otherwise inert."
+        return 0
+    fi
+
+    echo "Syncing Manim venv (backend/manim/.venv)..."
+    # Strip conda's compiler/lib env vars so a `(base)`-active shell
+    # doesn't leak `x86_64-conda-linux-gnu-cc` + conda's -L paths
+    # into the source build of `manimpango`. Same wrapper the
+    # `just manim-build` recipe uses.
+    if (
+        cd "$manim_dir" && \
+        env \
+            -u CC -u CXX -u CPP -u FC \
+            -u LD -u AR -u AS -u NM -u RANLIB -u STRIP \
+            -u CFLAGS -u CPPFLAGS -u CXXFLAGS -u LDFLAGS \
+            -u DEBUG_CFLAGS -u DEBUG_CPPFLAGS -u DEBUG_CXXFLAGS \
+            -u HOST -u BUILD -u CONDA_BUILD_SYSROOT \
+            -u CMAKE_PREFIX_PATH -u CMAKE_ARGS \
+            -u GCC -u GXX -u GCC_AR -u GCC_NM -u GCC_RANLIB \
+            -u LD_LIBRARY_PATH -u PKG_CONFIG_PATH \
+            PATH="/usr/bin:/bin:$PATH" \
+            uv sync --python-preference managed
+    ); then
+        # Belt-and-braces: `uv sync` has been observed to register
+        # console scripts in `.venv/bin/` without actually
+        # installing the local package into site-packages, leaving
+        # the scripts to crash with `ModuleNotFoundError` at
+        # runtime. Always run the editable install — it's
+        # idempotent + cheap when the package is already present,
+        # and a guaranteed fix when it isn't. (We can't reliably
+        # *probe* whether listenai_manim is installed by running
+        # `python -c "import listenai_manim"` because Python adds
+        # the CWD to sys.path implicitly, so the import succeeds
+        # via the local source dir even when the package isn't in
+        # site-packages — false-negative for the conditional.)
+        if [[ -x "$manim_dir/.venv/bin/python" ]]; then
+            # uv-created venvs don't ship `pip`, so we go through
+            # `uv pip install`. `--python <venv-python>` is more
+            # direct than `VIRTUAL_ENV` discovery: tells uv exactly
+            # where site-packages lives. `--no-deps` keeps it
+            # cheap; idempotent.
+            #
+            # No `--quiet` — if the install fails we want to see
+            # *why* in the dev.sh terminal, not have it swallowed.
+            if (
+                cd "$manim_dir" && \
+                env \
+                    -u CC -u CXX -u CPP -u FC \
+                    -u CFLAGS -u CPPFLAGS -u CXXFLAGS -u LDFLAGS \
+                    -u LD_LIBRARY_PATH -u PKG_CONFIG_PATH \
+                    PATH="$HOME/.local/bin:/usr/bin:/bin:$PATH" \
+                    uv pip install --python .venv/bin/python -e . --no-deps
+            ); then
+                : # success
+            else
+                echo "  ⚠ uv pip install -e . failed; STEM diagram path will not work."
+            fi
+        fi
+        echo "Manim venv ready."
+    else
+        echo "Manim venv sync failed — continuing without it."
+        echo "  STEM segment-mode renders will warn-and-fall-back to prose."
+    fi
+}
+
+sync_manim_venv
+
 stop_server() {
     local name="$1"
     local pid_file="$2"

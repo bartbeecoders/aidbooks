@@ -52,6 +52,29 @@ export function AdminYoutubeSettings(): JSX.Element {
       qc.invalidateQueries({ queryKey: ["admin", "youtube-settings"] }),
   });
 
+  // Singleton "include AI credits" toggle. Lives separately from the
+  // per-language footers so flipping it doesn't churn every footer row.
+  const publishSettings = useQuery({
+    queryKey: ["admin", "youtube-publish-settings"],
+    queryFn: () => admin.youtubeSettings.getPublishSettings(),
+  });
+  const setPublishSettings = useMutation({
+    mutationFn: (patch: Partial<{
+      include_credits: boolean;
+      like_subscribe_overlay: boolean;
+    }>) =>
+      admin.youtubeSettings.putPublishSettings({
+        include_credits: publishSettings.data?.include_credits ?? false,
+        like_subscribe_overlay:
+          publishSettings.data?.like_subscribe_overlay ?? false,
+        ...patch,
+      }),
+    onSuccess: () =>
+      qc.invalidateQueries({
+        queryKey: ["admin", "youtube-publish-settings"],
+      }),
+  });
+
   const items = data?.items ?? [];
   // Languages still available for the "Add language" picker — anything in
   // LANGUAGES that doesn't already have a row.
@@ -77,6 +100,70 @@ export function AdminYoutubeSettings(): JSX.Element {
           end of the description.
         </p>
       </div>
+
+      <section className="mb-6 space-y-3 rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+        <label className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            checked={publishSettings.data?.include_credits ?? false}
+            disabled={
+              publishSettings.isLoading || setPublishSettings.isPending
+            }
+            onChange={(e) =>
+              setPublishSettings.mutate({ include_credits: e.target.checked })
+            }
+            className="mt-1 h-4 w-4 rounded border-slate-700 bg-slate-950 accent-sky-500"
+          />
+          <span>
+            <span className="block text-sm font-medium text-slate-100">
+              Include AI model credits in YouTube descriptions
+            </span>
+            <span className="mt-0.5 block text-xs text-slate-400">
+              Appends a compact <em>Models used:</em> block (text, cover,
+              illustrations, narration, animation) to every YouTube
+              description, built from each audiobook&apos;s actual
+              generation log. Sits between the auto-generated body and
+              the per-language footer.
+            </span>
+          </span>
+        </label>
+        <label className="flex items-start gap-3 border-t border-slate-800 pt-3">
+          <input
+            type="checkbox"
+            checked={publishSettings.data?.like_subscribe_overlay ?? false}
+            disabled={
+              publishSettings.isLoading || setPublishSettings.isPending
+            }
+            onChange={(e) =>
+              setPublishSettings.mutate({
+                like_subscribe_overlay: e.target.checked,
+              })
+            }
+            className="mt-1 h-4 w-4 rounded border-slate-700 bg-slate-950 accent-sky-500"
+          />
+          <span>
+            <span className="block text-sm font-medium text-slate-100">
+              Burn a “Like &amp; Subscribe!” overlay into every video
+            </span>
+            <span className="mt-0.5 block text-xs text-slate-400">
+              Renders a centred call-to-action near the bottom of the
+              frame for two short windows — about 5–13 seconds in, and
+              again in the last 10 seconds. Applies on the next encode
+              for any newly-published video; existing uploads aren&apos;t
+              re-encoded. Re-encoding from a cached <code>youtube.mp4</code>
+              still on disk will pick up the new setting only after that
+              file is removed.
+            </span>
+          </span>
+        </label>
+        {setPublishSettings.error && (
+          <span className="block text-xs text-rose-400">
+            {setPublishSettings.error instanceof ApiError
+              ? setPublishSettings.error.message
+              : "Could not save"}
+          </span>
+        )}
+      </section>
 
       {items.length === 0 && (
         <p className="mb-4 rounded-lg border border-dashed border-slate-800 p-6 text-center text-sm text-slate-500">

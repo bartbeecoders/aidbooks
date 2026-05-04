@@ -43,6 +43,10 @@ use crate::handlers::podcasts::{
     CreatePodcastRequest, PodcastList, PodcastRow, PreviewPodcastImageRequest,
     PreviewPodcastImageResponse, SyncPodcastResponse, UpdatePodcastRequest,
 };
+use crate::handlers::ideas::{
+    CreateIdeaRequest, IdeaList, IdeaRow, IdeaStatus, SuggestIdeasRequest, SuggestIdeasResponse,
+    SuggestedIdea, UpdateIdeaRequest,
+};
 use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
 
 #[derive(OpenApi)]
@@ -71,8 +75,15 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         crate::handlers::audiobook::patch_chapter,
         crate::handlers::audiobook::regenerate_chapter,
         crate::handlers::audiobook::generate_audio,
+        crate::handlers::audiobook::animate,
+        crate::handlers::audiobook::animate_chapter,
         crate::handlers::audiobook::cancel_pipeline,
         crate::handlers::audiobook::regenerate_chapter_audio,
+        crate::handlers::audiobook::classify_chapter_visuals,
+        crate::handlers::audiobook::regenerate_chapter_manim_code,
+        crate::handlers::audiobook::test_chapter_manim_llm,
+        crate::handlers::audiobook::render_test_manim,
+        crate::handlers::stream::test_manim_video,
         crate::handlers::audiobook::regenerate_chapter_art,
         crate::handlers::audiobook::regenerate_cover,
         crate::handlers::audiobook::translate,
@@ -81,6 +92,7 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         crate::handlers::stream::chapter_art,
         crate::handlers::stream::paragraph_image,
         crate::handlers::stream::chapter_waveform,
+        crate::handlers::stream::chapter_video,
         crate::handlers::stream::cover,
         crate::handlers::cover::preview,
         crate::handlers::jobs::list_for_audiobook,
@@ -110,6 +122,8 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         crate::handlers::admin::list_youtube_footers,
         crate::handlers::admin::upsert_youtube_footer,
         crate::handlers::admin::delete_youtube_footer,
+        crate::handlers::admin::get_youtube_publish_settings,
+        crate::handlers::admin::put_youtube_publish_settings,
         crate::handlers::admin::list_audiobook_categories,
         crate::handlers::admin::create_audiobook_category,
         crate::handlers::admin::update_audiobook_category,
@@ -125,6 +139,12 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         crate::handlers::integrations::approve_publication,
         crate::handlers::integrations::cancel_publication,
         crate::handlers::integrations::preview_publication,
+        // --- Ideas ---
+        crate::handlers::ideas::list,
+        crate::handlers::ideas::create,
+        crate::handlers::ideas::patch,
+        crate::handlers::ideas::delete,
+        crate::handlers::ideas::suggest,
         // --- Phase 11: podcasts ---
         crate::handlers::podcasts::list,
         crate::handlers::podcasts::create,
@@ -173,6 +193,10 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         UpdateChapterRequest,
         crate::handlers::audiobook::TranslateRequest,
         crate::handlers::audiobook::TranslateResponse,
+        crate::handlers::audiobook::TestChapterManimLlmRequest,
+        crate::handlers::audiobook::TestChapterManimLlmResponse,
+        crate::handlers::audiobook::RenderTestManimRequest,
+        crate::handlers::audiobook::RenderTestManimResponse,
         crate::handlers::audiobook::AutoPipelineRequest,
         crate::handlers::audiobook::AutoPublishRequest,
         // cover art
@@ -223,6 +247,7 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         YoutubeFooterRow,
         YoutubeFooterList,
         UpsertYoutubeFooterRequest,
+        crate::handlers::admin::YoutubePublishSettings,
         AudiobookCategoryRow,
         AudiobookCategoryList,
         CreateAudiobookCategoryRequest,
@@ -251,6 +276,15 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         PreviewPodcastImageRequest,
         PreviewPodcastImageResponse,
         SyncPodcastResponse,
+        // ideas
+        IdeaRow,
+        IdeaList,
+        IdeaStatus,
+        CreateIdeaRequest,
+        UpdateIdeaRequest,
+        SuggestIdeasRequest,
+        SuggestIdeasResponse,
+        SuggestedIdea,
     )),
     modifiers(&SecurityAddon),
     tags(
@@ -264,6 +298,7 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         (name = "admin", description = "Admin-only: runtime-editable LLMs, voices, users, jobs."),
         (name = "integrations", description = "Third-party integrations (YouTube publishing)."),
         (name = "podcasts", description = "Podcasts: owner-scoped audiobook groupings with AI cover art."),
+        (name = "ideas", description = "Audiobook idea backlog + LLM trend suggestions."),
     ),
 )]
 pub struct ApiDoc;

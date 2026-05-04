@@ -66,6 +66,12 @@ pub struct PublishYoutubeRequest {
     /// can preview locally and explicitly approve. Defaults to false.
     #[serde(default)]
     pub review: Option<bool>,
+    /// When true, use the per-chapter animated companion videos
+    /// (`<storage>/<book>/<lang>/ch-<n>.video.mp4`, produced by the
+    /// `animate` job) as the visual track instead of the static cover
+    /// loop. Defaults to false.
+    #[serde(default)]
+    pub animate: Option<bool>,
     /// Optional override for the YouTube video description; falls back to a
     /// generated one (topic + chapter list with timestamps).
     #[serde(default)]
@@ -356,6 +362,7 @@ pub async fn publish_youtube(
         return Err(Error::Validation("mode must be single or playlist".into()).into());
     }
     let review = body.review.unwrap_or(false);
+    let animate = body.animate.unwrap_or(false);
 
     // Ownership + readiness checks.
     assert_owner(&state, &audiobook_id, &user.id).await?;
@@ -378,6 +385,22 @@ pub async fn publish_youtube(
     if !review && load_account(&state, &user.id).await?.is_none() {
         return Err(Error::Conflict("connect a YouTube channel first".into()).into());
     }
+    // animate=true requires every chapter to have its companion MP4
+    // already on disk. We could enqueue the animate job from here, but
+    // that would surprise the user — better to fail loudly so they
+    // POST /animate first and watch the progress.
+    if animate {
+        if let Some(missing) =
+            first_missing_animation(&state, &audiobook_id, language).await?
+        {
+            return Err(Error::Conflict(format!(
+                "animation not ready: missing {} (run POST /audiobook/{}/animate first)",
+                missing.display(),
+                audiobook_id,
+            ))
+            .into());
+        }
+    }
 
     let publication_id =
         upsert_publication(&state, &audiobook_id, language, &privacy, &mode, review).await?;
@@ -387,6 +410,7 @@ pub async fn publish_youtube(
         "privacy_status": privacy,
         "mode": mode,
         "review": review,
+        "animate": animate,
     });
     if let Some(desc) = body.description.as_deref().filter(|s| !s.trim().is_empty()) {
         payload["description"] = serde_json::json!(desc);
@@ -1128,6 +1152,41 @@ async fn language_ready_for_publish(
         .map_err(|e| Error::Database(format!("publish readiness (decode): {e}")))?;
     let row = rows.into_iter().next();
     Ok(matches!(row, Some(r) if r.total > 0 && r.total == r.ready))
+}
+
+/// Walk every chapter in `language` and return the first
+/// `ch-N.video.mp4` that doesn't exist on disk, or `None` if all are
+/// present. Used to gate `animate=true` publish requests.
+async fn first_missing_animation(
+    state: &AppState,
+    audiobook_id: &str,
+    language: &str,
+) -> Result<Option<std::path::PathBuf>> {
+    #[derive(Debug, Deserialize)]
+    struct Row {
+        number: i64,
+    }
+    let rows: Vec<Row> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT number FROM chapter \
+             WHERE audiobook = audiobook:`{audiobook_id}` AND language = $lang \
+             ORDER BY number ASC"
+        ))
+        .bind(("lang", language.to_string()))
+        .await
+        .map_err(|e| Error::Database(format!("animate readiness: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("animate readiness (decode): {e}")))?;
+    let dir = state.config().storage_path.join(audiobook_id).join(language);
+    for r in rows {
+        let p = dir.join(format!("ch-{}.video.mp4", r.number));
+        if !p.exists() {
+            return Ok(Some(p));
+        }
+    }
+    Ok(None)
 }
 
 async fn upsert_publication(

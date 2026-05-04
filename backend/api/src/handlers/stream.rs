@@ -90,6 +90,124 @@ pub async fn chapter_audio(
     Ok((StatusCode::OK, headers, body).into_response())
 }
 
+/// GET the per-chapter animated companion video. Returns 404 until
+/// `POST /audiobook/:id/animate` has produced `ch-N.video.mp4` for the
+/// requested language. Same auth/ownership rules as `chapter_audio`.
+#[utoipa::path(
+    get,
+    path = "/audiobook/{id}/chapter/{n}/video",
+    tag = "audiobook",
+    params(("id" = String, Path), ("n" = u32, Path)),
+    responses(
+        (status = 200, description = "Animated companion MP4", content_type = "video/mp4"),
+        (status = 404, description = "Not generated yet")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn chapter_video(
+    State(state): State<AppState>,
+    auth_header: Option<Authenticated>,
+    Query(q): Query<StreamAuthQuery>,
+    Path((id, n)): Path<(String, u32)>,
+) -> ApiResult<Response> {
+    let user_id = resolve_user(&state, auth_header, &q)?;
+    assert_owner(&state, &id, &user_id).await?;
+    // Per-language: animation files live under the same lang dir as
+    // the chapter WAVs. We don't read a DB column — the file path is
+    // deterministic, so we go straight to disk and 404 if absent.
+    let language = match q.language.as_deref() {
+        Some(l) if !l.trim().is_empty() => l.to_string(),
+        _ => primary_language(&state, &id).await?,
+    };
+    let abs = state
+        .config()
+        .storage_path
+        .join(&id)
+        .join(&language)
+        .join(format!("ch-{n}.video.mp4"));
+    let file = tokio::fs::File::open(&abs).await.map_err(|_| Error::NotFound {
+        resource: format!("animation for audiobook:{id} chapter {n} ({language})"),
+    })?;
+    let len = file
+        .metadata()
+        .await
+        .map(|m| m.len())
+        .map_err(|e| Error::Other(anyhow::anyhow!("stat animation: {e}")))?;
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("video/mp4"));
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    if let Ok(v) = HeaderValue::from_str(&len.to_string()) {
+        headers.insert(header::CONTENT_LENGTH, v);
+    }
+    Ok((StatusCode::OK, headers, body).into_response())
+}
+
+/// Stream a throwaway Manim render produced by
+/// `POST /audiobook/:id/chapter/:n/test-manim-render`. The `test_id`
+/// is the UUID returned by that endpoint; the file lives at
+/// `<storage>/<id>/test-manim/<test_id>.mp4`. Same auth + query-token
+/// dance as the chapter-video stream so a `<video src=…>` tag can
+/// load it without an Authorization header.
+#[utoipa::path(
+    get,
+    path = "/audiobook/{id}/test-manim/{test_id}",
+    tag = "audiobook",
+    params(("id" = String, Path), ("test_id" = String, Path)),
+    responses(
+        (status = 200, description = "Test render MP4", content_type = "video/mp4"),
+        (status = 404, description = "Test id not found")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn test_manim_video(
+    State(state): State<AppState>,
+    auth_header: Option<Authenticated>,
+    Query(q): Query<StreamAuthQuery>,
+    Path((id, test_id)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    let user_id = resolve_user(&state, auth_header, &q)?;
+    assert_owner(&state, &id, &user_id).await?;
+    // Lock the charset down — the test_id is a UUID `simple` (32 hex
+    // chars) and we splice it into a path. Reject anything that
+    // could traverse out of the test-manim dir.
+    if test_id.is_empty()
+        || test_id.len() > 64
+        || !test_id.chars().all(|c| c.is_ascii_alphanumeric())
+    {
+        return Err(Error::NotFound {
+            resource: format!("test-manim:{test_id}"),
+        }
+        .into());
+    }
+    let abs = state
+        .config()
+        .storage_path
+        .join(&id)
+        .join("test-manim")
+        .join(format!("{test_id}.mp4"));
+    let file = tokio::fs::File::open(&abs).await.map_err(|_| Error::NotFound {
+        resource: format!("test-manim:{id}/{test_id}"),
+    })?;
+    let len = file
+        .metadata()
+        .await
+        .map(|m| m.len())
+        .map_err(|e| Error::Other(anyhow::anyhow!("stat test-manim: {e}")))?;
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("video/mp4"));
+    headers.insert(header::ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    if let Ok(v) = HeaderValue::from_str(&len.to_string()) {
+        headers.insert(header::CONTENT_LENGTH, v);
+    }
+    Ok((StatusCode::OK, headers, body).into_response())
+}
+
 #[utoipa::path(
     get,
     path = "/audiobook/{id}/chapter/{n}/waveform",

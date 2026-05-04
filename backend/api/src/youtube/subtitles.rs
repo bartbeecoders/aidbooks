@@ -12,6 +12,12 @@
 //!   3. Group sentences into cues capped at `MAX_CUE_CHARS` so a single
 //!      cue doesn't outrun the player's two-line layout.
 //!   4. Allocate start/end times by `(chars_so_far / total_chars) * duration`.
+//!
+//! Steps 1, 2 and 4 are shared with the animation planner — the helpers
+//! live in [`crate::animation::timing`] so the two outputs can't drift
+//! apart on a future tweak.
+
+use crate::animation::timing::{ratio_to_ms, split_sentences, strip_markdown};
 
 /// Aim for a cue that fits two lines of YouTube's caption renderer
 /// (~42 chars × 2). 180 chars leaves headroom for emoji/wide glyphs.
@@ -130,15 +136,6 @@ fn push_cue(
     });
 }
 
-fn ratio_to_ms(chars_pos: usize, total_chars: usize, duration_ms: u64) -> u64 {
-    if total_chars == 0 {
-        return 0;
-    }
-    // u128 to dodge overflow on long books (a 5h chapter at 1k chars/s
-    // would still fit in u64, but the multiplication overflows).
-    ((chars_pos as u128 * duration_ms as u128) / total_chars as u128) as u64
-}
-
 fn cues_to_srt(cues: &[Cue]) -> String {
     if cues.is_empty() {
         return String::new();
@@ -169,119 +166,12 @@ fn format_srt_timestamp(ms: u64) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Markdown stripping + sentence splitting
+// Markdown stripping + sentence splitting now live in
+// `crate::animation::timing` — both subtitles and the animation scene
+// planner consume them. Keeping a single source of truth avoids the kind
+// of subtle drift where captions split sentences one way and the
+// karaoke text-reveal splits them another.
 // ---------------------------------------------------------------------------
-
-/// Cheap markdown remover. Not a parser — just enough to clean up the
-/// LLM's prose for caption display:
-///   * `# heading` → `heading`
-///   * `**bold**`, `*italic*`, `_emph_` → unwrap
-///   * `[text](url)` → `text`
-///   * fenced code blocks → drop entirely (audio narration would have
-///     skipped them anyway).
-fn strip_markdown(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut in_code_fence = false;
-    for raw_line in input.lines() {
-        let trimmed = raw_line.trim_start();
-        if trimmed.starts_with("```") {
-            in_code_fence = !in_code_fence;
-            continue;
-        }
-        if in_code_fence {
-            continue;
-        }
-        let line = strip_line(trimmed);
-        let line = line.trim();
-        if line.is_empty() {
-            // Preserve paragraph breaks as a single space — sentence splitter
-            // doesn't need explicit blank lines.
-            out.push(' ');
-            continue;
-        }
-        out.push_str(line);
-        out.push(' ');
-    }
-    // Collapse repeated whitespace.
-    let mut prev_ws = false;
-    let mut compact = String::with_capacity(out.len());
-    for ch in out.chars() {
-        if ch.is_whitespace() {
-            if !prev_ws {
-                compact.push(' ');
-                prev_ws = true;
-            }
-        } else {
-            compact.push(ch);
-            prev_ws = false;
-        }
-    }
-    compact.trim().to_string()
-}
-
-fn strip_line(line: &str) -> String {
-    let line = line.trim_start_matches('#').trim_start();
-    let line = line.trim_start_matches(|c: char| c == '>' || c == '-' || c == '*');
-    let line = line.trim_start();
-
-    // [text](url) → text
-    let mut out = String::with_capacity(line.len());
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '[' => {
-                // Find matching ] then optional (url)
-                let mut text = String::new();
-                let mut closed = false;
-                for nc in chars.by_ref() {
-                    if nc == ']' {
-                        closed = true;
-                        break;
-                    }
-                    text.push(nc);
-                }
-                if closed && chars.peek() == Some(&'(') {
-                    chars.next(); // consume (
-                    for nc in chars.by_ref() {
-                        if nc == ')' {
-                            break;
-                        }
-                    }
-                }
-                out.push_str(&text);
-            }
-            // **, *, _ → drop (we're not preserving emphasis for SRT).
-            '*' | '_' | '`' => {}
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-/// Split into "sentences" by terminal punctuation, keeping the punctuation
-/// attached. Falls back to a single chunk if no terminators are found.
-fn split_sentences(text: &str) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut current = String::new();
-    for ch in text.chars() {
-        current.push(ch);
-        // Latin + CJK sentence terminators. Quote/bracket trail-handling is
-        // intentionally skipped — close-parens after a period are unusual
-        // enough not to bother with.
-        if matches!(ch, '.' | '!' | '?' | '。' | '！' | '？') {
-            let trimmed = current.trim();
-            if !trimmed.is_empty() {
-                out.push(trimmed.to_string());
-            }
-            current.clear();
-        }
-    }
-    let tail = current.trim();
-    if !tail.is_empty() {
-        out.push(tail.to_string());
-    }
-    out
-}
 
 #[cfg(test)]
 mod tests {

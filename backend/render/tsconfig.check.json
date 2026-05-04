@@ -1,0 +1,11 @@
+{
+  // Type-check-only config that includes the TSX scene files. The
+  // build (`tsconfig.json`) only emits the CLI driver; the TSX files
+  // are compiled by Revideo's Vite at render time. We still want to
+  // catch type errors locally — that's what this config is for.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}

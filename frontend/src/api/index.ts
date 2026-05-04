@@ -12,6 +12,7 @@ import type {
   AdminVoiceList,
   AdminVoiceRow,
   ApprovePublicationResponse,
+  AnimationTheme,
   AudiobookCostSummary,
   AudiobookDetail,
   AudiobookJobList,
@@ -36,6 +37,7 @@ import type {
   XaiModelList,
   YoutubeFooterList,
   YoutubeFooterRow,
+  YoutubePublishSettings,
   PublicationList,
   PublishYoutubeRequest,
   PublishYoutubeResponse,
@@ -43,12 +45,18 @@ import type {
   TopicTemplateList,
   TranslateRequest,
   TranslateResponse,
+  CreateIdeaRequest,
   CreatePodcastRequest,
+  IdeaList,
+  IdeaRow,
   PodcastList,
   PodcastRow,
   PreviewPodcastImageRequest,
   PreviewPodcastImageResponse,
+  SuggestIdeasRequest,
+  SuggestIdeasResponse,
   SyncPodcastResponse,
+  UpdateIdeaRequest,
   UpdatePodcastRequest,
   LoginRequest,
   MeResponse,
@@ -132,6 +140,48 @@ export const audiobooks = {
         headers: idempotencyKey ? { "idempotency-key": idempotencyKey } : undefined,
       },
     ),
+  /** Kick off the per-chapter animation render job. The fan-out
+   * progress is delivered via the existing audiobook progress
+   * websocket (`useProgressSocket`) under the `animate` and
+   * `animate_chapter` job kinds. */
+  animate: (
+    id: string,
+    opts?: { language?: string; theme?: AnimationTheme; idempotencyKey?: string },
+  ) => {
+    const qs = new URLSearchParams();
+    if (opts?.language) qs.set("language", opts.language);
+    if (opts?.theme) qs.set("theme", opts.theme);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return apiFetch<void>(`/audiobook/${id}/animate${suffix}`, {
+      method: "POST",
+      headers: opts?.idempotencyKey
+        ? { "idempotency-key": opts.idempotencyKey }
+        : undefined,
+    });
+  },
+  /** Re-render a single chapter's animated MP4. The backend busts the
+   * F.1e spec-hash cache + deletes the existing ch-N.video.mp4 before
+   * enqueueing a single AnimateChapter job, so the client should expect
+   * the inline preview to 404 until the new render completes. */
+  animateChapter: (
+    id: string,
+    n: number,
+    opts?: { language?: string; theme?: AnimationTheme; idempotencyKey?: string },
+  ) => {
+    const qs = new URLSearchParams();
+    if (opts?.language) qs.set("language", opts.language);
+    if (opts?.theme) qs.set("theme", opts.theme);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return apiFetch<void>(
+      `/audiobook/${id}/chapter/${n}/animate${suffix}`,
+      {
+        method: "POST",
+        headers: opts?.idempotencyKey
+          ? { "idempotency-key": opts.idempotencyKey }
+          : undefined,
+      },
+    );
+  },
   patchChapter: (id: string, n: number, body: UpdateChapterRequest) =>
     apiFetch<ChapterSummary>(`/audiobook/${id}/chapter/${n}`, { method: "PATCH", body }),
   regenerateChapter: (id: string, n: number) =>
@@ -140,6 +190,56 @@ export const audiobooks = {
     apiFetch<ChapterSummary>(`/audiobook/${id}/chapter/${n}/regenerate-audio`, {
       method: "POST",
     }),
+  /** Phase G — re-run the per-paragraph visual classifier against
+   * an existing chapter without rewriting its body. Backfill helper
+   * for books that were generated before STEM was enabled.
+   * Requires `is_stem=true` on the book; the backend 400s otherwise.
+   * Returns the updated chapter summary so the diagram badge
+   * refreshes on success. */
+  classifyChapterVisuals: (id: string, n: number) =>
+    apiFetch<ChapterSummary>(
+      `/audiobook/${id}/chapter/${n}/classify-visuals`,
+      { method: "POST" },
+    ),
+  /** Phase H — re-run the bespoke Manim code-gen LLM against every
+   * paragraph in this chapter labelled `custom_manim`. Used as a
+   * backfill for books generated before Phase H landed, or to
+   * refresh the diagrams after the user reassigns `LlmRole::ManimCode`
+   * to a different model. 400s when the chapter has no custom_manim
+   * paragraphs (the frontend hides the button in that case). */
+  regenerateChapterManimCode: (id: string, n: number) =>
+    apiFetch<ChapterSummary>(
+      `/audiobook/${id}/chapter/${n}/regenerate-manim-code`,
+      { method: "POST" },
+    ),
+  /** Owner-scoped LLM test for the bespoke Manim code-gen prompt.
+   * Runs the prompt against the chosen paragraph through the chosen
+   * LLM and returns the rendered prompt + raw response + cost +
+   * elapsed ms — without persisting anything. Lets the user audition
+   * different LLMs before reassigning `LlmRole::ManimCode`. */
+  testChapterManimLlm: (
+    id: string,
+    n: number,
+    body: import("./types").TestChapterManimLlmRequest,
+  ) =>
+    apiFetch<import("./types").TestChapterManimLlmResponse>(
+      `/audiobook/${id}/chapter/${n}/test-manim-llm`,
+      { method: "POST", body },
+    ),
+  /** Render the Manim code returned by `testChapterManimLlm` into a
+   * throwaway MP4 we can preview inline. The backend writes to a
+   * per-audiobook test-manim/<uuid>.mp4 file; pair the returned
+   * `test_id` with `audiobookTestManimVideoUrl(...)` to build the
+   * `<video src=…>` URL. */
+  renderTestManim: (
+    id: string,
+    n: number,
+    body: import("./types").RenderTestManimRequest,
+  ) =>
+    apiFetch<import("./types").RenderTestManimResponse>(
+      `/audiobook/${id}/chapter/${n}/test-manim-render`,
+      { method: "POST", body },
+    ),
   regenerateChapterArt: (id: string, n: number) =>
     apiFetch<ChapterSummary>(`/audiobook/${id}/chapter/${n}/art`, {
       method: "POST",
@@ -185,6 +285,33 @@ export function chapterArtUrl(
 }
 
 /**
+ * URL for the per-chapter animated companion video. 404s until the
+ * `animate` job has produced `ch-N.video.mp4` for the requested
+ * language.
+ */
+export function chapterVideoUrl(
+  audiobookId: string,
+  chapter: number,
+  accessToken: string,
+  language?: string,
+): string {
+  const qs = new URLSearchParams({ access_token: accessToken });
+  if (language) qs.set("language", language);
+  return `/api/audiobook/${audiobookId}/chapter/${chapter}/video?${qs.toString()}`;
+}
+
+/** URL for a throwaway test-manim render produced by the LLM test
+ * dialog. `testId` is the UUID returned by `renderTestManim`. */
+export function audiobookTestManimVideoUrl(
+  audiobookId: string,
+  testId: string,
+  accessToken: string,
+): string {
+  const qs = new URLSearchParams({ access_token: accessToken });
+  return `/api/audiobook/${audiobookId}/test-manim/${testId}?${qs.toString()}`;
+}
+
+/**
  * URL for a paragraph illustration tile.
  * `paragraphIndex` matches `chapter.paragraphs[].index`; `ordinal` is
  * the 1-based tile slot (1..=images_per_paragraph).
@@ -205,6 +332,22 @@ export function paragraphImageUrl(
 // --- jobs ----------------------------------------------------------------
 export const jobs = {
   listForAudiobook: (id: string) => apiFetch<AudiobookJobList>(`/audiobook/${id}/jobs`),
+};
+
+// --- ideas --------------------------------------------------------------
+export const ideas = {
+  list: () => apiFetch<IdeaList>("/ideas"),
+  create: (body: CreateIdeaRequest) =>
+    apiFetch<IdeaRow>("/ideas", { method: "POST", body }),
+  patch: (id: string, body: UpdateIdeaRequest) =>
+    apiFetch<IdeaRow>(`/ideas/${id}`, { method: "PATCH", body }),
+  remove: (id: string) =>
+    apiFetch<void>(`/ideas/${id}`, { method: "DELETE" }),
+  suggest: (body: SuggestIdeasRequest) =>
+    apiFetch<SuggestIdeasResponse>("/ideas/suggest", {
+      method: "POST",
+      body,
+    }),
 };
 
 // --- podcasts -----------------------------------------------------------
@@ -368,6 +511,13 @@ export const admin = {
         `/admin/youtube-settings/${encodeURIComponent(language)}`,
         { method: "DELETE" },
       ),
+    getPublishSettings: () =>
+      apiFetch<YoutubePublishSettings>("/admin/youtube-publish-settings"),
+    putPublishSettings: (body: YoutubePublishSettings) =>
+      apiFetch<YoutubePublishSettings>("/admin/youtube-publish-settings", {
+        method: "PUT",
+        body,
+      }),
   },
   audiobookCategories: {
     list: () =>

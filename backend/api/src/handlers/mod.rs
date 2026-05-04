@@ -4,6 +4,7 @@ pub mod auth;
 pub mod catalog;
 pub mod cover;
 pub mod health;
+pub mod ideas;
 pub mod integrations;
 pub mod jobs;
 pub mod me;

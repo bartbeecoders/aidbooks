@@ -320,6 +320,53 @@ pub async fn upload_caption(
     Ok(())
 }
 
+/// Set a custom thumbnail on an already-uploaded video via the
+/// `thumbnails.set` endpoint. The body is the raw image bytes (no
+/// multipart framing — `uploadType=media` keeps the request shape
+/// trivial). MIME must be one of `image/jpeg`, `image/png`,
+/// `image/gif`, `image/bmp`, or `image/webp`.
+///
+/// Note: YouTube only accepts custom thumbnails on accounts with
+/// verified channels (phone-confirmed). Callers treat failure as
+/// best-effort — the video itself is already published.
+pub async fn upload_thumbnail(
+    access_token: &str,
+    video_id: &str,
+    image_bytes: Vec<u8>,
+    mime: &str,
+) -> Result<()> {
+    if image_bytes.is_empty() {
+        return Ok(());
+    }
+    let url = format!(
+        "https://www.googleapis.com/upload/youtube/v3/thumbnails/set\
+         ?videoId={}&uploadType=media",
+        video_id
+    );
+    let http = build_client()?;
+    let resp = http
+        .post(&url)
+        .bearer_auth(access_token)
+        .header("Content-Type", mime)
+        .body(image_bytes)
+        .send()
+        .await
+        .map_err(|e| Error::Upstream(format!("yt thumbnail upload: {e}")))?;
+    let status = resp.status();
+    if status.as_u16() == 401 {
+        return Err(Error::Unauthorized);
+    }
+    if !status.is_success() {
+        let bytes = resp.bytes().await.unwrap_or_default();
+        let preview = String::from_utf8_lossy(&bytes);
+        return Err(Error::Upstream(format!(
+            "yt thumbnail upload {status}: {}",
+            preview.chars().take(400).collect::<String>()
+        )));
+    }
+    Ok(())
+}
+
 fn parse_range_end(range: &str) -> Option<u64> {
     // YouTube returns `bytes=0-<end>`; tolerate either separator.
     let after_eq = range.split_once('=').map(|(_, v)| v).unwrap_or(range);

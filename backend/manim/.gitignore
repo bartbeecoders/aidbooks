@@ -1,0 +1,18 @@
+# Manim / uv local artefacts. Anything generated at build, test, or
+# render time. The package source lives under listenai_manim/.
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Smoke output directory — regenerated on every run.
+smoke_output/
+
+# Manim's default media output (kept ignored even if a recipe drops it
+# elsewhere by mistake).
+media/
+
+# uv lockfile — see pyproject.toml note. We *do* want uv.lock checked
+# in, so it's intentionally not gitignored. The wildcard above won't
+# match it.

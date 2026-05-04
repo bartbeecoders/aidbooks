@@ -1,7 +1,9 @@
 pub mod audio;
 pub mod chapter;
 pub mod cover;
+pub mod manim_code;
 pub mod outline;
 pub mod paragraphs;
 pub mod prompts;
 pub mod translate;
+pub mod voices;

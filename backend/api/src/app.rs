@@ -106,12 +106,40 @@ pub fn build_router(state: AppState) -> Router {
             post(handlers::audiobook::generate_audio),
         )
         .route(
+            "/audiobook/:id/animate",
+            post(handlers::audiobook::animate),
+        )
+        .route(
+            "/audiobook/:id/chapter/:n/animate",
+            post(handlers::audiobook::animate_chapter),
+        )
+        .route(
             "/audiobook/:id/cancel-pipeline",
             post(handlers::audiobook::cancel_pipeline),
         )
         .route(
             "/audiobook/:id/chapter/:n/regenerate-audio",
             post(handlers::audiobook::regenerate_chapter_audio),
+        )
+        .route(
+            "/audiobook/:id/chapter/:n/classify-visuals",
+            post(handlers::audiobook::classify_chapter_visuals),
+        )
+        .route(
+            "/audiobook/:id/chapter/:n/regenerate-manim-code",
+            post(handlers::audiobook::regenerate_chapter_manim_code),
+        )
+        .route(
+            "/audiobook/:id/chapter/:n/test-manim-llm",
+            post(handlers::audiobook::test_chapter_manim_llm),
+        )
+        .route(
+            "/audiobook/:id/chapter/:n/test-manim-render",
+            post(handlers::audiobook::render_test_manim),
+        )
+        .route(
+            "/audiobook/:id/test-manim/:test_id",
+            get(handlers::stream::test_manim_video),
         )
         .route(
             "/audiobook/:id/chapter/:n/art",
@@ -128,6 +156,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/audiobook/:id/chapter/:n/waveform",
             get(handlers::stream::chapter_waveform),
+        )
+        .route(
+            "/audiobook/:id/chapter/:n/video",
+            get(handlers::stream::chapter_video),
         )
         // --- Phase 6: cover art ---
         .route("/cover-art/preview", post(handlers::cover::preview))
@@ -225,6 +257,11 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(handlers::admin::delete_youtube_footer),
         )
         .route(
+            "/admin/youtube-publish-settings",
+            get(handlers::admin::get_youtube_publish_settings)
+                .put(handlers::admin::put_youtube_publish_settings),
+        )
+        .route(
             "/admin/audiobook-categories",
             get(handlers::admin::list_audiobook_categories)
                 .post(handlers::admin::create_audiobook_category),
@@ -243,6 +280,20 @@ pub fn build_router(state: AppState) -> Router {
             "/admin/topic-templates/:id",
             axum::routing::patch(handlers::topic_templates::patch)
                 .delete(handlers::topic_templates::delete),
+        )
+        // --- Ideas (audiobook idea backlog + LLM trend suggestions) ---
+        .route(
+            "/ideas",
+            get(handlers::ideas::list).post(handlers::ideas::create),
+        )
+        .route(
+            "/ideas/suggest",
+            post(handlers::ideas::suggest),
+        )
+        .route(
+            "/ideas/:id",
+            axum::routing::patch(handlers::ideas::patch)
+                .delete(handlers::ideas::delete),
         )
         // --- Phase 11: podcasts ---
         .route(

@@ -30,6 +30,7 @@ export function AppLayout(): JSX.Element {
           </Link>
           <nav className="flex items-center gap-2 text-sm">
             <NavItem to="/app">Library</NavItem>
+            <NavItem to="/app/ideas">Ideas</NavItem>
             <NavItem to="/app/settings">Settings</NavItem>
             {user?.role === "admin" && <NavItem to="/admin">Admin</NavItem>}
             <div className="mx-3 h-5 w-px bg-slate-800" />

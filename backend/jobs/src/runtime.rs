@@ -56,8 +56,39 @@ impl Default for WorkerConfig {
                 // beyond 2 doesn't pay because each chapter's children
                 // are themselves Cover jobs with their own concurrency.
                 (JobKind::ChapterParagraphs, 2),
+                // Coordination only: enumerate chapters + fan out
+                // children. One worker is enough.
+                (JobKind::Animate, 1),
+                // CPU-bound video render via the Node (Revideo)
+                // sidecar. Default is auto-detected at boot via
+                // `with_animate_concurrency` — kept at 2 here as a
+                // safe fallback for callers that don't override.
+                (JobKind::AnimateChapter, 2),
             ],
         }
+    }
+}
+
+impl WorkerConfig {
+    /// Override the `AnimateChapter` pool size. `0` = auto-detect:
+    /// `min(available_parallelism, 4)`. Memory budget scales linearly
+    /// with this value (each worker holds a Chromium ~400 MB RSS), so
+    /// cap at 4 by default rather than the full core count.
+    pub fn with_animate_concurrency(mut self, n: usize) -> Self {
+        let resolved = if n == 0 {
+            std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(2)
+                .clamp(1, 4)
+        } else {
+            n.max(1)
+        };
+        for (kind, size) in self.pools.iter_mut() {
+            if *kind == JobKind::AnimateChapter {
+                *size = resolved;
+            }
+        }
+        self
     }
 }
 

@@ -1717,6 +1717,95 @@ pub async fn delete_youtube_footer(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// =========================================================================
+// YouTube publish settings (singleton — currently just the credits toggle)
+// =========================================================================
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct YoutubePublishSettings {
+    /// When true, the publisher appends a "Models used:" block to every
+    /// YouTube description it builds, reflecting the LLMs/voices that
+    /// actually contributed to that audiobook (read from
+    /// `generation_event`). Off by default — opt-in flag.
+    pub include_credits: bool,
+    /// When true, the encoder burns a "👍 Like & Subscribe!" overlay
+    /// into every newly-encoded YouTube video for two short windows
+    /// (a few seconds in and again before the end). Off by default —
+    /// opt-in flag.
+    #[serde(default)]
+    pub like_subscribe_overlay: bool,
+}
+
+#[utoipa::path(
+    get, path = "/admin/youtube-publish-settings", tag = "admin",
+    responses((status = 200, body = YoutubePublishSettings), (status = 403)),
+    security(("bearer" = []))
+)]
+pub async fn get_youtube_publish_settings(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+) -> ApiResult<Json<YoutubePublishSettings>> {
+    Ok(Json(load_youtube_publish_settings(&state).await?))
+}
+
+#[utoipa::path(
+    put, path = "/admin/youtube-publish-settings", tag = "admin",
+    request_body = YoutubePublishSettings,
+    responses((status = 200, body = YoutubePublishSettings), (status = 403)),
+    security(("bearer" = []))
+)]
+pub async fn put_youtube_publish_settings(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    Json(body): Json<YoutubePublishSettings>,
+) -> ApiResult<Json<YoutubePublishSettings>> {
+    state
+        .db()
+        .inner()
+        .query(
+            "UPSERT youtube_publish_settings:singleton MERGE { \
+                include_credits: $ic, like_subscribe_overlay: $ls, updated_at: time::now() \
+            }",
+        )
+        .bind(("ic", body.include_credits))
+        .bind(("ls", body.like_subscribe_overlay))
+        .await
+        .map_err(|e| Error::Database(format!("upsert publish settings: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("upsert publish settings: {e}")))?;
+    Ok(Json(load_youtube_publish_settings(&state).await?))
+}
+
+/// Public helper so the YouTube publisher can read the same singleton
+/// without going through the admin route.
+pub async fn load_youtube_publish_settings(
+    state: &AppState,
+) -> Result<YoutubePublishSettings> {
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(default)]
+        include_credits: bool,
+        #[serde(default)]
+        like_subscribe_overlay: bool,
+    }
+    let rows: Vec<Row> = state
+        .db()
+        .inner()
+        .query(
+            "SELECT include_credits, like_subscribe_overlay \
+             FROM youtube_publish_settings:singleton",
+        )
+        .await
+        .map_err(|e| Error::Database(format!("read publish settings: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("read publish settings (decode): {e}")))?;
+    let row = rows.into_iter().next();
+    Ok(YoutubePublishSettings {
+        include_credits: row.as_ref().map(|r| r.include_credits).unwrap_or(false),
+        like_subscribe_overlay: row.map(|r| r.like_subscribe_overlay).unwrap_or(false),
+    })
+}
+
 /// BCP-47-ish allowlist for the footer record id. We embed the language
 /// in `youtube_description_footer:`<lang>`` so the charset has to stay
 /// SurrealDB-safe. ASCII letters, digits, and `-` cover every BCP-47

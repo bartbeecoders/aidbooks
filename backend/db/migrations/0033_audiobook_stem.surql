@@ -1,0 +1,21 @@
+-- Phase G — Manim diagram render path. Two new audiobook fields:
+--
+--   * `stem_detected` — the outline LLM's verdict on whether the topic is
+--     STEM (math / physics / chemistry / biology / CS / engineering).
+--     Written once after outline generation completes, and overwritten on
+--     every subsequent outline regenerate. Null on legacy rows that
+--     haven't been re-outlined since this migration.
+--
+--   * `stem_override` — explicit user toggle that wins over `stem_detected`.
+--     Three states encoded:
+--       null         = use detection (default)
+--       true / false = force the value regardless of LLM verdict
+--
+-- Effective STEM (used by the render-path picker):
+--   stem_override.unwrap_or(stem_detected.unwrap_or(false))
+--
+-- Pure schema widen — no data migration. Existing audiobooks default to
+-- stem_detected = null, stem_override = null, which collapses to "not STEM"
+-- for the renderer until the outline LLM is re-run.
+DEFINE FIELD IF NOT EXISTS stem_detected ON audiobook TYPE option<bool>;
+DEFINE FIELD IF NOT EXISTS stem_override ON audiobook TYPE option<bool>;

@@ -1,0 +1,80 @@
+# Phase G — Manim diagram render path.
+#
+# OCI image (works under podman or docker; podman is the project's
+# primary runtime). Builds in two stages:
+#
+#   1. Base — system deps for Manim CE: Cairo + Pango (glyph
+#      rasterisation), ffmpeg (video encode), and texlive (LaTeX +
+#      dvisvgm so MathTex renders true math). LaTeX adds ~2 GB; we
+#      keep it because Phase G is explicitly STEM and equations
+#      without LaTeX look wrong.
+#   2. App — pip-install Manim against the pinned requirements,
+#      drop to a non-root user, set the package directory as the
+#      WORKDIR. The Rust sidecar mounts the storage path read-write
+#      and invokes `python -m listenai_manim.smoke` (or, in G.5,
+#      `listenai_manim.server`).
+#
+# Build:    podman build -f Containerfile -t listenai-manim:0.1 .
+# Smoke:    podman run --rm -v $PWD:/work:Z listenai-manim:0.1 \
+#               python -m listenai_manim.smoke
+#
+# `:Z` is the SELinux relabel flag — harmless on systems without
+# SELinux, required on Fedora/RHEL/EndeavourOS-with-SELinux.
+
+FROM docker.io/library/python:3.11-slim-bookworm AS base
+
+# System deps. `--no-install-recommends` keeps the image lean;
+# `texlive-science` pulls in `physics`, `siunitx`, etc. so Manim's
+# `MathTex` covers the common STEM macros. `dvisvgm` is what Manim
+# uses to convert LaTeX-produced DVIs into SVG paths.
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      ca-certificates \
+      ffmpeg \
+      libcairo2 \
+      libcairo2-dev \
+      libpango-1.0-0 \
+      libpango1.0-dev \
+      pkg-config \
+      build-essential \
+      python3-dev \
+      texlive-latex-base \
+      texlive-latex-extra \
+      texlive-fonts-recommended \
+      texlive-science \
+      dvisvgm \
+    ; \
+    rm -rf /var/lib/apt/lists/*
+
+# Speed up pip + reduce wheel cache footprint in the layer.
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /opt/listenai-manim
+
+# Install Python deps first (changes rarely) so the source-copy layer
+# can rebuild quickly during dev.
+COPY requirements.txt ./
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+# Copy the package source. Smoke + server modules go here; the
+# templates dir (G.4) and server (G.5) will land alongside.
+COPY listenai_manim ./listenai_manim
+COPY pyproject.toml ./
+
+# Install the package itself so `python -m listenai_manim.smoke`
+# works without a PYTHONPATH dance.
+RUN pip install --no-deps -e .
+
+# Drop privileges. Podman runs rootless by default but containers
+# created by docker root-by-default; either way, render workloads
+# should never need real-uid 0.
+RUN useradd --create-home --shell /usr/sbin/nologin manim
+USER manim
+WORKDIR /home/manim
+
+# Default command — smoke. The Rust sidecar overrides this in G.5.
+CMD ["python", "-m", "listenai_manim.smoke"]

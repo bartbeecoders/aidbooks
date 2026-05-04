@@ -25,6 +25,18 @@ pub enum LlmRole {
     /// Cross-language prose rewriter. Falls back to `Chapter` when no row
     /// is tagged for it, so existing setups keep working without changes.
     Translate,
+    /// Generates raw Manim Python code per paragraph for the STEM
+    /// diagram path (Phase H). Decoupled from `Chapter` because users
+    /// often want a code-specialized model (DeepSeek-Coder, Qwen-Coder,
+    /// Sonnet) for this even when their prose model is something else.
+    /// Falls back to `Chapter` when no row is tagged for it, so books
+    /// generated before this role landed keep rendering.
+    ManimCode,
+    /// Splits chapter prose into role-tagged segments (`narrator`,
+    /// `dialogue_male`, `dialogue_female`) for the multi-voice
+    /// narration feature. Falls back to `Chapter` when no row is
+    /// tagged for it.
+    VoiceExtract,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

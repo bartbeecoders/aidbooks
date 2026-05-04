@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "jsx": "preserve",
+    "jsxImportSource": "@revideo/2d/lib",
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "noUnusedLocals": true,
+    "noImplicitAny": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "declaration": false,
+    "sourceMap": true
+  },
+  // The Revideo project files (`project.tsx`, `scene.tsx`) stay as
+  // source — Revideo's Vite pipeline compiles them on-demand at render
+  // time. `tsc` only emits the CLI/server drivers + shared TS modules.
+  "include": [
+    "src/cli.ts",
+    "src/server.ts",
+    "src/render.ts",
+    "src/spec.ts",
+    "src/events.ts"
+  ]
+}

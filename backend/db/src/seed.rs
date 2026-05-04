@@ -86,6 +86,31 @@ async fn seed_prompts(db: &Db) -> Result<()> {
             "variables": ["seed", "language"],
             "body": include_str!("prompts/random_topic_v1.md"),
         }),
+        json!({
+            "id": "paragraph_visual_v1",
+            "role": "paragraph_visual",
+            "variables": [
+                "book_title", "book_topic", "genre",
+                "chapter_title", "paragraph_listing"
+            ],
+            "body": include_str!("prompts/paragraph_visual_v1.md"),
+        }),
+        json!({
+            "id": "manim_code_v1",
+            "role": "manim_code",
+            "variables": [
+                "book_title", "book_topic", "genre",
+                "chapter_title", "theme", "run_seconds",
+                "paragraph_text"
+            ],
+            "body": include_str!("prompts/manim_code_v1.md"),
+        }),
+        json!({
+            "id": "voice_extract_v1",
+            "role": "voice_extract",
+            "variables": ["chapter_title", "chapter_body"],
+            "body": include_str!("prompts/voice_extract_v1.md"),
+        }),
     ];
 
     for p in prompts {

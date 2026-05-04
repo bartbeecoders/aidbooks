@@ -19,6 +19,7 @@ const ALL_ROLES = [
   "moderation",
   "cover_art",
   "translate",
+  "manim_code",
 ] as const;
 
 const FUNCTIONS: { value: string; label: string; icon: string }[] = [

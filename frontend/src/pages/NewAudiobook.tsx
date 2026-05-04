@@ -1,6 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   audiobooks,
   catalog,
@@ -67,7 +67,13 @@ const LANGUAGES: { code: string; label: string; flag: string }[] = [
 export function NewAudiobook(): JSX.Element {
   const qc = useQueryClient();
   const navigate = useNavigate();
-  const [topic, setTopic] = useState("");
+  // Allow other pages to deep-link into the create flow with a
+  // pre-filled topic — currently used by the Ideas page's "Start"
+  // button. The param is read once on mount; subsequent edits to the
+  // input are owned by local state.
+  const [searchParams] = useSearchParams();
+  const initialTopic = searchParams.get("topic") ?? "";
+  const [topic, setTopic] = useState(initialTopic);
   const [length, setLength] = useState<AudiobookLength>("short");
   const [genre, setGenre] = useState("");
   const [category, setCategory] = useState("");
@@ -207,11 +213,12 @@ export function NewAudiobook(): JSX.Element {
         cover_image_base64: cover?.base64,
         art_style: artStyle || undefined,
         cover_llm_id: coverLlmId || undefined,
-        // Shorts: single chapter, no paragraph slideshow.
+        // Paragraph slideshow tiles, both for regular books and Shorts —
+        // the publisher composites each tile onto its target aspect
+        // ratio (9:16 for Shorts, 16:9 otherwise) so the same tile
+        // count works either way.
         images_per_paragraph:
-          !isShort && autoCover && imagesPerParagraph > 0
-            ? imagesPerParagraph
-            : 0,
+          autoCover && imagesPerParagraph > 0 ? imagesPerParagraph : 0,
         is_short: isShort,
         auto_pipeline,
       });
@@ -664,7 +671,7 @@ function PipelinePanel({
         />
       </div>
 
-      {chapters && cover && !isShort && (
+      {chapters && cover && (
         <div className="mt-4 rounded-md border border-slate-800 bg-slate-950/60 p-3">
           <div className="flex items-baseline justify-between">
             <div>

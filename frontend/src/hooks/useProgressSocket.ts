@@ -8,6 +8,16 @@ export type ProgressState = {
   readyState: "connecting" | "open" | "closed";
   /** Latest snapshot from the server (or the accumulated event state). */
   jobs: JobSnapshot[];
+  /**
+   * Latest `stage` string per job_id, populated only by live `progress`
+   * events (snapshots/REST polls don't carry it because it isn't
+   * persisted on JobSnapshot). Lets the UI show "rendering diagram
+   * 3/12" without us widening the OpenAPI-derived JobSnapshot type
+   * (which would require backfilling `stage` everywhere it's used).
+   * Cleared back to "" on terminal events so a stale "rendering
+   * paragraph 5/12" doesn't linger after Ready.
+   */
+  jobStages: Record<string, string>;
   /** Wall-clock of the most recent event; drives subtle UI shimmer. */
   lastEventAt: number | null;
   /** True right after any terminal event; screen can invalidate queries. */
@@ -36,6 +46,7 @@ export function useProgressSocket(audiobookId: string | undefined): ProgressApi 
   const [state, setState] = useState<ProgressState>({
     readyState: "connecting",
     jobs: [],
+    jobStages: {},
     lastEventAt: null,
     terminalTick: 0,
   });
@@ -107,6 +118,7 @@ function applyEvent(prev: ProgressState, event: ProgressEvent): ProgressState {
           chapter_number: existing?.chapter_number ?? event.chapter ?? null,
           last_error: existing?.last_error ?? null,
         })),
+        jobStages: { ...prev.jobStages, [event.job_id]: event.stage ?? "" },
         lastEventAt: now,
       };
     case "completed":
@@ -121,6 +133,7 @@ function applyEvent(prev: ProgressState, event: ProgressEvent): ProgressState {
           chapter_number: existing?.chapter_number ?? null,
           last_error: existing?.last_error ?? null,
         })),
+        jobStages: clearStage(prev.jobStages, event.job_id),
         lastEventAt: now,
         terminalTick: prev.terminalTick + 1,
       };
@@ -136,12 +149,20 @@ function applyEvent(prev: ProgressState, event: ProgressEvent): ProgressState {
           chapter_number: existing?.chapter_number ?? null,
           last_error: event.error,
         })),
+        jobStages: clearStage(prev.jobStages, event.job_id),
         lastEventAt: now,
         terminalTick: prev.terminalTick + 1,
       };
     default:
       return prev;
   }
+}
+
+function clearStage(stages: Record<string, string>, jobId: string): Record<string, string> {
+  if (!(jobId in stages)) return stages;
+  const next = { ...stages };
+  delete next[jobId];
+  return next;
 }
 
 function upsertJob(

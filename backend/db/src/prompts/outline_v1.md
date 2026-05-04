@@ -16,6 +16,7 @@ Required shape:
 {
   "title": "<short, evocative title — 2 to 8 words>",
   "subtitle": "<single-sentence teaser, optional — use empty string if none>",
+  "is_stem": <true | false>,
   "tags": ["<x.ai speech tag>", "..."],
   "chapters": [
     {
@@ -26,6 +27,12 @@ Required shape:
     }
   ]
 }
+
+STEM classification ("is_stem" field):
+- Set to true when the topic is fundamentally explanatory of math, physics, chemistry, biology, computer science, or engineering — i.e. a reader's understanding rests on diagrams, equations, plots, or schematics rather than narrative.
+- Set to false for narrative non-fiction (history, biography, memoir, business, philosophy), fiction of any kind, and how-to / lifestyle content.
+- Borderline cases: economics with charts → true; pop-science about AI culture → false; "data structures and algorithms" → true; "the history of mathematics" → false (narrative).
+- The downstream renderer uses this flag to decide whether to attempt diagrammatic visuals. False is the safe default — emitting true on a non-STEM book wastes render compute on diagrams that don't fit.
 
 Constraints:
 - Produce exactly {{chapter_count}} chapter objects, numbered 1..{{chapter_count}}.

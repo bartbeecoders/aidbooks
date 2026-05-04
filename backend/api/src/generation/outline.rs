@@ -23,6 +23,15 @@ struct OutlineJson {
     #[serde(default)]
     #[allow(dead_code)]
     subtitle: String,
+    /// LLM verdict on whether the topic is STEM (math / physics /
+    /// chemistry / biology / CS / engineering). Drives whether the
+    /// downstream renderer attempts diagrammatic visuals (Phase G's
+    /// Manim path). User-facing override lives on the audiobook row
+    /// as `stem_override` — that takes precedence at render time.
+    /// Default `false` is safe: renderer just stays on the prose
+    /// path it would have used anyway.
+    #[serde(default)]
+    is_stem: bool,
     /// X.ai TTS speech-tag palette the chapter writer should embed inline.
     /// Filtered to the supported set in `sanitize_tags` before persisting.
     #[serde(default)]
@@ -252,15 +261,21 @@ async fn persist_outline(
     is_short: bool,
 ) -> Result<()> {
     let tags = sanitize_tags(&outline.tags);
-    // Replace title + speech-tag palette in one round-trip.
+    // Replace title + speech-tag palette + STEM verdict in one round-
+    // trip. `stem_override` is intentionally untouched here so a user
+    // who toggled the override before re-running outline keeps their
+    // choice. Phase G — only `stem_detected` (LLM verdict) gets the
+    // refresh.
     state
         .db()
         .inner()
         .query(format!(
-            "UPDATE audiobook:`{audiobook_id}` SET title = $title, tags = $tags"
+            "UPDATE audiobook:`{audiobook_id}` \
+             SET title = $title, tags = $tags, stem_detected = $stem"
         ))
         .bind(("title", outline.title.clone()))
         .bind(("tags", tags))
+        .bind(("stem", outline.is_stem))
         .await
         .map_err(|e| Error::Database(format!("persist title: {e}")))?
         .check()
@@ -350,6 +365,9 @@ pub async fn log_generation_event(
         PromptRole::ParagraphImage => "paragraph_image",
         PromptRole::Translate => "translate",
         PromptRole::SceneExtract => "scene_extract",
+        PromptRole::ParagraphVisual => "paragraph_visual",
+        PromptRole::ManimCode => "manim_code",
+        PromptRole::VoiceExtract => "voice_extract",
     };
     let sql = format!(
         r#"CREATE generation_event:`{event_id}` CONTENT {{

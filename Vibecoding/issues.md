@@ -18,3 +18,5 @@ I selected the black forest: flux.2 klein 4b as image gen, but it gives an error
 
 When generating text or images through openrouter, can you get the actual cost a prompt took ? And store that in the database ?
 This will enable us to show the user the cost of the generation.
+
+When uploading to youtube, the preview image of each chapter is always the same, it should be the image of the chapter.

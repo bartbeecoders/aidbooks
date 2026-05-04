@@ -26,6 +26,14 @@ pub enum JobKind {
     /// LLM scene-extract pass, persist `chapter.paragraphs`, and fan out
     /// one `Cover` job per paragraph tile.
     ChapterParagraphs,
+    /// Parent animation job: fan out one `AnimateChapter` child per
+    /// chapter, then aggregate so the publish step can pick up all
+    /// per-chapter MP4s at once.
+    Animate,
+    /// Render one chapter's animated companion video. Drives the Node
+    /// (Revideo) sidecar with a JSON `SceneSpec`; output is
+    /// `<storage>/<audiobook>/<language>/ch-<n>.video.mp4`.
+    AnimateChapter,
 }
 
 impl JobKind {
@@ -41,6 +49,8 @@ impl JobKind {
             JobKind::Translate => "translate",
             JobKind::PublishYoutube => "publish_youtube",
             JobKind::ChapterParagraphs => "chapter_paragraphs",
+            JobKind::Animate => "animate",
+            JobKind::AnimateChapter => "animate_chapter",
         }
     }
 
@@ -56,6 +66,8 @@ impl JobKind {
             "translate" => JobKind::Translate,
             "publish_youtube" => JobKind::PublishYoutube,
             "chapter_paragraphs" => JobKind::ChapterParagraphs,
+            "animate" => JobKind::Animate,
+            "animate_chapter" => JobKind::AnimateChapter,
             _ => return None,
         })
     }

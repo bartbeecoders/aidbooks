@@ -15,6 +15,7 @@ import { AdminUsers } from "./pages/admin/AdminUsers";
 import { AdminVoices } from "./pages/admin/AdminVoices";
 import { AdminYoutubeSettings } from "./pages/admin/AdminYoutubeSettings";
 import { BookDetail } from "./pages/BookDetail";
+import { Ideas } from "./pages/Ideas";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
 import { NewAudiobook } from "./pages/NewAudiobook";
@@ -34,6 +35,7 @@ export const router = createBrowserRouter([
     ),
     children: [
       { path: "/app", element: <Library /> },
+      { path: "/app/ideas", element: <Ideas /> },
       { path: "/app/new", element: <NewAudiobook /> },
       // Library renders in both routes — `:id` selects which book is
       // shown in the right pane. Keeping the URL shape preserves

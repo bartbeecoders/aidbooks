@@ -10,6 +10,8 @@ import { BookDetail } from "./BookDetail";
 type SortKey = "title" | "language" | "status" | "updated" | "duration";
 type StatusFilter = "all" | AudiobookStatus;
 type DurationFilter = "all" | "unknown" | "lt30" | "30to60" | "1to3h" | "gt3h";
+type LanguageFilter = "all" | string;
+type ShortFilter = "all" | "yes" | "no";
 
 const SORT_OPTIONS: { key: SortKey; label: string }[] = [
   { key: "updated", label: "Updated" },
@@ -50,6 +52,8 @@ export function Library(): JSX.Element {
   const [renaming, setRenaming] = useState<AudiobookSummary | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [durationFilter, setDurationFilter] = useState<DurationFilter>("all");
+  const [languageFilter, setLanguageFilter] = useState<LanguageFilter>("all");
+  const [shortFilter, setShortFilter] = useState<ShortFilter>("all");
   const [sortKey, setSortKey] = useState<SortKey>("updated");
   const [groupByCategory, setGroupByCategory] = useState(true);
   const [search, setSearch] = useState("");
@@ -103,6 +107,18 @@ export function Library(): JSX.Element {
     return map;
   }, [data]);
 
+  // Distinct language codes present in the library, sorted. Drives the
+  // Language filter dropdown — there's no point offering languages the
+  // user has no books in.
+  const languageOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const b of data?.items ?? []) {
+      const lang = (b.language || "").trim();
+      if (lang) set.add(lang);
+    }
+    return [...set].sort();
+  }, [data]);
+
   const filteredSorted = useMemo(() => {
     const items = data?.items ?? [];
     const ql = search.trim().toLowerCase();
@@ -110,6 +126,14 @@ export function Library(): JSX.Element {
       if (statusFilter !== "all" && b.status !== statusFilter) return false;
       if (durationFilter !== "all" && !matchesDuration(b.duration_ms, durationFilter)) {
         return false;
+      }
+      if (languageFilter !== "all" && (b.language || "") !== languageFilter) {
+        return false;
+      }
+      if (shortFilter !== "all") {
+        const isShort = b.is_short === true;
+        if (shortFilter === "yes" && !isShort) return false;
+        if (shortFilter === "no" && isShort) return false;
       }
       if (ql) {
         const hay = `${b.title} ${b.topic} ${b.category ?? ""}`.toLowerCase();
@@ -119,7 +143,7 @@ export function Library(): JSX.Element {
     });
     matched.sort((a, b) => sortBooks(a, b, sortKey));
     return matched;
-  }, [data, statusFilter, durationFilter, search, sortKey]);
+  }, [data, statusFilter, durationFilter, languageFilter, shortFilter, search, sortKey]);
 
   // When grouping is on, bucket the (already-sorted) list by category.
   // Each group keeps the surrounding sort order. "Uncategorized" rows
@@ -204,6 +228,29 @@ export function Library(): JSX.Element {
                 </option>
               ))}
               <option value="unknown">Not narrated</option>
+            </select>
+            <label className="text-slate-500">Language:</label>
+            <select
+              value={languageFilter}
+              onChange={(e) => setLanguageFilter(e.target.value as LanguageFilter)}
+              className="rounded-md border border-slate-800 bg-slate-950 px-2 py-1 text-xs uppercase text-slate-100"
+            >
+              <option value="all">Any</option>
+              {languageOptions.map((l) => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </select>
+            <label className="text-slate-500">Short:</label>
+            <select
+              value={shortFilter}
+              onChange={(e) => setShortFilter(e.target.value as ShortFilter)}
+              className="rounded-md border border-slate-800 bg-slate-950 px-2 py-1 text-xs text-slate-100"
+            >
+              <option value="all">Any</option>
+              <option value="yes">Yes</option>
+              <option value="no">No</option>
             </select>
             <label className="ml-auto inline-flex cursor-pointer items-center gap-1.5">
               <input

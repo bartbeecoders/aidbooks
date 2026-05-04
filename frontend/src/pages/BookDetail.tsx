@@ -3,8 +3,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   audiobooks,
+  audiobookTestManimVideoUrl,
   catalog,
   chapterArtUrl,
+  chapterVideoUrl,
   coverImageUrl,
   integrations,
   jobs as jobsApi,
@@ -25,6 +27,7 @@ import { useAuth } from "../store/auth";
 import { useProgressSocket } from "../hooks/useProgressSocket";
 import { RenameAudiobookDialog } from "../components/RenameAudiobookDialog";
 import { ArtStyleSelect } from "../components/ArtStylePicker";
+import { CopyButton } from "../components/CopyButton";
 import { ART_STYLES, styleIcon, styleLabel } from "../lib/art-styles";
 import { imageCapableLlms } from "../lib/cover-llm";
 import { StatusPill } from "./Library";
@@ -119,6 +122,14 @@ export function BookDetail(): JSX.Element {
       qc.invalidateQueries({ queryKey: ["podcasts"] });
     },
   });
+  // Three-state STEM override. Sending `null` clears (returns to LLM
+  // verdict); `true`/`false` forces. Phase G's Manim diagram path
+  // reads this to decide whether to attempt diagrammatic visuals.
+  const setStemOverride = useMutation({
+    mutationFn: (next: boolean | null) =>
+      audiobooks.patch(id!, { stem_override: next }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["audiobook", id] }),
+  });
   const categoriesQuery = useQuery({
     queryKey: ["audiobook-categories"],
     queryFn: () => catalog.audiobookCategories(),
@@ -195,6 +206,55 @@ export function BookDetail(): JSX.Element {
       burstSeed();
     },
   });
+  const [animateTheme, setAnimateTheme] =
+    useState<import("../api").AnimationTheme>("library");
+  const animate = useMutation({
+    mutationFn: () =>
+      audiobooks.animate(id!, {
+        language: activeLang ?? undefined,
+        theme: animateTheme,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["audiobook", id] });
+      burstSeed();
+    },
+  });
+  // Per-chapter regenerate. Backend deletes the existing MP4 + busts
+  // the F.1e cache before enqueueing, so the inline preview will
+  // 404 until the new render completes — that's the intended UX
+  // signal that the chapter is being rebuilt.
+  const animateChapter = useMutation({
+    mutationFn: (n: number) =>
+      audiobooks.animateChapter(id!, n, {
+        language: activeLang ?? undefined,
+        theme: animateTheme,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["audiobook", id] });
+      burstSeed();
+    },
+  });
+  // Phase G — backfill the per-paragraph visual classifier on a
+  // chapter that was generated before STEM was enabled. Returns the
+  // updated chapter summary; query invalidation refreshes the
+  // diagram badge so the user sees the count change in place.
+  const classifyChapterVisuals = useMutation({
+    mutationFn: (n: number) => audiobooks.classifyChapterVisuals(id!, n),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["audiobook", id] });
+    },
+  });
+  // Phase H — re-run the bespoke Manim code-gen LLM against this
+  // chapter's `custom_manim` paragraphs. Used as a backfill *and*
+  // as a "regenerate with the model I just assigned to ManimCode"
+  // knob; invalidating the audiobook query refreshes the diagram
+  // badge tooltip so the user sees codes appear inline.
+  const regenerateChapterManimCode = useMutation({
+    mutationFn: (n: number) => audiobooks.regenerateChapterManimCode(id!, n),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["audiobook", id] });
+    },
+  });
   const cancelPipeline = useMutation({
     mutationFn: () => audiobooks.cancelPipeline(id!),
     onSuccess: () => {
@@ -212,7 +272,9 @@ export function BookDetail(): JSX.Element {
           j.kind === "tts_chapter" ||
           j.kind === "translate" ||
           j.kind === "publish_youtube" ||
-          j.kind === "cover",
+          j.kind === "cover" ||
+          j.kind === "animate" ||
+          j.kind === "animate_chapter",
       ),
     [progress.jobs],
   );
@@ -225,6 +287,40 @@ export function BookDetail(): JSX.Element {
     }
     return map;
   }, [progress.jobs]);
+  // Per-chapter animation render jobs. Indexed by chapter_number; the
+  // AnimationSection renders one row per chapter and looks up its
+  // status here.
+  const animationJobsByChapter = useMemo(() => {
+    const map = new Map<number, JobSnapshot>();
+    for (const j of progress.jobs) {
+      if (j.kind === "animate_chapter" && j.chapter_number != null) {
+        map.set(j.chapter_number, j);
+      }
+    }
+    return map;
+  }, [progress.jobs]);
+  const animateParentRunning = useMemo(
+    () =>
+      progress.jobs.some(
+        (j) =>
+          j.kind === "animate" &&
+          (j.status === "queued" || j.status === "running"),
+      ),
+    [progress.jobs],
+  );
+  // Pipeline-step failures surfaced at the top of the page so the user
+  // doesn't have to expand the activity log to discover what broke.
+  // Includes both `dead` (terminal — exhausted retries) and `failed`
+  // (snapshot-side raw status) states.
+  const failedParentJobs = useMemo(
+    () =>
+      parentJobs.filter(
+        (j) =>
+          (j.status === "dead" || j.status === "failed") &&
+          !!j.last_error?.trim(),
+      ),
+    [parentJobs],
+  );
 
   if (!id) return <p>Missing id.</p>;
   if (isLoading) return <p className="text-sm text-slate-400">Loading…</p>;
@@ -374,7 +470,42 @@ export function BookDetail(): JSX.Element {
         </p>
       )}
 
+      {failedParentJobs.length > 0 && (
+        <div className="mb-4 space-y-2">
+          {failedParentJobs.map((job) => (
+            <div
+              key={job.id}
+              className="rounded-md border border-rose-900 bg-rose-950/30 p-3"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-rose-200">
+                    {activityJobTitle(job)} failed
+                  </p>
+                  <p className="mt-1 break-all text-xs text-rose-300">
+                    {job.last_error}
+                  </p>
+                </div>
+                <CopyButton
+                  text={job.last_error ?? ""}
+                  title="Copy error message"
+                  className="shrink-0"
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <SpeechTagsRow tags={data.tags ?? []} />
+
+      <MultiVoicePanel
+        audiobookId={data.id}
+        enabled={data.multi_voice_enabled ?? false}
+        roles={(data.voice_roles ?? {}) as Record<string, string>}
+        voices={voices}
+        onUpdated={() => qc.invalidateQueries({ queryKey: ["audiobook", id] })}
+      />
 
       <LanguageTabs
         languages={data.available_languages}
@@ -423,6 +554,14 @@ export function BookDetail(): JSX.Element {
           language={viewLang}
           languageLabel={langInfo(viewLang).label}
           accountConnected={youtubeAccount.data?.connected ?? false}
+          isShort={data.is_short ?? false}
+          animationsReady={
+            data.chapters.length > 0 &&
+            data.chapters.every(
+              (c) =>
+                animationJobsByChapter.get(c.number)?.status === "completed",
+            )
+          }
           onClose={() => setPublishOpen(false)}
           onQueued={() => {
             qc.invalidateQueries({ queryKey: ["audiobook", id, "publications"] });
@@ -459,6 +598,21 @@ export function BookDetail(): JSX.Element {
             : allAudioReady
               ? `Re-narrate (${langInfo(viewLang).label})`
               : `Narrate (${langInfo(viewLang).label})`}
+        </button>
+        <button
+          type="button"
+          onClick={() => animate.mutate()}
+          disabled={!allAudioReady || animate.isPending || animateParentRunning}
+          title={
+            !allAudioReady
+              ? "Narrate every chapter in this language first"
+              : "Render the animated companion videos for every chapter"
+          }
+          className="rounded-md border border-violet-900 bg-violet-950/40 px-3 py-2 text-sm text-violet-200 hover:border-violet-800 hover:bg-violet-950 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {animate.isPending || animateParentRunning
+            ? "Animating…"
+            : `🎬 Animate (${langInfo(viewLang).label})`}
         </button>
         <button
           type="button"
@@ -507,6 +661,13 @@ export function BookDetail(): JSX.Element {
               : "Could not queue audio generation"}
           </p>
         )}
+        {animate.error && (
+          <p className="w-full text-sm text-rose-400">
+            {animate.error instanceof ApiError
+              ? animate.error.message
+              : "Could not queue animation"}
+          </p>
+        )}
         {cancelPipeline.error && (
           <p className="w-full text-sm text-rose-400">
             {cancelPipeline.error instanceof ApiError
@@ -524,6 +685,62 @@ export function BookDetail(): JSX.Element {
         publications={publications.data?.items ?? []}
       />
 
+      {allAudioReady && data.chapters.length > 0 && (
+        <AnimationSection
+          audiobookId={data.id}
+          chapters={data.chapters}
+          jobsByChapter={animationJobsByChapter}
+          jobStages={progress.jobStages}
+          parentRunning={animateParentRunning}
+          theme={animateTheme}
+          onThemeChange={setAnimateTheme}
+          accessToken={accessToken}
+          language={viewLang}
+          onRegenerateChapter={(n) => animateChapter.mutate(n)}
+          regeneratingChapter={
+            animateChapter.isPending ? animateChapter.variables ?? null : null
+          }
+          stemDetected={data.stem_detected ?? null}
+          stemOverride={data.stem_override ?? null}
+          isStem={data.is_stem ?? false}
+          onSetStemOverride={(v) => setStemOverride.mutate(v)}
+          stemPending={setStemOverride.isPending}
+          onClassifyChapterVisuals={(n) => classifyChapterVisuals.mutate(n)}
+          classifyingChapter={
+            classifyChapterVisuals.isPending
+              ? classifyChapterVisuals.variables ?? null
+              : null
+          }
+          classifyError={
+            classifyChapterVisuals.isError
+              ? {
+                  chapter: classifyChapterVisuals.variables ?? null,
+                  message:
+                    classifyChapterVisuals.error instanceof Error
+                      ? classifyChapterVisuals.error.message
+                      : "Classify request failed",
+                }
+              : null
+          }
+          onRegenerateManimCode={(n) => regenerateChapterManimCode.mutate(n)}
+          regeneratingManimCodeChapter={
+            regenerateChapterManimCode.isPending
+              ? regenerateChapterManimCode.variables ?? null
+              : null
+          }
+          regenerateManimCodeError={
+            regenerateChapterManimCode.isError
+              ? {
+                  chapter: regenerateChapterManimCode.variables ?? null,
+                  message:
+                    regenerateChapterManimCode.error instanceof Error
+                      ? regenerateChapterManimCode.error.message
+                      : "Regenerate Manim code request failed",
+                }
+              : null
+          }
+        />
+      )}
 
       {data.chapters.length === 0 ? (
         <p className="rounded-lg border border-dashed border-slate-800 p-6 text-center text-sm text-slate-500">
@@ -593,6 +810,168 @@ function SpeechTagsRow({ tags }: { tags: string[] }): JSX.Element | null {
           {t}
         </span>
       ))}
+    </div>
+  );
+}
+
+const MULTI_VOICE_ROLES: { id: string; label: string; hint: string }[] = [
+  { id: "narrator", label: "Narrator", hint: "Descriptive prose & action" },
+  { id: "dialogue_male", label: "Male dialogue", hint: "Speech by male characters" },
+  { id: "dialogue_female", label: "Female dialogue", hint: "Speech by female characters" },
+];
+
+/**
+ * Multi-voice settings card — collapsible panel sitting above the
+ * language tabs. Toggle plus three role pickers (narrator / male /
+ * female). The backend extracts segments lazily on the next narration,
+ * so changes here don't trigger work until the user re-narrates.
+ */
+function MultiVoicePanel({
+  audiobookId,
+  enabled,
+  roles,
+  voices,
+  onUpdated,
+}: {
+  audiobookId: string;
+  enabled: boolean;
+  roles: Record<string, string>;
+  voices: Voice[];
+  onUpdated: () => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(enabled);
+
+  const toggle = useMutation({
+    mutationFn: (next: boolean) =>
+      audiobooks.patch(audiobookId, { multi_voice_enabled: next }),
+    onSuccess: onUpdated,
+  });
+
+  const setRole = useMutation({
+    mutationFn: (next: Record<string, string>) =>
+      audiobooks.patch(audiobookId, { voice_roles: next }),
+    onSuccess: onUpdated,
+  });
+
+  const onPickRole = (roleId: string, voiceId: string | null): void => {
+    const next = { ...roles };
+    if (voiceId) {
+      next[roleId] = voiceId;
+    } else {
+      delete next[roleId];
+    }
+    setRole.mutate(next);
+  };
+
+  return (
+    <details
+      open={open}
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+      className="mb-4 overflow-hidden rounded-lg border border-slate-800 bg-slate-900/40"
+    >
+      <summary className="flex cursor-pointer select-none items-center gap-2 px-4 py-2.5 text-sm text-slate-200 hover:bg-slate-900/70">
+        <span aria-hidden="true" className="text-xs text-slate-500">
+          {open ? "▾" : "▸"}
+        </span>
+        <span className="font-medium">Multi-voice narration</span>
+        {enabled ? (
+          <span className="rounded-full border border-emerald-700 bg-emerald-950/40 px-2 py-0.5 text-[11px] uppercase tracking-wide text-emerald-200">
+            on
+          </span>
+        ) : (
+          <span className="rounded-full border border-slate-700 bg-slate-950 px-2 py-0.5 text-[11px] uppercase tracking-wide text-slate-400">
+            off
+          </span>
+        )}
+      </summary>
+      <div className="space-y-4 border-t border-slate-800 px-4 py-4">
+        <p className="text-xs text-slate-400">
+          When on, the next narration runs an extra LLM pass to split prose
+          by speaker, then renders each segment with the role's mapped
+          voice. Re-narrate the audiobook after toggling or changing voices
+          for the new mapping to take effect.
+        </p>
+        <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-slate-200">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => toggle.mutate(e.target.checked)}
+            disabled={toggle.isPending}
+            className="h-4 w-4 accent-sky-500"
+          />
+          Enable multi-voice narration
+        </label>
+        {enabled && (
+          <div className="space-y-3">
+            {MULTI_VOICE_ROLES.map((r) => (
+              <RoleVoicePicker
+                key={r.id}
+                role={r}
+                value={roles[r.id] ?? null}
+                voices={voices}
+                onChange={(v) => onPickRole(r.id, v)}
+                saving={setRole.isPending}
+              />
+            ))}
+            {(toggle.error || setRole.error) && (
+              <p className="text-xs text-rose-400">
+                {(toggle.error ?? setRole.error) instanceof ApiError
+                  ? ((toggle.error ?? setRole.error) as ApiError).message
+                  : "Could not save"}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function RoleVoicePicker({
+  role,
+  value,
+  voices,
+  onChange,
+  saving,
+}: {
+  role: { id: string; label: string; hint: string };
+  value: string | null;
+  voices: Voice[];
+  onChange: (voiceId: string | null) => void;
+  saving: boolean;
+}): JSX.Element {
+  const genderHint =
+    role.id === "dialogue_male"
+      ? "male"
+      : role.id === "dialogue_female"
+        ? "female"
+        : null;
+  return (
+    <div className="rounded-md border border-slate-800 bg-slate-950/40 p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <div>
+          <p className="text-sm font-medium text-slate-100">{role.label}</p>
+          <p className="text-[11px] text-slate-500">{role.hint}</p>
+        </div>
+        <select
+          value={value ?? ""}
+          onChange={(e) => onChange(e.target.value || null)}
+          disabled={saving}
+          className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100 outline-none focus:border-sky-600 disabled:opacity-50"
+        >
+          <option value="">— Use narrator —</option>
+          {voices.map((v) => {
+            const match = genderHint && v.gender === genderHint;
+            return (
+              <option key={v.id} value={v.id}>
+                {v.name}
+                {v.gender ? ` (${v.gender})` : ""}
+                {match ? " ✓" : ""}
+              </option>
+            );
+          })}
+        </select>
+      </div>
     </div>
   );
 }
@@ -1143,6 +1522,11 @@ const COST_CATEGORIES: { key: string; label: string; icon: string; roles: string
   },
   { key: "image", label: "Image generation", icon: "🎨", roles: ["cover", "paragraph_image"] },
   { key: "narrate", label: "Narration (TTS)", icon: "🎙", roles: ["tts"] },
+  // Animation: the per-paragraph visual classifier (`paragraph_visual`,
+  // decides whether a paragraph gets a Manim render) and the per-paragraph
+  // Manim Python codegen (`manim_code`). Both are LLM calls that show up
+  // in `generation_event` and bucket separately from text/image/narration.
+  { key: "animation", label: "Animation", icon: "🎬", roles: ["paragraph_visual", "manim_code"] },
 ];
 
 function categoryFor(role: string): string {
@@ -1244,32 +1628,64 @@ function CostCategorySection({
           {formatUsd(bucket.cost)}
         </span>
       </header>
-      <ul className="space-y-1 text-xs text-slate-400">
-        {bucket.rows.map((r) => (
-          <li
-            key={r.role}
-            className="flex items-baseline justify-between gap-3 tabular-nums"
-          >
-            <span className="font-mono text-slate-300">{r.role}</span>
-            <span className="text-right text-slate-500">
-              {r.count} call{r.count === 1 ? "" : "s"}
-              {categoryKey === "narrate" ? (
-                // For TTS we repurpose prompt_tokens=chars and
-                // completion_tokens=duration_ms (see audio.rs).
-                <> · {r.prompt_tokens.toLocaleString()} chars</>
-              ) : r.prompt_tokens > 0 || r.completion_tokens > 0 ? (
-                <>
-                  {" · "}
-                  {r.prompt_tokens.toLocaleString()} in /{" "}
-                  {r.completion_tokens.toLocaleString()} out
-                </>
-              ) : null}
-            </span>
-            <span className="w-16 text-right text-slate-300">
-              {formatUsd(r.cost_usd)}
-            </span>
-          </li>
-        ))}
+      <ul className="space-y-2 text-xs text-slate-400">
+        {bucket.rows.map((r) => {
+          // The backend now groups by (role, llm), so the same role can
+          // appear twice when an admin swapped models mid-build. Make the
+          // key composite to keep React happy in that case.
+          const key = `${r.role}::${r.llm_id ?? ""}`;
+          // Pick a sensible display label: real llm_name when we have it,
+          // raw `llm_id` when the row was deleted, "fallback" when the
+          // event used the env-configured default. TTS rows carry the
+          // voice id in `llm_name` (see CostByRole comment).
+          let modelLabel: string | null;
+          if (r.llm_name) {
+            modelLabel = r.llm_name;
+          } else if (r.llm_id === "_default_") {
+            modelLabel = "fallback model";
+          } else if (r.llm_id) {
+            modelLabel = r.llm_id;
+          } else {
+            modelLabel = null;
+          }
+          return (
+            <li key={key} className="space-y-0.5">
+              <div className="flex items-baseline justify-between gap-3 tabular-nums">
+                <span className="font-mono text-slate-300">{r.role}</span>
+                <span className="text-right text-slate-500">
+                  {r.count} call{r.count === 1 ? "" : "s"}
+                  {categoryKey === "narrate" ? (
+                    // For TTS we repurpose prompt_tokens=chars and
+                    // completion_tokens=duration_ms (see audio.rs).
+                    <> · {r.prompt_tokens.toLocaleString()} chars</>
+                  ) : r.prompt_tokens > 0 || r.completion_tokens > 0 ? (
+                    <>
+                      {" · "}
+                      {r.prompt_tokens.toLocaleString()} in /{" "}
+                      {r.completion_tokens.toLocaleString()} out
+                    </>
+                  ) : null}
+                </span>
+                <span className="w-16 text-right text-slate-300">
+                  {formatUsd(r.cost_usd)}
+                </span>
+              </div>
+              {modelLabel && (
+                <div
+                  className="pl-3 text-[11px] text-slate-500"
+                  title={r.model_id ?? undefined}
+                >
+                  ↳ {modelLabel}
+                  {r.model_id && r.model_id !== modelLabel && (
+                    <span className="ml-1 font-mono text-slate-600">
+                      ({r.model_id})
+                    </span>
+                  )}
+                </div>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </section>
   );
@@ -1320,7 +1736,14 @@ function ParentJobRow({ job }: { job: JobSnapshot }): JSX.Element {
         )}
       </div>
       {job.last_error && (
-        <p className="mt-2 text-xs text-rose-400">{job.last_error}</p>
+        <div className="mt-2 flex items-start gap-2">
+          <p className="flex-1 text-xs text-rose-400 break-all">{job.last_error}</p>
+          <CopyButton
+            text={job.last_error}
+            title="Copy error message"
+            className="shrink-0"
+          />
+        </div>
       )}
     </div>
   );
@@ -1383,7 +1806,10 @@ function ActivityLog({
     const previewReady = publications.some(
       (p) => p.review && p.preview_ready_at !== null,
     );
-    return running || previewReady;
+    const failed = parentJobs.some(
+      (j) => j.status === "failed" || j.status === "dead",
+    );
+    return running || previewReady || failed;
   });
 
   const activeCount = parentJobs.filter(
@@ -1753,6 +2179,8 @@ function PublishYoutubeDialog({
   language,
   languageLabel,
   accountConnected,
+  isShort,
+  animationsReady,
   onClose,
   onQueued,
 }: {
@@ -1760,6 +2188,8 @@ function PublishYoutubeDialog({
   language: string;
   languageLabel: string;
   accountConnected: boolean;
+  isShort: boolean;
+  animationsReady: boolean;
   onClose: () => void;
   onQueued: () => void;
 }): JSX.Element {
@@ -1768,6 +2198,15 @@ function PublishYoutubeDialog({
   );
   const [mode, setMode] = useState<"single" | "playlist">("single");
   const [review, setReview] = useState(true);
+  // Default to "animated" whenever the per-chapter MP4s are ready and
+  // the book isn't a Short. Users who clicked through Animate + waited
+  // for every chapter to render almost certainly want those visuals on
+  // YouTube — making them remember to tick the box every time meant
+  // animations silently got dropped on upload (the original report
+  // that motivated this default). The dialog remounts on each open
+  // so this initial value tracks the latest readiness state without
+  // needing an effect to keep them in sync.
+  const [animate, setAnimate] = useState(animationsReady && !isShort);
   const [description, setDescription] = useState("");
 
   useEffect(() => {
@@ -1785,6 +2224,7 @@ function PublishYoutubeDialog({
         privacy_status: privacy,
         mode,
         review,
+        animate,
         description: description.trim() ? description : null,
       }),
     onSuccess: onQueued,
@@ -1886,6 +2326,42 @@ function PublishYoutubeDialog({
               Encode the {mode === "playlist" ? "chapter videos" : "video"} so
               you can watch them locally first. Nothing is uploaded to YouTube
               until you approve.
+            </span>
+          </span>
+        </label>
+
+        <label
+          className={
+            "mt-3 flex items-start gap-2 rounded-md border bg-slate-900 p-3 " +
+            (animationsReady && !isShort
+              ? "cursor-pointer border-slate-800"
+              : "cursor-not-allowed border-slate-900 opacity-50")
+          }
+          title={
+            isShort
+              ? "Shorts are 9:16 vertical and incompatible with the 16:9 chapter renders. Use a horizontal book."
+              : !animationsReady
+                ? "Click 🎬 Animate above and wait for every chapter to render first."
+                : undefined
+          }
+        >
+          <input
+            type="checkbox"
+            checked={animate}
+            disabled={!animationsReady || isShort}
+            onChange={(e) => setAnimate(e.target.checked)}
+            className="mt-0.5 h-4 w-4 accent-violet-500 disabled:cursor-not-allowed"
+          />
+          <span className="min-w-0">
+            <span className="block text-sm text-slate-100">
+              Use animated video
+            </span>
+            <span className="block text-[11px] text-slate-400">
+              {isShort
+                ? "Not available for Shorts (9:16 vs the 16:9 chapter renders)."
+                : animationsReady
+                  ? "Concatenate the per-chapter animation MP4s instead of looping the cover image."
+                  : "Run 🎬 Animate above first — this stays disabled until every chapter has been rendered."}
             </span>
           </span>
         </label>
@@ -2014,6 +2490,853 @@ function ImagePreview({
   );
 }
 
+function AnimationSection({
+  audiobookId,
+  chapters,
+  jobsByChapter,
+  jobStages,
+  parentRunning,
+  theme,
+  onThemeChange,
+  accessToken,
+  language,
+  onRegenerateChapter,
+  regeneratingChapter,
+  stemDetected,
+  stemOverride,
+  isStem,
+  onSetStemOverride,
+  stemPending,
+  onClassifyChapterVisuals,
+  classifyingChapter,
+  classifyError,
+  onRegenerateManimCode,
+  regeneratingManimCodeChapter,
+  regenerateManimCodeError,
+}: {
+  audiobookId: string;
+  chapters: ChapterSummary[];
+  jobsByChapter: Map<number, JobSnapshot>;
+  /** Latest live `stage` per job_id from the WebSocket. AnimationRow
+   * uses it to render "rendering diagram 3/12" instead of just the
+   * percentage. Empty/missing → row falls back to the percentage. */
+  jobStages: Record<string, string>;
+  parentRunning: boolean;
+  theme: import("../api").AnimationTheme;
+  onThemeChange: (t: import("../api").AnimationTheme) => void;
+  accessToken: string;
+  language: string;
+  onRegenerateChapter: (n: number) => void;
+  /** Chapter number currently being re-rendered, if any. Used to
+   * disable other rows' buttons mid-mutation so the user can't
+   * fire-and-forget a stack of overlapping re-renders. */
+  regeneratingChapter: number | null;
+  /** LLM verdict on STEM-ness; null until outline runs. */
+  stemDetected: boolean | null;
+  /** User override; null = trust detection. */
+  stemOverride: boolean | null;
+  /** Effective STEM flag the renderer uses. */
+  isStem: boolean;
+  /** Set the override. Pass `null` to clear (return to detection). */
+  onSetStemOverride: (next: boolean | null) => void;
+  stemPending: boolean;
+  /** Phase G — re-run the per-paragraph visual classifier on a
+   * chapter that has no diagrams yet. Backfill helper for books
+   * generated before STEM was enabled. */
+  onClassifyChapterVisuals: (n: number) => void;
+  /** Chapter currently being classified, or null. */
+  classifyingChapter: number | null;
+  /** Last classify failure (chapter + message), or null. The row
+   * for that chapter renders the message inline so silent 404 /
+   * 400 failures show up. */
+  classifyError: { chapter: number | null; message: string } | null;
+  /** Phase H — kick the bespoke Manim code-gen LLM for one chapter's
+   * `custom_manim` paragraphs. Visible per-row only when the chapter
+   * actually has at least one custom_manim paragraph (the button
+   * hides itself otherwise). */
+  onRegenerateManimCode: (n: number) => void;
+  regeneratingManimCodeChapter: number | null;
+  regenerateManimCodeError: { chapter: number | null; message: string } | null;
+}): JSX.Element {
+  const themes: { id: import("../api").AnimationTheme; label: string; hint: string }[] = [
+    { id: "library", label: "Library", hint: "Slate + amber. Default." },
+    { id: "parchment", label: "Parchment", hint: "Warm cream + burnt orange." },
+    { id: "minimal", label: "Minimal", hint: "Editorial mono, sans-serif." },
+  ];
+  const allReady = chapters.every((ch) => {
+    const j = jobsByChapter.get(ch.number);
+    return j?.status === "completed";
+  });
+  return (
+    <details
+      open={parentRunning || !allReady}
+      className="mb-6 rounded-lg border border-slate-800 bg-slate-900/30 p-4"
+    >
+      <summary className="cursor-pointer text-sm font-semibold text-slate-200">
+        🎬 Animation{" "}
+        <span className="ml-1 text-xs font-normal text-slate-500">
+          ({chapters.length} chapter{chapters.length === 1 ? "" : "s"} · theme: {theme})
+        </span>
+      </summary>
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+        <span>Theme:</span>
+        {themes.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => onThemeChange(t.id)}
+            disabled={parentRunning}
+            title={t.hint}
+            className={
+              "rounded-md border px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40 " +
+              (theme === t.id
+                ? "border-violet-700 bg-violet-950/50 text-violet-100"
+                : "border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600")
+            }
+          >
+            {t.label}
+          </button>
+        ))}
+        <span className="ml-auto text-slate-500">
+          {allReady
+            ? "All chapters rendered."
+            : parentRunning
+              ? "Rendering…"
+              : "Click Animate above to render."}
+        </span>
+      </div>
+      <StemToggle
+        detected={stemDetected}
+        override={stemOverride}
+        effective={isStem}
+        onChange={onSetStemOverride}
+        pending={stemPending}
+        disabled={parentRunning}
+      />
+      <ol className="mt-3 space-y-1.5">
+        {chapters.map((ch) => (
+          <AnimationRow
+            key={ch.id}
+            audiobookId={audiobookId}
+            chapter={ch}
+            job={jobsByChapter.get(ch.number)}
+            liveStage={(() => {
+              const j = jobsByChapter.get(ch.number);
+              return j ? jobStages[j.id] ?? null : null;
+            })()}
+            accessToken={accessToken}
+            language={language}
+            onRegenerate={() => onRegenerateChapter(ch.number)}
+            regenerating={regeneratingChapter === ch.number}
+            anyRegenerating={regeneratingChapter !== null}
+            isStem={isStem}
+            onClassifyVisuals={() => onClassifyChapterVisuals(ch.number)}
+            classifying={classifyingChapter === ch.number}
+            classifyErrorMessage={
+              classifyError && classifyError.chapter === ch.number
+                ? classifyError.message
+                : null
+            }
+            onRegenerateManimCode={() => onRegenerateManimCode(ch.number)}
+            regeneratingManimCode={regeneratingManimCodeChapter === ch.number}
+            regenerateManimCodeErrorMessage={
+              regenerateManimCodeError &&
+              regenerateManimCodeError.chapter === ch.number
+                ? regenerateManimCodeError.message
+                : null
+            }
+          />
+        ))}
+      </ol>
+    </details>
+  );
+}
+
+/**
+ * Three-state STEM control. The user picks one of:
+ *   * Auto       — defer to the LLM verdict (override = null)
+ *   * STEM       — force STEM mode (override = true)
+ *   * Not STEM   — force off (override = false)
+ *
+ * Effective rendering uses `effective`; the chip alongside Auto shows
+ * what the LLM actually said so a user can sanity-check it before
+ * overriding.
+ */
+function StemToggle({
+  detected,
+  override,
+  effective,
+  onChange,
+  pending,
+  disabled,
+}: {
+  detected: boolean | null;
+  override: boolean | null;
+  effective: boolean;
+  onChange: (next: boolean | null) => void;
+  pending: boolean;
+  disabled: boolean;
+}): JSX.Element {
+  type Choice = { id: "auto" | "stem" | "non_stem"; label: string; hint: string };
+  const choices: Choice[] = [
+    {
+      id: "auto",
+      label:
+        detected == null
+          ? "Auto"
+          : detected
+            ? "Auto (STEM)"
+            : "Auto (Not STEM)",
+      hint:
+        detected == null
+          ? "Use the LLM verdict — runs on next outline."
+          : detected
+            ? "LLM thinks this is STEM — diagram path will activate."
+            : "LLM thinks this is non-STEM — prose path only.",
+    },
+    {
+      id: "stem",
+      label: "STEM",
+      hint: "Force STEM mode — Phase G's Manim diagram path will run.",
+    },
+    {
+      id: "non_stem",
+      label: "Not STEM",
+      hint: "Force prose-only — skip the diagram path even if the LLM said yes.",
+    },
+  ];
+  const active: Choice["id"] =
+    override == null ? "auto" : override ? "stem" : "non_stem";
+  const apply = (id: Choice["id"]) => {
+    const next = id === "auto" ? null : id === "stem";
+    onChange(next);
+  };
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-400">
+      <span>STEM:</span>
+      {choices.map((c) => (
+        <button
+          key={c.id}
+          type="button"
+          onClick={() => apply(c.id)}
+          disabled={disabled || pending || active === c.id}
+          title={c.hint}
+          className={
+            "rounded-md border px-2 py-1 disabled:cursor-not-allowed " +
+            (active === c.id
+              ? "border-emerald-700 bg-emerald-950/40 text-emerald-100 disabled:opacity-100"
+              : "border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600 disabled:opacity-40")
+          }
+        >
+          {c.label}
+        </button>
+      ))}
+      <span className="ml-auto text-slate-500">
+        Effective: {effective ? "STEM (diagram path)" : "Prose only"}
+      </span>
+    </div>
+  );
+}
+
+function AnimationRow({
+  audiobookId,
+  chapter,
+  job,
+  liveStage,
+  accessToken,
+  language,
+  onRegenerate,
+  regenerating,
+  anyRegenerating,
+  isStem,
+  onClassifyVisuals,
+  classifying,
+  classifyErrorMessage,
+  onRegenerateManimCode,
+  regeneratingManimCode,
+  regenerateManimCodeErrorMessage,
+}: {
+  audiobookId: string;
+  chapter: ChapterSummary;
+  job: JobSnapshot | undefined;
+  /** Latest WebSocket `stage` for this row's job_id (null when none
+   * received yet, or after a terminal event clears it). Strings like
+   * `rendering diagram 3/12` come from segments::render_chapter via
+   * the publisher; we show them while running so the user can see
+   * *what* is taking time, not just the bare percentage. */
+  liveStage: string | null;
+  accessToken: string;
+  language: string;
+  onRegenerate: () => void;
+  /** This row's mutation is the one in flight. */
+  regenerating: boolean;
+  /** Some row's mutation is in flight (could be this row or another).
+   * Used to disable the button so the user can't queue a stack of
+   * overlapping re-renders before the first response lands. */
+  anyRegenerating: boolean;
+  /** Effective is_stem for the book — controls whether the
+   * "Classify diagrams" button shows. */
+  isStem: boolean;
+  /** Backfill the diagram labels for this chapter. */
+  onClassifyVisuals: () => void;
+  /** This row's classify mutation is in flight. */
+  classifying: boolean;
+  /** Last classify failure for this chapter, if any. */
+  classifyErrorMessage: string | null;
+  /** Phase H — re-run the bespoke Manim code-gen LLM for this
+   * chapter's `custom_manim` paragraphs. The button is hidden when
+   * `customManimCount === 0`; the backend would 400 anyway, so
+   * showing it would just lead the user into an error. */
+  onRegenerateManimCode: () => void;
+  regeneratingManimCode: boolean;
+  regenerateManimCodeErrorMessage: string | null;
+}): JSX.Element {
+  const status = job?.status;
+  const pct = Math.round(((job?.progress_pct ?? 0) as number) * 100);
+  const ready = status === "completed";
+  const inFlight = status === "queued" || status === "running";
+  // While running, prefer the richer stage string from the WebSocket
+  // ("rendering diagram 3/12") over the bare percentage. Fall back
+  // to "Rendering N%" when the stage hasn't arrived yet — the very
+  // first frame can land 100–200 ms after the job goes "running",
+  // so the bare percent is the holdover during that window.
+  const runningLabel =
+    liveStage && liveStage.trim().length > 0
+      ? `${liveStage} (${pct}%)`
+      : `Rendering ${pct}%`;
+  const label =
+    status === "completed"
+      ? "Ready"
+      : status === "running"
+        ? runningLabel
+        : status === "queued"
+          ? "Queued"
+          : status === "dead" || status === "failed"
+            ? "Failed"
+            : "Not generated";
+  const tone =
+    status === "completed"
+      ? "text-emerald-300"
+      : status === "running"
+        ? "text-sky-300"
+        : status === "queued"
+          ? "text-amber-300"
+          : status === "dead" || status === "failed"
+            ? "text-rose-300"
+            : "text-slate-500";
+  // Disable while: this row's mutation is mid-flight, another row's
+  // mutation is mid-flight, or the chapter has a live job (queued or
+  // running) — the backend would 409 in that last case.
+  const buttonDisabled = regenerating || anyRegenerating || inFlight;
+  // Phase G — diagrams labelled by the per-paragraph visual classifier
+  // for STEM books. Surface the count as a small badge so the user
+  // sees at a glance which chapters will get Manim diagrams once that
+  // path lands (G.5–G.6).
+  const diagramCount = (chapter.paragraphs ?? []).filter(
+    (p) => typeof p.visual_kind === "string" && p.visual_kind.trim() !== "",
+  ).length;
+  // Phase H — separate count for the `custom_manim` paragraphs the
+  // bespoke code-gen LLM handles. Drives the "Regen Manim code"
+  // button visibility: the backend 400s when this is zero, so we
+  // hide it client-side rather than letting the user hit the dead
+  // button.
+  const customManimCount = (chapter.paragraphs ?? []).filter(
+    (p) => p.visual_kind === "custom_manim",
+  ).length;
+  // Local state for the "Test LLM" dialog. Owned by the row so each
+  // chapter has its own dialog instance — opening one doesn't dirty
+  // siblings' picker selections.
+  const [testOpen, setTestOpen] = useState(false);
+  const paragraphsForTest = chapter.paragraphs ?? [];
+  return (
+    <li className="rounded-md border border-slate-800/60 bg-slate-900/40 px-3 py-2 text-sm">
+      <div className="flex items-center gap-3">
+        <span className="font-mono text-xs text-slate-500">
+          ch{chapter.number.toString().padStart(2, "0")}
+        </span>
+        <span className="flex-1 truncate text-slate-200">{chapter.title}</span>
+        {diagramCount > 0 && (
+          <span
+            className="rounded border border-emerald-800 bg-emerald-950/40 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300"
+            title={`${diagramCount} paragraph${
+              diagramCount === 1 ? "" : "s"
+            } will render as a diagram via Manim (Phase G)`}
+          >
+            📐 {diagramCount}
+          </span>
+        )}
+        <span className={`text-xs ${tone}`}>{label}</span>
+        {ready && diagramCount > 0 && (
+          <span
+            className="rounded border border-violet-800 bg-violet-950/40 px-1.5 py-0.5 text-[10px] font-medium text-violet-200"
+            title={
+              `${diagramCount} diagram${diagramCount === 1 ? "" : "s"} ` +
+              `rendered with Manim (per-segment STEM render). ` +
+              `Prose paragraphs went through the fast path; the chapter video ` +
+              `is the concat of both.`
+            }
+          >
+            🎬 Manim
+          </span>
+        )}
+        {isStem && diagramCount === 0 && (
+          <button
+            type="button"
+            onClick={onClassifyVisuals}
+            disabled={classifying}
+            title={
+              "Run the visual classifier against this chapter's existing " +
+              "paragraphs (backfill for books generated before STEM was on). " +
+              "Doesn't rewrite the chapter body."
+            }
+            className="rounded-md border border-emerald-800 bg-emerald-950/40 px-2 py-1 text-xs text-emerald-200 hover:border-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {classifying ? "Classifying…" : "📐 Classify diagrams"}
+          </button>
+        )}
+        {isStem && paragraphsForTest.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setTestOpen(true)}
+            title={
+              "Audition any enabled LLM on this chapter's Manim code-gen prompt — " +
+              "shows the rendered prompt, the model's raw response, cost, and " +
+              "wall-clock time. Doesn't write anything back."
+            }
+            className="rounded-md border border-amber-800 bg-amber-950/40 px-2 py-1 text-xs text-amber-200 hover:border-amber-700"
+          >
+            🧪 Test LLM
+          </button>
+        )}
+        {customManimCount > 0 && (
+          <button
+            type="button"
+            onClick={onRegenerateManimCode}
+            disabled={regeneratingManimCode}
+            title={
+              `Re-run the bespoke Manim code-gen LLM on this chapter's ${customManimCount} ` +
+              `custom_manim paragraph${customManimCount === 1 ? "" : "s"}. ` +
+              `Routed through the LlmRole::ManimCode model (set in Admin → LLMs); ` +
+              `regenerate after switching that assignment to refresh diagrams ` +
+              `with the new model.`
+            }
+            className="rounded-md border border-violet-800 bg-violet-950/40 px-2 py-1 text-xs text-violet-200 hover:border-violet-700 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {regeneratingManimCode ? "Generating…" : `🛠 Regen Manim code (${customManimCount})`}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onRegenerate}
+          disabled={buttonDisabled}
+          title={
+            inFlight
+              ? "Already rendering — wait for current job to finish"
+              : "Re-render this chapter only"
+          }
+          className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-300 hover:border-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {regenerating ? "Queuing…" : "Re-generate"}
+        </button>
+      </div>
+      {status === "running" && (
+        <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-slate-800">
+          <div
+            className="h-full bg-sky-500 transition-[width] duration-200"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
+      {job?.last_error && status !== "completed" && (
+        <p className="mt-1 break-all text-xs text-rose-400">{job.last_error}</p>
+      )}
+      {classifyErrorMessage && (
+        <p className="mt-1 break-all text-xs text-rose-400">
+          Classify failed: {classifyErrorMessage}
+        </p>
+      )}
+      {regenerateManimCodeErrorMessage && (
+        <p className="mt-1 break-all text-xs text-rose-400">
+          Regen Manim code failed: {regenerateManimCodeErrorMessage}
+        </p>
+      )}
+      {ready && (
+        <video
+          src={`${chapterVideoUrl(audiobookId, chapter.number, accessToken, language)}&v=${job?.id ?? "ready"}`}
+          controls
+          preload="metadata"
+          title={
+            diagramCount > 0
+              ? `Rendered via Manim diagram path · ${diagramCount} diagram${diagramCount === 1 ? "" : "s"}`
+              : undefined
+          }
+          className="mt-2 w-full rounded border border-slate-800 bg-black"
+        />
+      )}
+      {testOpen && (
+        <TestManimLlmDialog
+          audiobookId={audiobookId}
+          chapter={chapter}
+          paragraphs={paragraphsForTest}
+          onClose={() => setTestOpen(false)}
+        />
+      )}
+    </li>
+  );
+}
+
+/**
+ * Dialog for auditioning a non-default LLM on the chapter's Manim
+ * code-gen prompt. Pure read-only: the response never lands on the
+ * chapter row, and no `generation_event` is logged. The prompt body
+ * comes back from the backend already rendered (markers substituted)
+ * so the user sees exactly what the model received.
+ */
+function TestManimLlmDialog({
+  audiobookId,
+  chapter,
+  paragraphs,
+  onClose,
+}: {
+  audiobookId: string;
+  chapter: ChapterSummary;
+  paragraphs: NonNullable<ChapterSummary["paragraphs"]>;
+  onClose: () => void;
+}): JSX.Element {
+  // LLM picker: only enabled, text-capable rows from the user-facing
+  // catalog. Image/audio models would error on the chat completions
+  // path, so filtering them here saves a confusing 400.
+  const llmsQuery = useQuery({
+    queryKey: ["catalog", "llms"],
+    queryFn: () => catalog.llms(),
+  });
+  const eligibleLlms: Llm[] = useMemo(() => {
+    const items = llmsQuery.data?.items ?? [];
+    return items.filter((l) => {
+      if (!l.enabled) return false;
+      const fn = (l.function ?? "text").toLowerCase();
+      return fn === "text" || fn === "multimodal" || fn === "";
+    });
+  }, [llmsQuery.data]);
+
+  // Sensible default paragraph: first custom_manim, else paragraph 0.
+  const defaultIndex = useMemo(() => {
+    const cm = paragraphs.find((p) => p.visual_kind === "custom_manim");
+    return cm?.index ?? paragraphs[0]?.index ?? 0;
+  }, [paragraphs]);
+
+  const [llmId, setLlmId] = useState<string>("");
+  const [paragraphIndex, setParagraphIndex] = useState<number>(defaultIndex);
+
+  // Auto-select the first eligible LLM once the catalog loads, but
+  // only if the user hasn't already picked something.
+  useEffect(() => {
+    if (!llmId && eligibleLlms.length > 0) {
+      // Prefer one already tagged for manim_code so the dropdown
+      // doesn't always default to whatever's alphabetically first.
+      const tagged = eligibleLlms.find((l) =>
+        l.default_for.includes("manim_code"),
+      );
+      setLlmId(tagged?.id ?? eligibleLlms[0].id);
+    }
+  }, [eligibleLlms, llmId]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const accessToken = useAuth((s) => s.accessToken) ?? "";
+
+  const run = useMutation({
+    mutationFn: () =>
+      audiobooks.testChapterManimLlm(audiobookId, chapter.number, {
+        llm_id: llmId,
+        paragraph_index: paragraphIndex,
+      }),
+    onSuccess: (data) => {
+      // Auto-trigger the render the moment we have a response — the
+      // user explicitly asked for the preview to follow the LLM call,
+      // so don't make them click twice. `parseCodeFromResponse`
+      // returns null when the model emitted non-JSON or empty code;
+      // in that case the render UI surfaces a parse error instead of
+      // silently doing nothing.
+      const code = parseCodeFromResponse(data.response);
+      if (code) {
+        render.mutate(code);
+      }
+    },
+  });
+  const render = useMutation({
+    mutationFn: (code: string) =>
+      audiobooks.renderTestManim(audiobookId, chapter.number, { code }),
+  });
+  const result = run.data;
+  const renderResult = render.data;
+  // Bust the `<video>` cache when a fresh render lands so the same
+  // dialog instance picks up the new MP4 instead of the previous one.
+  const videoUrl =
+    renderResult && accessToken
+      ? `${audiobookTestManimVideoUrl(audiobookId, renderResult.test_id, accessToken)}&v=${renderResult.test_id}`
+      : null;
+  const parsedCode = result ? parseCodeFromResponse(result.response) : null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-3xl rounded-xl border border-slate-800 bg-slate-950 p-5 shadow-xl"
+      >
+        <div className="mb-4 flex items-baseline justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-slate-100">
+              🧪 Test Manim LLM
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-400">
+              Chapter {chapter.number}: {chapter.title}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-slate-800 bg-slate-900 px-2 py-1 text-xs text-slate-300 hover:border-slate-700"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-[1fr,auto]">
+          <label className="block text-xs font-medium text-slate-300">
+            <span className="block">Model</span>
+            <select
+              value={llmId}
+              onChange={(e) => setLlmId(e.target.value)}
+              disabled={llmsQuery.isLoading || eligibleLlms.length === 0}
+              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+            >
+              {eligibleLlms.length === 0 && (
+                <option value="">No text-capable LLMs configured</option>
+              )}
+              {eligibleLlms.map((l) => {
+                const tag = l.default_for.includes("manim_code")
+                  ? " ★"
+                  : "";
+                return (
+                  <option key={l.id} value={l.id}>
+                    {l.name}{tag} — {l.model_id}
+                  </option>
+                );
+              })}
+            </select>
+          </label>
+          <label className="block text-xs font-medium text-slate-300">
+            <span className="block">Paragraph</span>
+            <select
+              value={paragraphIndex}
+              onChange={(e) => setParagraphIndex(Number(e.target.value))}
+              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+            >
+              {paragraphs.map((p) => {
+                const kind = p.visual_kind ? ` · ${p.visual_kind}` : "";
+                return (
+                  <option key={p.index} value={p.index}>
+                    {p.index}
+                    {kind}
+                  </option>
+                );
+              })}
+            </select>
+          </label>
+        </div>
+
+        <div className="mt-3 flex items-center justify-between gap-3">
+          <p className="text-[11px] text-slate-500">
+            ★ = currently routed for{" "}
+            <code className="font-mono">manim_code</code> in Admin → LLMs.
+          </p>
+          <button
+            type="button"
+            onClick={() => run.mutate()}
+            disabled={!llmId || run.isPending}
+            className="rounded-md bg-amber-600 px-4 py-2 text-sm font-medium text-white hover:bg-amber-500 disabled:cursor-not-allowed disabled:bg-amber-700/50"
+          >
+            {run.isPending ? "Running…" : "Run"}
+          </button>
+        </div>
+
+        {run.error && (
+          <p className="mt-3 break-all text-xs text-rose-400">
+            {run.error instanceof ApiError
+              ? run.error.message
+              : "Test failed"}
+          </p>
+        )}
+
+        {result && (
+          <div className="mt-4 space-y-3 text-xs text-slate-300">
+            <div className="flex flex-wrap gap-2 text-[11px]">
+              <MetricPill label={`⏱ ${formatElapsed(result.elapsed_ms)}`} />
+              <MetricPill
+                label={`💸 ${result.mocked ? "mocked" : formatCost(result.cost_usd)}`}
+              />
+              <MetricPill
+                label={`🔢 ${result.prompt_tokens.toLocaleString()} in / ${result.completion_tokens.toLocaleString()} out`}
+              />
+              <MetricPill label={`🤖 ${result.llm_name}`} />
+              <MetricPill label={`📐 paragraph ${result.paragraph_index}`} />
+            </div>
+            <details className="rounded border border-slate-800 bg-slate-900/40 p-2" open>
+              <summary className="cursor-pointer text-[11px] font-medium text-slate-400">
+                Paragraph (input)
+              </summary>
+              <p className="mt-1 whitespace-pre-wrap text-slate-300">
+                {result.paragraph_preview}
+                {result.paragraph_preview.length === 200 && "…"}
+              </p>
+            </details>
+            <details className="rounded border border-slate-800 bg-slate-900/40 p-2">
+              <summary className="cursor-pointer text-[11px] font-medium text-slate-400">
+                Rendered prompt sent to the LLM
+              </summary>
+              <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-slate-950 p-2 font-mono text-[11px] text-slate-300">
+                {result.prompt}
+              </pre>
+            </details>
+            <details
+              className="rounded border border-slate-800 bg-slate-900/40 p-2"
+              open
+            >
+              <summary className="cursor-pointer text-[11px] font-medium text-slate-400">
+                Model response
+              </summary>
+              <pre className="mt-1 max-h-96 overflow-auto whitespace-pre-wrap break-all rounded bg-slate-950 p-2 font-mono text-[11px] text-slate-100">
+                {result.response || "(empty)"}
+              </pre>
+            </details>
+
+            {/* Animation preview. Auto-renders the moment the LLM
+                response lands; the user can also re-render manually
+                if the first attempt failed (e.g. transient sidecar
+                hiccup) without re-running the LLM. */}
+            <section className="rounded border border-slate-800 bg-slate-900/40 p-2">
+              <header className="mb-1 flex items-baseline justify-between gap-3">
+                <span className="text-[11px] font-medium text-slate-400">
+                  Animation preview
+                </span>
+                <div className="flex items-center gap-2 text-[11px] text-slate-500">
+                  {renderResult && (
+                    <span>
+                      Rendered in {formatElapsed(renderResult.elapsed_ms)}
+                    </span>
+                  )}
+                  {parsedCode && (
+                    <button
+                      type="button"
+                      onClick={() => render.mutate(parsedCode)}
+                      disabled={render.isPending}
+                      className="rounded border border-slate-700 bg-slate-900 px-2 py-0.5 text-slate-200 hover:border-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {render.isPending
+                        ? "Rendering…"
+                        : renderResult
+                          ? "Re-render"
+                          : "Render"}
+                    </button>
+                  )}
+                </div>
+              </header>
+              {!parsedCode && (
+                <p className="text-[11px] text-amber-400">
+                  Could not extract <code className="font-mono">code</code>{" "}
+                  from the response — the model didn't return the expected{" "}
+                  <code className="font-mono">{`{"summary":"…","code":"…"}`}</code>{" "}
+                  shape, so there's nothing to render.
+                </p>
+              )}
+              {parsedCode && render.isPending && (
+                <p className="text-[11px] text-slate-400">
+                  Rendering with the Manim sidecar… (typically 5–15 s)
+                </p>
+              )}
+              {render.error && (
+                <p className="text-[11px] text-rose-400 break-all">
+                  {render.error instanceof ApiError
+                    ? render.error.message
+                    : "Render failed"}
+                </p>
+              )}
+              {videoUrl && (
+                <video
+                  key={videoUrl}
+                  src={videoUrl}
+                  controls
+                  preload="metadata"
+                  className="mt-1 w-full rounded border border-slate-800 bg-black"
+                />
+              )}
+            </section>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Pull the `code` field out of a manim_code LLM response. Production
+ * uses `json_mode: true` so the response should already be valid
+ * JSON, but a few models wrap it in markdown fences anyway — strip
+ * those before parsing. Returns `null` when the response is empty,
+ * not parseable, or has no usable `code` value.
+ */
+function parseCodeFromResponse(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  // Strip a leading ```json / ``` and trailing ``` if the model
+  // ignored the "no markdown fences" instruction.
+  const fenced = trimmed
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```\s*$/, "");
+  try {
+    const parsed = JSON.parse(fenced);
+    if (parsed && typeof parsed === "object" && "code" in parsed) {
+      const code = (parsed as { code: unknown }).code;
+      if (typeof code === "string" && code.trim().length > 0) {
+        return code;
+      }
+    }
+  } catch {
+    // Not valid JSON — fall through.
+  }
+  return null;
+}
+
+function MetricPill({ label }: { label: string }): JSX.Element {
+  return (
+    <span className="rounded-full border border-slate-800 bg-slate-900/60 px-2 py-0.5 tabular-nums text-slate-300">
+      {label}
+    </span>
+  );
+}
+
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${ms} ms`;
+  return `${(ms / 1000).toFixed(2)} s`;
+}
+
+function formatCost(usd: number): string {
+  if (usd === 0) return "$0.00";
+  if (usd < 0.001) return "<$0.001";
+  if (usd < 0.01) return `$${usd.toFixed(4)}`;
+  return `$${usd.toFixed(3)}`;
+}
+
 function ChapterRow({
   audiobookId,
   ch,
@@ -2104,8 +3427,13 @@ function ChapterRow({
       )}
       {ch.body_md && (
         <details className="mt-3">
-          <summary className="cursor-pointer text-xs text-sky-400 hover:text-sky-300">
-            Read prose ({Math.round(ch.body_md.length / 1024)} KB)
+          <summary className="flex cursor-pointer items-center gap-2 text-xs text-sky-400 hover:text-sky-300">
+            <span>Read prose ({Math.round(ch.body_md.length / 1024)} KB)</span>
+            <CopyButton
+              text={() => ch.body_md ?? ""}
+              variant="labelled"
+              title="Copy chapter prose to clipboard"
+            />
           </summary>
           <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap rounded-md border border-slate-800 bg-slate-950 p-3 text-xs leading-relaxed text-slate-200">
             {ch.body_md}

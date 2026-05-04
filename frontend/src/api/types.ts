@@ -42,6 +42,35 @@ type WithArtStyle = {
    * single vertical video.
    */
   is_short?: boolean | null;
+  /**
+   * LLM verdict on whether the topic is STEM (math / physics /
+   * chemistry / biology / CS / engineering). Set during outline
+   * generation. Null on legacy rows or fresh drafts.
+   */
+  stem_detected?: boolean | null;
+  /**
+   * User override of the LLM-detected STEM flag. Null means
+   * "trust the detection". `true`/`false` overrides regardless.
+   */
+  stem_override?: boolean | null;
+  /**
+   * Effective STEM flag the renderer uses (override > detected >
+   * false). Pre-computed by the backend so the UI doesn't have to
+   * repeat the fallback logic.
+   */
+  is_stem?: boolean | null;
+  /**
+   * `true` when the audiobook narrates with per-role voices
+   * (narrator + dialogue_male + dialogue_female). The role-to-voice
+   * map lives in `voice_roles`.
+   */
+  multi_voice_enabled?: boolean | null;
+  /**
+   * `{ role: voice_id }` map for multi-voice narration. Roles
+   * outside `narrator | dialogue_male | dialogue_female` are
+   * ignored by the audio pipeline.
+   */
+  voice_roles?: Record<string, string> | null;
 };
 
 export interface ParagraphSummary {
@@ -56,6 +85,14 @@ export interface ParagraphSummary {
    * `/paragraph/:p/image/:i` stream endpoint).
    */
   image_count: number;
+  /**
+   * Phase G — diagram template id picked by the per-paragraph
+   * visual classifier (`function_plot`, `free_body`, `equation_steps`,
+   * …). `null` for prose paragraphs and for non-STEM books that
+   * never ran the classifier. Drives the future Manim render path
+   * + the diagram-count badge on AnimationRow.
+   */
+  visual_kind?: string | null;
 }
 
 type WithChapterExtras = {
@@ -102,7 +139,18 @@ export type CreateAudiobookRequest = S["CreateAudiobookRequest"] &
   WithArtStyle & {
     auto_pipeline?: AutoPipeline | null;
   };
-export type UpdateAudiobookRequest = S["UpdateAudiobookRequest"] & WithArtStyle;
+export type UpdateAudiobookRequest = S["UpdateAudiobookRequest"] &
+  WithArtStyle & {
+    /**
+     * Three-state STEM override:
+     *   field absent          → don't change
+     *   `null`                → clear (use LLM detection)
+     *   `true` / `false`      → force the value
+     * `undefined` here matches "field absent"; use `null` when you
+     * mean "clear".
+     */
+    stem_override?: boolean | null;
+  };
 export type UpdateChapterRequest = S["UpdateChapterRequest"];
 
 export type LoginRequest = S["LoginRequest"];
@@ -265,6 +313,21 @@ export interface UpsertYoutubeFooterRequest {
   text: string;
 }
 
+export interface YoutubePublishSettings {
+  /**
+   * When true, the publisher appends a "Models used" block to every
+   * YouTube description it generates (built from the audiobook's
+   * `generation_event` log).
+   */
+  include_credits: boolean;
+  /**
+   * When true, the encoder burns a "Like & Subscribe!" call-to-action
+   * onto every newly-encoded YouTube video for two short windows (a
+   * few seconds in and again before the end). Off by default.
+   */
+  like_subscribe_overlay: boolean;
+}
+
 // --- audiobook categories ------------------------------------------------
 // Hand-written; mirrors `backend/api/src/handlers/admin.rs` and
 // `catalog.rs`.
@@ -298,6 +361,48 @@ export interface AudiobookCategoryNameList {
   items: AudiobookCategoryName[];
 }
 
+// --- chapter LLM test (Manim code-gen) -----------------------------------
+// Hand-written; mirrors `backend/api/src/handlers/audiobook.rs::test_chapter_manim_llm`.
+
+export interface TestChapterManimLlmRequest {
+  /** LLM record id (e.g. `claude_sonnet_4_6`). */
+  llm_id: string;
+  /** Optional paragraph index. Defaults to first custom_manim or 0. */
+  paragraph_index?: number;
+  /** Theme name; defaults to "library". */
+  theme?: string;
+}
+
+export interface TestChapterManimLlmResponse {
+  llm_name: string;
+  model_id: string;
+  /** Rendered prompt body actually sent to the LLM. */
+  prompt: string;
+  /** Raw response from the LLM (typically `{"summary":..,"code":..}`). */
+  response: string;
+  cost_usd: number;
+  elapsed_ms: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  mocked: boolean;
+  paragraph_index: number;
+  paragraph_preview: string;
+}
+
+export interface RenderTestManimRequest {
+  /** Raw `class Scene(TemplateScene): …` Python source. */
+  code: string;
+  /** Target run length; defaults to 8 s on the backend. */
+  duration_ms?: number;
+}
+
+export interface RenderTestManimResponse {
+  /** UUID; pair with `audiobookTestManimVideoUrl(id, test_id)`. */
+  test_id: string;
+  /** Wall-clock time the Manim sidecar took. */
+  elapsed_ms: number;
+}
+
 // --- audiobook costs -----------------------------------------------------
 // Hand-written; mirrors `backend/api/src/handlers/audiobook.rs::costs`.
 
@@ -307,6 +412,16 @@ export interface CostByRole {
   prompt_tokens: number;
   completion_tokens: number;
   cost_usd: number;
+  /** LLM record id; absent when the row was deleted/renamed. */
+  llm_id?: string;
+  /**
+   * Human-readable model name (e.g. "Claude Sonnet 4.6"). For TTS rows
+   * this carries the voice id parsed from the event note instead, so the
+   * breakdown can render "Eve" rather than the placeholder LLM.
+   */
+  llm_name?: string;
+  /** Upstream slug (e.g. "anthropic/claude-sonnet-4.6"). */
+  model_id?: string;
 }
 
 export interface AudiobookCostSummary {
@@ -385,6 +500,10 @@ export interface PublishYoutubeRequest {
   mode?: PublishMode | null;
   /** When true, encode but do not upload — wait for explicit approval. */
   review?: boolean | null;
+  /** When true, use the per-chapter animated companion videos as the
+   * visual track (requires every chapter to have completed the
+   * `animate` job; the API 409s otherwise). */
+  animate?: boolean | null;
   description?: string | null;
 }
 
@@ -511,4 +630,59 @@ export interface PreviewPodcastImageRequest {
 export interface PreviewPodcastImageResponse {
   image_base64: string;
   mime_type: string;
+}
+
+/** Theme presets the animation renderer accepts. Mirror of
+ * `backend/render/src/themes/index.ts::PRESETS`. */
+export type AnimationTheme = "library" | "parchment" | "minimal";
+
+// --- ideas ---------------------------------------------------------------
+// Hand-written; mirrors `backend/api/src/handlers/ideas.rs`.
+
+export type IdeaStatus = "pending" | "in_progress" | "completed";
+
+export interface IdeaRow {
+  id: string;
+  title: string;
+  audiobook_prompt: string;
+  status: IdeaStatus;
+  /** `"manual"` for user-typed entries, `"trend"` for kept LLM
+   * suggestions. Free-form on the wire — treat unknown values as
+   * `"manual"`. */
+  source: string;
+  created_at: string;
+  completed_at: string | null;
+  updated_at: string;
+}
+
+export interface IdeaList {
+  items: IdeaRow[];
+}
+
+export interface CreateIdeaRequest {
+  title: string;
+  audiobook_prompt?: string | null;
+  source?: string | null;
+}
+
+export interface UpdateIdeaRequest {
+  title?: string | null;
+  audiobook_prompt?: string | null;
+  status?: IdeaStatus | null;
+}
+
+export interface SuggestIdeasRequest {
+  seed?: string | null;
+  language?: string | null;
+  /** Clamped server-side to 1..=12. */
+  count?: number | null;
+}
+
+export interface SuggestedIdea {
+  title: string;
+  audiobook_prompt: string;
+}
+
+export interface SuggestIdeasResponse {
+  items: SuggestedIdea[];
 }

@@ -1,0 +1,5 @@
+# Pinned dependency list for environments that prefer plain `pip` over
+# `uv sync`. The Containerfile uses this directly; the native dev path
+# uses uv against pyproject.toml. Keep the two in sync if you bump.
+manim>=0.18,<0.19
+numpy>=1.26,<3.0

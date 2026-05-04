@@ -1,0 +1,34 @@
+{
+  "name": "@listenai/render",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Node sidecar that renders animated companion videos for ListenAI audiobooks. Driven by the Rust `animate` job publisher.",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "cli": "node dist/cli.js",
+    "server": "node dist/server.js",
+    "dev": "tsx src/cli.ts",
+    "dev:server": "tsx src/server.ts",
+    "lint": "tsc -p tsconfig.check.json",
+    "test:fixture": "node test/run-fixture.mjs",
+    "test:fixture:mock": "node test/run-fixture.mjs --mock"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@revideo/2d": "0.10.4",
+    "@revideo/core": "0.10.4",
+    "@revideo/renderer": "0.10.4",
+    "@revideo/ui": "0.10.4",
+    "@revideo/vite-plugin": "0.10.4",
+    "vite": "5.4.21",
+    "zod": "4.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "25.6.0",
+    "tsx": "4.21.0",
+    "typescript": "6.0.3"
+  }
+}

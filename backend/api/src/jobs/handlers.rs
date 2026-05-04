@@ -18,6 +18,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use crate::generation::{audio as audio_gen, chapter as chapter_gen, translate as translate_gen};
+use crate::jobs::publishers::animate::{AnimateChapterHandler, AnimateParentHandler};
 use crate::jobs::publishers::youtube::PublishYoutubeHandler;
 use crate::state::AppState;
 use listenai_core::id::AudiobookId;
@@ -35,6 +36,11 @@ pub fn registry(state: AppState) -> JobHandlerRegistry {
         .register(JobKind::TtsChapter, TtsChapterHandler(state.clone()))
         .register(JobKind::Translate, TranslateHandler(state.clone()))
         .register(JobKind::PublishYoutube, PublishYoutubeHandler(state.clone()))
+        .register(JobKind::Animate, AnimateParentHandler(state.clone()))
+        .register(
+            JobKind::AnimateChapter,
+            AnimateChapterHandler::new(state.clone()),
+        )
         .register(JobKind::Gc, GcHandler(state))
         .build()
 }
@@ -513,13 +519,18 @@ impl JobHandler for ChapterParagraphsHandler {
             topic: String,
             #[serde(default)]
             genre: Option<String>,
+            #[serde(default)]
+            stem_detected: Option<bool>,
+            #[serde(default)]
+            stem_override: Option<bool>,
         }
         let mut book_resp = match self
             .0
             .db()
             .inner()
             .query(format!(
-                "SELECT title, topic, genre FROM audiobook:`{audiobook_id}`"
+                "SELECT title, topic, genre, stem_detected, stem_override \
+                 FROM audiobook:`{audiobook_id}`"
             ))
             .await
         {
@@ -611,9 +622,81 @@ impl JobHandler for ChapterParagraphsHandler {
         )
         .await;
 
+        // STEM-only second pass: label paragraphs with diagram
+        // templates so the Manim render path knows what to draw.
+        // Effective `is_stem` follows the same fallback rule the
+        // detail endpoint exposes: override > detected > false.
+        let is_stem = book
+            .stem_override
+            .unwrap_or_else(|| book.stem_detected.unwrap_or(false));
+        let visuals = if is_stem {
+            ctx.progress(&job, "extracting_visuals", 0.5).await;
+            crate::generation::paragraphs::extract_visual_kinds(
+                &self.0,
+                &UserId(user_raw.clone()),
+                &audiobook_id,
+                &book.title,
+                &book.topic,
+                book.genre.as_deref(),
+                &chapter.title,
+                &paragraphs,
+            )
+            .await
+        } else {
+            std::collections::HashMap::new()
+        };
+
+        // Phase H — code-gen pass for paragraphs the classifier
+        // marked `custom_manim`. No-op when the classifier picked
+        // none (almost always — the prompt instructs the model to
+        // use the custom escape hatch sparingly).
+        let manim_codes: std::collections::HashMap<u32, String> = if is_stem
+            && visuals
+                .values()
+                .any(|v| v.visual_kind == "custom_manim")
+        {
+            ctx.progress(&job, "generating_manim_code", 0.65).await;
+            let kinds_only: std::collections::HashMap<u32, String> = visuals
+                .iter()
+                .map(|(k, v)| (*k, v.visual_kind.clone()))
+                .collect();
+            // We don't yet know the per-paragraph audio durations
+            // here (audio is rendered chapter-wide later). Use the
+            // generation::manim_code default — the publisher floors
+            // run_seconds at MIN_RUN_SECONDS anyway.
+            let durations = std::collections::HashMap::new();
+            let custom = crate::generation::manim_code::custom_paragraphs(
+                &paragraphs,
+                &kinds_only,
+                &durations,
+            );
+            let codes = crate::generation::manim_code::generate_manim_code(
+                &self.0,
+                &UserId(user_raw.clone()),
+                &audiobook_id,
+                &book.title,
+                &book.topic,
+                book.genre.as_deref(),
+                &chapter.title,
+                "library",
+                &custom,
+            )
+            .await;
+            codes
+                .into_iter()
+                .map(|(k, v)| (k, v.code))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+
         let chapter_id = chapter.id.id.to_raw();
-        let merged =
-            crate::generation::paragraphs::merge_for_persist(&paragraphs, &scenes);
+        let merged = crate::generation::paragraphs::merge_for_persist(
+            &paragraphs,
+            &scenes,
+            &visuals,
+            &manim_codes,
+        );
         if let Err(e) =
             crate::generation::paragraphs::persist(&self.0, &chapter_id, merged).await
         {
@@ -630,7 +713,9 @@ impl JobHandler for ChapterParagraphsHandler {
             chapter = chapter_number,
             paragraphs = paragraphs.len(),
             visual = visual.len(),
+            diagrams = visuals.len(),
             tiles_per_visual = per_paragraph,
+            stem = is_stem,
             "chapter_paragraphs: scenes extracted"
         );
 

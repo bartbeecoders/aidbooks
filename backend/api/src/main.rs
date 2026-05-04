@@ -1,5 +1,6 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+mod animation;
 mod app;
 mod audio;
 mod auth;
@@ -118,8 +119,9 @@ async fn run(config: Config) -> anyhow::Result<()> {
 
     let registry = jobs::registry(app_state.clone());
     let worker_ctx = JobContext::new(job_repo.clone(), hub.clone());
-    let worker_handle =
-        runtime::spawn(worker_ctx, registry, WorkerConfig::default()).await;
+    let worker_cfg = WorkerConfig::default()
+        .with_animate_concurrency(config.animate_concurrency as usize);
+    let worker_handle = runtime::spawn(worker_ctx, registry, worker_cfg).await;
     let gc_scheduler = spawn_gc_scheduler(job_repo.clone());
 
     let router = app::build_router(app_state);

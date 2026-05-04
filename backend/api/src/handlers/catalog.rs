@@ -222,6 +222,8 @@ fn parse_role(s: &str) -> Option<LlmRole> {
         "moderation" => LlmRole::Moderation,
         "cover_art" => LlmRole::CoverArt,
         "translate" => LlmRole::Translate,
+        "manim_code" => LlmRole::ManimCode,
+        "voice_extract" => LlmRole::VoiceExtract,
         _ => return None,
     })
 }
