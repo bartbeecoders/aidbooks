@@ -444,10 +444,7 @@ impl DbAudiobook {
                 .as_deref()
                 .map(|p| !p.trim().is_empty())
                 .unwrap_or(false),
-            language: self
-                .language
-                .clone()
-                .unwrap_or_else(|| "en".to_string()),
+            language: self.language.clone().unwrap_or_else(|| "en".to_string()),
             // Filled in by `enrich_summary` once the chapter set is loaded.
             available_languages: Vec::new(),
             voice_id: self.primary_voice.as_ref().map(|t| t.id.to_raw()),
@@ -534,10 +531,7 @@ impl DbChapter {
                 })
                 .unwrap_or_default(),
             duration_ms: self.duration_ms.map(|d| d.max(0) as u64),
-            language: self
-                .language
-                .clone()
-                .unwrap_or_else(|| "en".to_string()),
+            language: self.language.clone().unwrap_or_else(|| "en".to_string()),
         })
     }
 }
@@ -620,10 +614,7 @@ pub async fn create(
         .unwrap_or("en")
         .to_string();
     if !is_supported_language(&language) {
-        return Err(Error::Validation(format!(
-            "unsupported language `{language}`"
-        ))
-        .into());
+        return Err(Error::Validation(format!("unsupported language `{language}`")).into());
     }
 
     // Validate voice_id refers to an enabled voice — fail fast with a 400
@@ -801,7 +792,9 @@ fn normalise_auto_pipeline(
         }
         let mode = p.mode.as_deref().unwrap_or("single");
         if !matches!(mode, "single" | "playlist") {
-            return Err(Error::Validation("pipeline.publish.mode must be single or playlist".into()));
+            return Err(Error::Validation(
+                "pipeline.publish.mode must be single or playlist".into(),
+            ));
         }
         let privacy = p.privacy_status.as_deref().unwrap_or("private");
         if !matches!(privacy, "private" | "unlisted" | "public") {
@@ -1141,9 +1134,7 @@ pub async fn patch(
         state
             .db()
             .inner()
-            .query(format!(
-                "UPDATE audiobook:`{id}` SET stem_override = $v"
-            ))
+            .query(format!("UPDATE audiobook:`{id}` SET stem_override = $v"))
             .bind(("v", new_value))
             .await
             .map_err(|e| Error::Database(format!("patch stem_override: {e}")))?
@@ -1269,19 +1260,14 @@ pub async fn translate(
     body.validate()
         .map_err(|e| Error::Validation(e.to_string()))?;
     if !is_supported_language(&body.target_language) {
-        return Err(Error::Validation(format!(
-            "unsupported language `{}`",
-            body.target_language
-        ))
-        .into());
+        return Err(
+            Error::Validation(format!("unsupported language `{}`", body.target_language)).into(),
+        );
     }
 
     assert_owner(&state, &id, &user.id).await?;
     let book = load_audiobook(&state, &id).await?;
-    let primary = book
-        .language
-        .clone()
-        .unwrap_or_else(|| "en".to_string());
+    let primary = book.language.clone().unwrap_or_else(|| "en".to_string());
     let source = body
         .source_language
         .as_deref()
@@ -1291,10 +1277,7 @@ pub async fn translate(
         .to_string();
 
     if source == body.target_language {
-        return Err(Error::Validation(
-            "source and target language must differ".into(),
-        )
-        .into());
+        return Err(Error::Validation("source and target language must differ".into()).into());
     }
 
     if has_live_translate_job(&state, &id, &body.target_language).await? {
@@ -1354,7 +1337,11 @@ async fn has_live_translate_job(
         .map_err(|e| Error::Database(format!("translate live check: {e}")))?
         .take(0)
         .map_err(|e| Error::Database(format!("translate live check (decode): {e}")))?;
-    Ok(rows.into_iter().next().map(|r| r.count > 0).unwrap_or(false))
+    Ok(rows
+        .into_iter()
+        .next()
+        .map(|r| r.count > 0)
+        .unwrap_or(false))
 }
 
 // -------------------------------------------------------------------------
@@ -1424,8 +1411,7 @@ pub async fn generate_chapters(
     IdempotencyKey(idem): IdempotencyKey,
 ) -> ApiResult<StatusCode> {
     if let Some(cached) = idempotency::lookup(&state, &user.id, idem.as_deref()).await? {
-        return Ok(StatusCode::from_u16(cached.status_code)
-            .unwrap_or(StatusCode::ACCEPTED));
+        return Ok(StatusCode::from_u16(cached.status_code).unwrap_or(StatusCode::ACCEPTED));
     }
 
     let book = load_audiobook(&state, &id).await?;
@@ -1494,8 +1480,7 @@ pub async fn generate_audio(
     IdempotencyKey(idem): IdempotencyKey,
 ) -> ApiResult<StatusCode> {
     if let Some(cached) = idempotency::lookup(&state, &user.id, idem.as_deref()).await? {
-        return Ok(StatusCode::from_u16(cached.status_code)
-            .unwrap_or(StatusCode::ACCEPTED));
+        return Ok(StatusCode::from_u16(cached.status_code).unwrap_or(StatusCode::ACCEPTED));
     }
 
     let book = load_audiobook(&state, &id).await?;
@@ -1521,10 +1506,7 @@ pub async fn generate_audio(
         .language
         .unwrap_or_else(|| book.language.clone().unwrap_or_else(|| "en".to_string()));
     if !is_supported_language(&language) {
-        return Err(Error::Validation(format!(
-            "unsupported language `{language}`"
-        ))
-        .into());
+        return Err(Error::Validation(format!("unsupported language `{language}`")).into());
     }
 
     if has_live_job(&state, &id, JobKind::Tts).await? {
@@ -1594,8 +1576,7 @@ pub async fn animate(
     IdempotencyKey(idem): IdempotencyKey,
 ) -> ApiResult<StatusCode> {
     if let Some(cached) = idempotency::lookup(&state, &user.id, idem.as_deref()).await? {
-        return Ok(StatusCode::from_u16(cached.status_code)
-            .unwrap_or(StatusCode::ACCEPTED));
+        return Ok(StatusCode::from_u16(cached.status_code).unwrap_or(StatusCode::ACCEPTED));
     }
 
     let book = load_audiobook(&state, &id).await?;
@@ -1618,10 +1599,7 @@ pub async fn animate(
         .language
         .unwrap_or_else(|| book.language.clone().unwrap_or_else(|| "en".to_string()));
     if !is_supported_language(&language) {
-        return Err(Error::Validation(format!(
-            "unsupported language `{language}`"
-        ))
-        .into());
+        return Err(Error::Validation(format!("unsupported language `{language}`")).into());
     }
 
     if has_live_job(&state, &id, JobKind::Animate).await? {
@@ -1730,10 +1708,7 @@ pub async fn animate_chapter(
         .language
         .unwrap_or_else(|| book.language.clone().unwrap_or_else(|| "en".to_string()));
     if !is_supported_language(&language) {
-        return Err(Error::Validation(format!(
-            "unsupported language `{language}`"
-        ))
-        .into());
+        return Err(Error::Validation(format!("unsupported language `{language}`")).into());
     }
 
     // Ensure the chapter actually exists in the requested language —
@@ -1769,10 +1744,7 @@ pub async fn animate_chapter(
     }
 
     if has_live_animate_chapter(&state, &id, n, &language).await? {
-        return Err(Error::Conflict(format!(
-            "chapter {n} animation already in flight"
-        ))
-        .into());
+        return Err(Error::Conflict(format!("chapter {n} animation already in flight")).into());
     }
 
     let theme = q
@@ -1933,9 +1905,7 @@ pub async fn cancel_pipeline(
     state
         .db()
         .inner()
-        .query(format!(
-            "UPDATE audiobook:`{id}` SET auto_pipeline = NONE"
-        ))
+        .query(format!("UPDATE audiobook:`{id}` SET auto_pipeline = NONE"))
         .await
         .map_err(|e| Error::Database(format!("cancel pipeline (clear auto): {e}")))?
         .check()
@@ -2138,10 +2108,9 @@ pub async fn classify_chapter_visuals(
         // to `chapter_paragraphs` job for STEM books.
         let body = chapter.body_md.as_deref().unwrap_or("");
         if body.trim().is_empty() {
-            return Err(Error::Validation(
-                "chapter body is empty — generate it first".into(),
-            )
-            .into());
+            return Err(
+                Error::Validation("chapter body is empty — generate it first".into()).into(),
+            );
         }
         let paragraphs = crate::generation::paragraphs::split(body);
         if paragraphs.is_empty() {
@@ -2185,7 +2154,11 @@ pub async fn classify_chapter_visuals(
             &visuals,
             &codes,
         );
-        (paragraphs.len(), scenes.len(), merged_with_visual_count(merged, visuals.len()))
+        (
+            paragraphs.len(),
+            scenes.len(),
+            merged_with_visual_count(merged, visuals.len()),
+        )
     } else {
         // Re-classify path: paragraphs already exist; only update
         // visual_kind / visual_params, preserve everything else.
@@ -2256,10 +2229,7 @@ pub async fn classify_chapter_visuals(
                     if v.visual_kind == "custom_manim" {
                         if let Some(prev) = p.manim_code.as_deref() {
                             if !prev.trim().is_empty() {
-                                entry.insert(
-                                    "manim_code".into(),
-                                    serde_json::json!(prev),
-                                );
+                                entry.insert("manim_code".into(), serde_json::json!(prev));
                             }
                         }
                     }
@@ -2270,7 +2240,11 @@ pub async fn classify_chapter_visuals(
                 serde_json::Value::Object(entry)
             })
             .collect();
-        (paragraphs_json.len(), 0, merged_with_visual_count(updated, visuals.len()))
+        (
+            paragraphs_json.len(),
+            0,
+            merged_with_visual_count(updated, visuals.len()),
+        )
     };
 
     let labelled = updated.1;
@@ -2346,19 +2320,18 @@ pub async fn regenerate_chapter_manim_code(
         .into());
     }
 
-    let custom_paragraphs: Vec<crate::generation::manim_code::CustomParagraph> =
-        paragraphs_json
-            .iter()
-            .filter(|p| p.visual_kind.as_deref() == Some("custom_manim"))
-            .map(|p| crate::generation::manim_code::CustomParagraph {
-                index: p.index.max(0) as u32,
-                text: p.text.as_str(),
-                // No per-paragraph audio plan here either; the
-                // publisher floors `run_seconds` at MIN_RUN_SECONDS
-                // anyway (Python side, _base.py).
-                run_seconds: 8.0,
-            })
-            .collect();
+    let custom_paragraphs: Vec<crate::generation::manim_code::CustomParagraph> = paragraphs_json
+        .iter()
+        .filter(|p| p.visual_kind.as_deref() == Some("custom_manim"))
+        .map(|p| crate::generation::manim_code::CustomParagraph {
+            index: p.index.max(0) as u32,
+            text: p.text.as_str(),
+            // No per-paragraph audio plan here either; the
+            // publisher floors `run_seconds` at MIN_RUN_SECONDS
+            // anyway (Python side, _base.py).
+            run_seconds: 8.0,
+        })
+        .collect();
 
     let codes = crate::generation::manim_code::generate_manim_code(
         &state,
@@ -2410,10 +2383,7 @@ pub async fn regenerate_chapter_manim_code(
             // never had code in the first place; no-op for them.
             if let Some(code) = codes.get(&idx) {
                 if !code.code.trim().is_empty() {
-                    entry.insert(
-                        "manim_code".into(),
-                        serde_json::json!(code.code),
-                    );
+                    entry.insert("manim_code".into(), serde_json::json!(code.code));
                 }
             } else if let Some(prev) = p.manim_code.as_deref() {
                 // LLM didn't produce anything fresh for this index;
@@ -2515,7 +2485,8 @@ pub async fn test_chapter_manim_llm(
     Path((id, n)): Path<(String, u32)>,
     Json(body): Json<TestChapterManimLlmRequest>,
 ) -> ApiResult<Json<TestChapterManimLlmResponse>> {
-    body.validate().map_err(|e| Error::Validation(e.to_string()))?;
+    body.validate()
+        .map_err(|e| Error::Validation(e.to_string()))?;
     assert_owner(&state, &id, &user.id).await?;
 
     let book = load_audiobook(&state, &id).await?;
@@ -2592,8 +2563,7 @@ pub async fn test_chapter_manim_llm(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or("library");
-    let mut vars: std::collections::HashMap<&str, String> =
-        std::collections::HashMap::new();
+    let mut vars: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
     vars.insert("book_title", book.title.clone());
     vars.insert("book_topic", book.topic.clone());
     vars.insert("genre", book.genre.clone().unwrap_or_else(|| "any".into()));
@@ -2641,8 +2611,7 @@ pub async fn test_chapter_manim_llm(
     } else {
         let pt = resp.usage.prompt_tokens as f64;
         let ct = resp.usage.completion_tokens as f64;
-        (pt / 1000.0) * llm.cost_prompt_per_1k
-            + (ct / 1000.0) * llm.cost_completion_per_1k
+        (pt / 1000.0) * llm.cost_prompt_per_1k + (ct / 1000.0) * llm.cost_completion_per_1k
     };
 
     let preview: String = pick.text.chars().take(200).collect();
@@ -2711,14 +2680,14 @@ pub async fn render_test_manim(
     Path((id, _n)): Path<(String, u32)>,
     Json(body): Json<RenderTestManimRequest>,
 ) -> ApiResult<Json<RenderTestManimResponse>> {
-    body.validate().map_err(|e| Error::Validation(e.to_string()))?;
+    body.validate()
+        .map_err(|e| Error::Validation(e.to_string()))?;
     assert_owner(&state, &id, &user.id).await?;
 
     let cfg = state.config();
     if cfg.animate_manim_cmd.trim().is_empty() {
         return Err(Error::Validation(
-            "animate_manim_cmd is empty — Manim sidecar not configured on this server"
-                .into(),
+            "animate_manim_cmd is empty — Manim sidecar not configured on this server".into(),
         )
         .into());
     }
@@ -2748,9 +2717,7 @@ pub async fn render_test_manim(
     // (Manim Python imports), which we eat each test; sharing across
     // requests would speed it up but means storing a pool on AppState
     // and tracking shutdown — overkill for an audition feature.
-    use crate::animation::manim_sidecar::{
-        ManimRendererPool, ManimRequest, ManimSidecarCfg,
-    };
+    use crate::animation::manim_sidecar::{ManimRendererPool, ManimRequest, ManimSidecarCfg};
     let pool = ManimRendererPool::new(
         ManimSidecarCfg::new(
             cfg.animate_manim_python_bin.clone(),
@@ -3059,9 +3026,7 @@ pub async fn costs(
                 None => (None, None, None),
                 Some(id) if id == "_default_" => (Some(id), None, None),
                 Some(id) => match llm_meta.get(&id) {
-                    Some((name, model)) => {
-                        (Some(id), Some(name.clone()), Some(model.clone()))
-                    }
+                    Some((name, model)) => (Some(id), Some(name.clone()), Some(model.clone())),
                     None => (Some(id), None, None),
                 },
             }
@@ -3124,10 +3089,7 @@ async fn load_detail(
             resource: format!("audiobook:{id}"),
         });
     }
-    let primary = book
-        .language
-        .clone()
-        .unwrap_or_else(|| "en".to_string());
+    let primary = book.language.clone().unwrap_or_else(|| "en".to_string());
     let active = language_filter
         .map(str::to_string)
         .unwrap_or_else(|| primary.clone());
@@ -3177,7 +3139,11 @@ async fn load_detail(
 
     let mut summary = book.to_summary()?;
     summary.available_languages = langs;
-    summary.duration_ms = if primary_total > 0 { Some(primary_total) } else { None };
+    summary.duration_ms = if primary_total > 0 {
+        Some(primary_total)
+    } else {
+        None
+    };
     Ok(AudiobookDetail { summary, chapters })
 }
 
@@ -3262,7 +3228,11 @@ pub(crate) async fn persist_chapter_art(
         "image/webp" => "webp",
         _ => "bin",
     };
-    let dir = state.config().storage_path.join(audiobook_id).join("chapters");
+    let dir = state
+        .config()
+        .storage_path
+        .join(audiobook_id)
+        .join("chapters");
     std::fs::create_dir_all(&dir)
         .map_err(|e| Error::Other(anyhow::anyhow!("create chapter art dir {dir:?}: {e}")))?;
     let filename = format!("{chapter_number}-art.{ext}");
@@ -3274,7 +3244,9 @@ pub(crate) async fn persist_chapter_art(
     state
         .db()
         .inner()
-        .query(format!("UPDATE chapter:`{chapter_id}` SET chapter_art_path = $p"))
+        .query(format!(
+            "UPDATE chapter:`{chapter_id}` SET chapter_art_path = $p"
+        ))
         .bind(("p", rel))
         .await
         .map_err(|e| Error::Database(format!("set chapter_art_path: {e}")))?
@@ -3331,10 +3303,13 @@ pub(crate) async fn persist_paragraph_image(
         "image/webp" => "webp",
         _ => "bin",
     };
-    let dir = state.config().storage_path.join(audiobook_id).join("chapters");
-    std::fs::create_dir_all(&dir).map_err(|e| {
-        Error::Other(anyhow::anyhow!("create paragraph art dir {dir:?}: {e}"))
-    })?;
+    let dir = state
+        .config()
+        .storage_path
+        .join(audiobook_id)
+        .join("chapters");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| Error::Other(anyhow::anyhow!("create paragraph art dir {dir:?}: {e}")))?;
     let filename = format!("{chapter_number}-p{paragraph_index}-{ordinal}.{ext}");
     let path = dir.join(&filename);
     std::fs::write(&path, bytes)
@@ -3370,15 +3345,15 @@ pub(crate) async fn persist_paragraph_image(
                 "paragraph {paragraph_index} not found on chapter {chapter_number}"
             ))
         })?;
-    let obj = target.as_object_mut().ok_or_else(|| {
-        Error::Database("paragraph entry is not an object".into())
-    })?;
+    let obj = target
+        .as_object_mut()
+        .ok_or_else(|| Error::Database("paragraph entry is not an object".into()))?;
     let entry = obj
         .entry("image_paths".to_string())
         .or_insert_with(|| serde_json::json!([]));
-    let arr = entry.as_array_mut().ok_or_else(|| {
-        Error::Database("paragraph image_paths is not an array".into())
-    })?;
+    let arr = entry
+        .as_array_mut()
+        .ok_or_else(|| Error::Database("paragraph image_paths is not an array".into()))?;
     let slot = (ordinal as usize).saturating_sub(1);
     while arr.len() <= slot {
         arr.push(serde_json::Value::String(String::new()));
@@ -3388,9 +3363,7 @@ pub(crate) async fn persist_paragraph_image(
     state
         .db()
         .inner()
-        .query(format!(
-            "UPDATE chapter:`{chapter_id}` SET paragraphs = $p"
-        ))
+        .query(format!("UPDATE chapter:`{chapter_id}` SET paragraphs = $p"))
         .bind(("p", paragraphs))
         .await
         .map_err(|e| Error::Database(format!("set paragraphs: {e}")))?
@@ -3415,9 +3388,7 @@ async fn assert_voice_enabled(state: &AppState, voice_id: &str) -> Result<String
     let rows: Vec<Row> = state
         .db()
         .inner()
-        .query(format!(
-            "SELECT id, enabled FROM voice:`{voice_id}`"
-        ))
+        .query(format!("SELECT id, enabled FROM voice:`{voice_id}`"))
         .await
         .map_err(|e| Error::Database(format!("voice lookup: {e}")))?
         .take(0)
@@ -3436,9 +3407,9 @@ async fn assert_voice_enabled(state: &AppState, voice_id: &str) -> Result<String
 /// unsafe characters before they're embedded in a `podcast:`<id>`` clause.
 async fn assert_podcast_owned(state: &AppState, id: &str, user: &UserId) -> Result<()> {
     let valid = !id.is_empty()
-        && id.chars().all(|c| {
-            c.is_ascii_alphanumeric() || c == '_' || c == '-'
-        });
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
     if !valid {
         return Err(Error::Validation(format!("invalid podcast id `{id}`")));
     }
@@ -3454,9 +3425,10 @@ async fn assert_podcast_owned(state: &AppState, id: &str, user: &UserId) -> Resu
         .map_err(|e| Error::Database(format!("podcast owner: {e}")))?
         .take(0)
         .map_err(|e| Error::Database(format!("podcast owner (decode): {e}")))?;
-    let row = rows.into_iter().next().ok_or_else(|| {
-        Error::Validation(format!("unknown podcast `{id}`"))
-    })?;
+    let row = rows
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::Validation(format!("unknown podcast `{id}`")))?;
     if row.owner.id.to_raw() != user.0 {
         return Err(Error::Validation(format!("unknown podcast `{id}`")));
     }

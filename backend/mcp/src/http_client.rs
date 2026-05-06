@@ -108,9 +108,8 @@ impl ApiClient {
             // endpoints; those have dedicated MCP tools that don't go through
             // here. If decoding fails, surface the raw text so the caller
             // can debug.
-            serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|_| {
-                Value::String(String::from_utf8_lossy(&bytes).to_string())
-            })
+            serde_json::from_slice::<Value>(&bytes)
+                .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).to_string()))
         };
         Ok(ApiResponse { status, body })
     }

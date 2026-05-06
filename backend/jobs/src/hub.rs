@@ -125,7 +125,10 @@ impl ProgressHub {
     }
 
     /// Get or create the channel for `audiobook_id` and return a receiver.
-    pub async fn subscribe(&self, audiobook_id: &AudiobookId) -> broadcast::Receiver<ProgressEvent> {
+    pub async fn subscribe(
+        &self,
+        audiobook_id: &AudiobookId,
+    ) -> broadcast::Receiver<ProgressEvent> {
         let mut map = self.inner.lock().await;
         let tx = map
             .entry(audiobook_id.0.clone())

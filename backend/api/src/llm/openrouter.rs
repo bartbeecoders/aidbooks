@@ -160,7 +160,8 @@ impl LlmClient {
                 if mock {
                     return Ok(mock_response(req));
                 }
-                self.call_chat(req, &self.base_url, &self.api_key, true).await
+                self.call_chat(req, &self.base_url, &self.api_key, true)
+                    .await
             }
         }
     }
@@ -338,9 +339,7 @@ impl LlmClient {
             .and_then(|a| a.first())
             .and_then(|item| item.get("b64_json"))
             .and_then(Value::as_str)
-            .ok_or_else(|| {
-                Error::Upstream("xai image gen: missing data[0].b64_json".into())
-            })?;
+            .ok_or_else(|| Error::Upstream("xai image gen: missing data[0].b64_json".into()))?;
         Ok(b64.to_string())
     }
 }
@@ -436,7 +435,6 @@ pub struct OpenRouterPricing {
 }
 
 impl LlmClient {
-
     /// Generic chat-completions caller. OpenRouter and xAI share the
     /// OpenAI-compatible wire shape; only host, key, and a couple of
     /// attribution headers differ. `add_or_attribution` is true only for
@@ -504,9 +502,9 @@ impl LlmClient {
             .and_then(Value::as_array)
             .and_then(|arr| arr.first())
             .ok_or_else(|| Error::Upstream("openrouter: missing choices[0]".into()))?;
-        let message = choice.get("message").ok_or_else(|| {
-            Error::Upstream("openrouter: missing choices[0].message".into())
-        })?;
+        let message = choice
+            .get("message")
+            .ok_or_else(|| Error::Upstream("openrouter: missing choices[0].message".into()))?;
 
         let (content, image_base64) = extract_message(message);
 
@@ -691,7 +689,8 @@ fn mock_response(req: &ChatRequest) -> ChatResponse {
 /// Single-pixel transparent PNG. Just enough that the mock path returns
 /// well-formed image bytes without bundling an asset.
 fn mock_cover_png_base64() -> String {
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=".to_string()
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        .to_string()
 }
 
 fn mock_outline(prompt: &str) -> String {

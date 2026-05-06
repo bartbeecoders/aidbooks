@@ -245,10 +245,7 @@ async fn request_image(
         return xai_image(state, user, audiobook_id, llm_id, role, &model, prompt).await;
     }
 
-    let messages = vec![
-        ChatMessage::system(SYSTEM),
-        ChatMessage::user(prompt),
-    ];
+    let messages = vec![ChatMessage::system(SYSTEM), ChatMessage::user(prompt)];
     let provider_owned = provider.to_string();
     let mk_req = |modalities: Vec<String>| ChatRequest {
         model: model.clone(),
@@ -268,7 +265,11 @@ async fn request_image(
     // the image (Gemini, GPT-image), so we ask for both. Image-only models
     // (FLUX, Riverflow, Seedream, …) reject `["image","text"]` with a 404
     // — fall back to image-only and retry once.
-    let resp = match state.llm().chat(&mk_req(vec!["image".into(), "text".into()])).await {
+    let resp = match state
+        .llm()
+        .chat(&mk_req(vec!["image".into(), "text".into()]))
+        .await
+    {
         Ok(r) => r,
         Err(Error::Upstream(msg)) if is_modality_mismatch(&msg) => {
             tracing::info!(
@@ -385,9 +386,7 @@ async fn lookup_cost_per_image(state: &AppState, llm_id: &str) -> Option<f64> {
     let rows: Vec<Row> = state
         .db()
         .inner()
-        .query(format!(
-            "SELECT cost_per_megapixel FROM llm:`{llm_id}`"
-        ))
+        .query(format!("SELECT cost_per_megapixel FROM llm:`{llm_id}`"))
         .await
         .ok()?
         .take(0)

@@ -90,19 +90,14 @@ pub async fn extract_segments(
     vars.insert("chapter_title", chapter_title.to_string());
     vars.insert("chapter_body", chapter_body.to_string());
 
-    let rendered = match crate::generation::prompts::render(
-        state,
-        PromptRole::VoiceExtract,
-        &vars,
-    )
-    .await
-    {
-        Ok(p) => p,
-        Err(e) => {
-            warn!(error = %e, "voice_extract: render prompt failed; degrading");
-            return single_segment_fallback(chapter_body);
-        }
-    };
+    let rendered =
+        match crate::generation::prompts::render(state, PromptRole::VoiceExtract, &vars).await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(error = %e, "voice_extract: render prompt failed; degrading");
+                return single_segment_fallback(chapter_body);
+            }
+        };
 
     let req = ChatRequest {
         model: picked.model_id.clone(),
@@ -217,8 +212,15 @@ pub async fn extract_and_cache(
     chapter_title: &str,
     chapter_body: &str,
 ) -> Vec<VoiceSegment> {
-    let segments =
-        extract_segments(state, user, audiobook_id, language, chapter_title, chapter_body).await;
+    let segments = extract_segments(
+        state,
+        user,
+        audiobook_id,
+        language,
+        chapter_title,
+        chapter_body,
+    )
+    .await;
     if let Err(e) = cache_segments(state, chapter_raw_id, &segments).await {
         warn!(error = %e, chapter = chapter_raw_id, "voice_extract: cache failed");
     }

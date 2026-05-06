@@ -200,9 +200,7 @@ pub async fn list_admin(
     let rows: Vec<DbRow> = state
         .db()
         .inner()
-        .query(
-            "SELECT * FROM topic_template ORDER BY sort_order ASC, title ASC",
-        )
+        .query("SELECT * FROM topic_template ORDER BY sort_order ASC, title ASC")
         .await
         .map_err(|e| Error::Database(format!("admin topic_template list: {e}")))?
         .take(0)
@@ -439,9 +437,11 @@ async fn load(state: &AppState, id: &str) -> Result<TopicTemplate> {
         .map_err(|e| Error::Database(format!("topic_template load: {e}")))?
         .take(0)
         .map_err(|e| Error::Database(format!("topic_template load (decode): {e}")))?;
-    rows.into_iter().next().ok_or(Error::NotFound {
-        resource: format!("topic_template:{id}"),
-    })?
+    rows.into_iter()
+        .next()
+        .ok_or(Error::NotFound {
+            resource: format!("topic_template:{id}"),
+        })?
         .into_dto()
 }
 
@@ -449,5 +449,7 @@ async fn load(state: &AppState, id: &str) -> Result<TopicTemplate> {
 /// safe from injection — we always create with a uuid simple, so this is
 /// just defence in depth on the PATCH/DELETE paths.
 fn is_valid_id(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
 }

@@ -75,7 +75,7 @@ export function AdminYoutubeSettings(): JSX.Element {
       }),
   });
 
-  const items = data?.items ?? [];
+  const items = useMemo(() => data?.items ?? [], [data]);
   // Languages still available for the "Add language" picker — anything in
   // LANGUAGES that doesn't already have a row.
   const availableToAdd = useMemo(() => {

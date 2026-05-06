@@ -196,25 +196,24 @@ pub async fn extract_scenes(
     .await
     .ok();
     let content = strip_code_fences(&resp.content);
-    let parsed: ExtractResponse =
-        match serde_json::from_str::<ExtractResponse>(content) {
-            Ok(p) => p,
-            Err(_) => {
-                // Some models return a bare top-level array. Try that
-                // before giving up.
-                match serde_json::from_str::<Vec<ExtractScene>>(content) {
-                    Ok(scenes) => ExtractResponse { scenes },
-                    Err(e) => {
-                        warn!(
-                            error = %e,
-                            preview = %content.chars().take(300).collect::<String>(),
-                            "paragraph scene extract: JSON parse failed"
-                        );
-                        return out;
-                    }
+    let parsed: ExtractResponse = match serde_json::from_str::<ExtractResponse>(content) {
+        Ok(p) => p,
+        Err(_) => {
+            // Some models return a bare top-level array. Try that
+            // before giving up.
+            match serde_json::from_str::<Vec<ExtractScene>>(content) {
+                Ok(scenes) => ExtractResponse { scenes },
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        preview = %content.chars().take(300).collect::<String>(),
+                        "paragraph scene extract: JSON parse failed"
+                    );
+                    return out;
                 }
             }
-        };
+        }
+    };
 
     for s in parsed.scenes {
         let scene = s.scene.trim();
@@ -321,27 +320,21 @@ pub async fn extract_visual_kinds(
         })
         .collect();
 
-    let mut vars: std::collections::HashMap<&str, String> =
-        std::collections::HashMap::new();
+    let mut vars: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
     vars.insert("book_title", book_title.to_string());
     vars.insert("book_topic", book_topic.to_string());
     vars.insert("genre", genre.unwrap_or("any").to_string());
     vars.insert("chapter_title", chapter_title.to_string());
     vars.insert("paragraph_listing", listing);
 
-    let rendered = match crate::generation::prompts::render(
-        state,
-        PromptRole::ParagraphVisual,
-        &vars,
-    )
-    .await
-    {
-        Ok(p) => p,
-        Err(e) => {
-            warn!(error = %e, "paragraph visual extract: load template failed");
-            return out;
-        }
-    };
+    let rendered =
+        match crate::generation::prompts::render(state, PromptRole::ParagraphVisual, &vars).await {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(error = %e, "paragraph visual extract: load template failed");
+                return out;
+            }
+        };
 
     // Prefer the user's configured Manim LLM (`LlmRole::ManimCode`) so
     // the same model handles both the diagram classifier and the
@@ -350,16 +343,19 @@ pub async fn extract_visual_kinds(
     // which keeps both halves of the diagram pipeline coherent. Falls
     // back to the prose `Chapter` model when no row is tagged for
     // `ManimCode`, so existing setups keep working unchanged.
-    let picked =
-        match crate::llm::pick_llm_for_roles_lang(state, &[LlmRole::ManimCode, LlmRole::Chapter], None)
-            .await
-        {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(error = %e, "paragraph visual extract: pick model failed");
-                return out;
-            }
-        };
+    let picked = match crate::llm::pick_llm_for_roles_lang(
+        state,
+        &[LlmRole::ManimCode, LlmRole::Chapter],
+        None,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            warn!(error = %e, "paragraph visual extract: pick model failed");
+            return out;
+        }
+    };
 
     let req = ChatRequest {
         model: picked.model_id.clone(),
@@ -540,9 +536,7 @@ pub async fn persist(
     state
         .db()
         .inner()
-        .query(format!(
-            "UPDATE chapter:`{chapter_id}` SET paragraphs = $p"
-        ))
+        .query(format!("UPDATE chapter:`{chapter_id}` SET paragraphs = $p"))
         .bind(("p", paragraphs))
         .await
         .map_err(|e| Error::Database(format!("persist paragraphs: {e}")))?
@@ -619,10 +613,7 @@ mod tests {
         let codes = std::collections::HashMap::new();
         let out = merge_for_persist(&paras, &scenes, &visuals, &codes);
         assert_eq!(out[0]["visual_kind"], "free_body");
-        assert_eq!(
-            out[0]["visual_params"]["object"],
-            "block on incline"
-        );
+        assert_eq!(out[0]["visual_params"]["object"], "block on incline");
         // Unlabelled paragraph stays diagram-free.
         assert!(out[1].get("visual_kind").is_none());
     }
@@ -646,10 +637,7 @@ mod tests {
         codes.insert(1u32, "   ".to_string());
         let out = merge_for_persist(&paras, &scenes, &visuals, &codes);
         assert_eq!(out[0]["visual_kind"], "custom_manim");
-        assert_eq!(
-            out[0]["manim_code"],
-            "class Scene(TemplateScene): pass"
-        );
+        assert_eq!(out[0]["manim_code"], "class Scene(TemplateScene): pass");
         assert!(out[1].get("manim_code").is_none());
     }
 

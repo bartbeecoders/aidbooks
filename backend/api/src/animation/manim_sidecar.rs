@@ -77,7 +77,6 @@ pub enum ManimRequest {
     },
 }
 
-
 /// NDJSON event shape from the sidecar. Mirrors
 /// `listenai_manim/server.py::emit`.
 #[derive(Debug, Deserialize)]
@@ -158,11 +157,10 @@ impl ManimRendererPool {
     /// pool (or kills it if exhausted / the request failed
     /// transiently).
     pub async fn render(&self, req: &ManimRequest) -> Result<(), RenderFailure> {
-        let _permit = self
-            .permits
-            .acquire()
-            .await
-            .map_err(|e| RenderFailure::Transient(format!("manim pool semaphore closed: {e}")))?;
+        let _permit =
+            self.permits.acquire().await.map_err(|e| {
+                RenderFailure::Transient(format!("manim pool semaphore closed: {e}"))
+            })?;
 
         let mut sidecar = self.acquire_sidecar().await?;
         let result = render_one(&mut sidecar, req).await;
@@ -322,10 +320,7 @@ struct Sidecar {
     is_dead: bool,
 }
 
-async fn render_one(
-    sidecar: &mut Sidecar,
-    req: &ManimRequest,
-) -> Result<(), RenderFailure> {
+async fn render_one(sidecar: &mut Sidecar, req: &ManimRequest) -> Result<(), RenderFailure> {
     sidecar.stderr_buf.lock().await.clear();
 
     // Build the request JSON. Single line — server.py splits on
@@ -481,22 +476,14 @@ mod tests {
 
     #[test]
     fn cfg_uses_defaults() {
-        let cfg = ManimSidecarCfg::new(
-            "python".into(),
-            PathBuf::from("/dev/null"),
-            String::new(),
-        );
+        let cfg = ManimSidecarCfg::new("python".into(), PathBuf::from("/dev/null"), String::new());
         assert_eq!(cfg.max_renders_per_proc, DEFAULT_MAX_RENDERS_PER_PROC);
         assert_eq!(cfg.max_age_secs, DEFAULT_MAX_AGE_SECS);
     }
 
     #[test]
     fn pool_clamps_capacity_to_at_least_one() {
-        let cfg = ManimSidecarCfg::new(
-            "python".into(),
-            PathBuf::from("/dev/null"),
-            String::new(),
-        );
+        let cfg = ManimSidecarCfg::new("python".into(), PathBuf::from("/dev/null"), String::new());
         let pool = ManimRendererPool::new(cfg, 0);
         assert_eq!(pool.permits.available_permits(), 1);
     }

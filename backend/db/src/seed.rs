@@ -190,4 +190,3 @@ async fn seed_voices(db: &Db) -> Result<()> {
     info!(count = voices.len(), "voices seeded");
     Ok(())
 }
-

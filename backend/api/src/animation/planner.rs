@@ -466,10 +466,7 @@ fn match_info<'a>(paragraph: &str, tiles: &'a [ParagraphInfo]) -> Option<&'a Par
         // multi-byte character could fall across the cut and panic
         // on the slice — happens with em-dashes etc.); take by
         // *chars* instead so the slice always lands on a boundary.
-        let prefix: String = hay
-            .chars()
-            .take(needle.chars().count())
-            .collect();
+        let prefix: String = hay.chars().take(needle.chars().count()).collect();
         if needle.contains(&prefix) {
             return Some(info);
         }
@@ -577,9 +574,15 @@ mod tests {
         let mut last_end: Option<u64> = None;
         for s in &spec.scenes {
             let (start, end) = match s {
-                Scene::Title { start_ms, end_ms, .. }
-                | Scene::Paragraph { start_ms, end_ms, .. }
-                | Scene::Outro { start_ms, end_ms, .. } => (*start_ms, *end_ms),
+                Scene::Title {
+                    start_ms, end_ms, ..
+                }
+                | Scene::Paragraph {
+                    start_ms, end_ms, ..
+                }
+                | Scene::Outro {
+                    start_ms, end_ms, ..
+                } => (*start_ms, *end_ms),
             };
             if let Some(prev) = last_end {
                 if start != prev {
@@ -614,7 +617,9 @@ mod tests {
         assert!(spec.scenes.len() >= 3);
         // Title at 0..4000, Outro ends at 60000.
         match &spec.scenes[0] {
-            Scene::Title { start_ms, end_ms, .. } => {
+            Scene::Title {
+                start_ms, end_ms, ..
+            } => {
                 assert_eq!(*start_ms, 0);
                 assert_eq!(*end_ms, 4_000);
             }
@@ -644,7 +649,9 @@ mod tests {
         assert_eq!(last_end(&spec), 5_000);
         // Title window is non-trivial.
         match &spec.scenes[0] {
-            Scene::Title { start_ms, end_ms, .. } => assert!(end_ms > start_ms),
+            Scene::Title {
+                start_ms, end_ms, ..
+            } => assert!(end_ms > start_ms),
             other => panic!("expected Title first, got {other:?}"),
         }
     }
@@ -693,7 +700,10 @@ mod tests {
         // Each sub-scene is at most MAX_PARAGRAPH_SCENE_MS + a tiny
         // rounding margin from the seam-fix step.
         for s in &spec.scenes {
-            if let Scene::Paragraph { start_ms, end_ms, .. } = s {
+            if let Scene::Paragraph {
+                start_ms, end_ms, ..
+            } = s
+            {
                 let dur = end_ms - start_ms;
                 assert!(
                     dur <= MAX_PARAGRAPH_SCENE_MS + 200,

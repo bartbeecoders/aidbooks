@@ -30,10 +30,10 @@ pub enum Transport {
 impl Config {
     pub fn from_args_and_env() -> anyhow::Result<Self> {
         let mut transport = Transport::Stdio;
-        let mut api_base_url = env::var("LISTENAI_API_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
-        let mut http_bind = env::var("LISTENAI_MCP_BIND")
-            .unwrap_or_else(|_| "127.0.0.1:8788".to_string());
+        let mut api_base_url =
+            env::var("LISTENAI_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
+        let mut http_bind =
+            env::var("LISTENAI_MCP_BIND").unwrap_or_else(|_| "127.0.0.1:8788".to_string());
         let default_token = env::var("LISTENAI_TOKEN").ok().filter(|s| !s.is_empty());
         let request_timeout_secs = env::var("LISTENAI_MCP_TIMEOUT_SECS")
             .ok()

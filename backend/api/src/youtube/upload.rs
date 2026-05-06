@@ -43,7 +43,10 @@ pub struct Snippet {
     pub category_id: String,
     #[serde(rename = "defaultLanguage", skip_serializing_if = "Option::is_none")]
     pub default_language: Option<String>,
-    #[serde(rename = "defaultAudioLanguage", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "defaultAudioLanguage",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default_audio_language: Option<String>,
 }
 

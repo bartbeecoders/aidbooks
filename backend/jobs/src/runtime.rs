@@ -249,9 +249,7 @@ async fn handle_retry(ctx: &JobContext, job: &crate::repo::JobRow, msg: &str) {
         Ok(true) => {
             warn!(job_id = %job.id, kind = job.kind.as_str(), error = msg, "job dead-lettered");
             if let Some(book) = job.audiobook_id.as_deref() {
-                ctx.hub
-                    .publish(book, ProgressEvent::failed(job, msg))
-                    .await;
+                ctx.hub.publish(book, ProgressEvent::failed(job, msg)).await;
             }
         }
         Ok(false) => {

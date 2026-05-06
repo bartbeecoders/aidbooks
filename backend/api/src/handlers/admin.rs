@@ -104,9 +104,8 @@ pub async fn list_xai_models(
         .map(|m| {
             // xAI: integer microdollars per million tokens.
             // USD per 1k = price / 1_000_000_000.
-            let to_per_1k = |v: Option<u64>| -> f64 {
-                v.map(|n| (n as f64) / 1_000_000_000.0).unwrap_or(0.0)
-            };
+            let to_per_1k =
+                |v: Option<u64>| -> f64 { v.map(|n| (n as f64) / 1_000_000_000.0).unwrap_or(0.0) };
             XaiModelRow {
                 id: m.id,
                 aliases: m.aliases,
@@ -114,9 +113,7 @@ pub async fn list_xai_models(
                 output_modalities: m.output_modalities,
                 cost_prompt_per_1k: to_per_1k(m.prompt_text_token_price),
                 cost_completion_per_1k: to_per_1k(m.completion_text_token_price),
-                context_length: m
-                    .max_prompt_length
-                    .map(|n| n.min(u32::MAX as u64) as u32),
+                context_length: m.max_prompt_length.map(|n| n.min(u32::MAX as u64) as u32),
             }
         })
         .collect();
@@ -167,9 +164,7 @@ pub async fn list_xai_image_models(
                 .image_generation_price
                 .map(|n| (n as f64) / 1_000_000.0)
                 .unwrap_or(0.0),
-            context_length: m
-                .max_prompt_length
-                .map(|n| n.min(u32::MAX as u64) as u32),
+            context_length: m.max_prompt_length.map(|n| n.min(u32::MAX as u64) as u32),
         })
         .collect();
     Ok(Json(XaiImageModelList { items }))
@@ -389,7 +384,8 @@ pub async fn patch_llm(
     Path(id): Path<String>,
     Json(body): Json<UpdateLlmRequest>,
 ) -> ApiResult<Json<AdminLlmRow>> {
-    body.validate().map_err(|e| Error::Validation(e.to_string()))?;
+    body.validate()
+        .map_err(|e| Error::Validation(e.to_string()))?;
     let mut sets: Vec<&str> = Vec::new();
     if body.enabled.is_some() {
         sets.push("enabled = $enabled");
@@ -478,7 +474,8 @@ pub async fn create_llm(
     _admin: RequireAdmin,
     Json(body): Json<CreateLlmRequest>,
 ) -> ApiResult<(StatusCode, Json<AdminLlmRow>)> {
-    body.validate().map_err(|e| Error::Validation(e.to_string()))?;
+    body.validate()
+        .map_err(|e| Error::Validation(e.to_string()))?;
     if !is_valid_llm_id(&body.id) {
         return Err(Error::Validation(
             "id must be lowercase letters, digits, or underscores".into(),
@@ -516,7 +513,12 @@ pub async fn create_llm(
         .or_else(|| Some("text".to_string()));
     let languages = body.languages.unwrap_or_default();
     let priority = body.priority.unwrap_or(100) as i64;
-    let provider = match body.provider.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let provider = match body
+        .provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         Some("open_router") | None => "open_router".to_string(),
         Some("xai") => "xai".to_string(),
         Some(other) => {
@@ -602,9 +604,12 @@ async fn load_llm(state: &AppState, id: &str) -> Result<AdminLlmRow> {
         .map_err(|e| Error::Database(format!("load_llm: {e}")))?
         .take(0)
         .map_err(|e| Error::Database(format!("load_llm (decode): {e}")))?;
-    rows.into_iter().next().map(row_to_llm).ok_or(Error::NotFound {
-        resource: format!("llm:{id}"),
-    })
+    rows.into_iter()
+        .next()
+        .map(row_to_llm)
+        .ok_or(Error::NotFound {
+            resource: format!("llm:{id}"),
+        })
 }
 
 fn row_to_llm(r: DbLlm) -> AdminLlmRow {
@@ -708,7 +713,8 @@ pub async fn patch_voice(
     Path(id): Path<String>,
     Json(body): Json<UpdateVoiceRequest>,
 ) -> ApiResult<Json<AdminVoiceRow>> {
-    body.validate().map_err(|e| Error::Validation(e.to_string()))?;
+    body.validate()
+        .map_err(|e| Error::Validation(e.to_string()))?;
     let mut sets: Vec<String> = Vec::new();
     if body.enabled.is_some() {
         sets.push("enabled = $enabled".into());
@@ -756,9 +762,12 @@ async fn load_voice(state: &AppState, id: &str) -> Result<AdminVoiceRow> {
         .map_err(|e| Error::Database(format!("load_voice: {e}")))?
         .take(0)
         .map_err(|e| Error::Database(format!("load_voice (decode): {e}")))?;
-    rows.into_iter().next().map(row_to_voice).ok_or(Error::NotFound {
-        resource: format!("voice:{id}"),
-    })
+    rows.into_iter()
+        .next()
+        .map(row_to_voice)
+        .ok_or(Error::NotFound {
+            resource: format!("voice:{id}"),
+        })
 }
 
 fn row_to_voice(r: DbVoice) -> AdminVoiceRow {
@@ -864,9 +873,7 @@ pub async fn list_users(
     } else {
         format!("WHERE {}", where_parts.join(" AND "))
     };
-    let sql = format!(
-        "SELECT * FROM user {where_clause} ORDER BY created_at DESC LIMIT {limit}",
-    );
+    let sql = format!("SELECT * FROM user {where_clause} ORDER BY created_at DESC LIMIT {limit}",);
 
     let rows: Vec<DbUser> = state
         .db()
@@ -1158,9 +1165,7 @@ pub async fn list_jobs(
     } else {
         format!("WHERE {}", where_parts.join(" AND "))
     };
-    let sql = format!(
-        "SELECT * FROM job {where_clause} ORDER BY queued_at DESC LIMIT {limit}"
-    );
+    let sql = format!("SELECT * FROM job {where_clause} ORDER BY queued_at DESC LIMIT {limit}");
     let rows: Vec<DbJob> = state
         .db()
         .inner()
@@ -1476,11 +1481,17 @@ pub async fn test_llm(
     _admin: RequireAdmin,
     Json(body): Json<TestLlmRequest>,
 ) -> ApiResult<Json<TestLlmResponse>> {
-    body.validate().map_err(|e| Error::Validation(e.to_string()))?;
+    body.validate()
+        .map_err(|e| Error::Validation(e.to_string()))?;
     let llm = load_llm(&state, &body.llm_id).await?;
 
     let mut messages: Vec<ChatMessage> = Vec::new();
-    if let Some(sys) = body.system.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(sys) = body
+        .system
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         messages.push(ChatMessage::system(sys));
     }
     messages.push(ChatMessage::user(body.prompt));
@@ -1537,7 +1548,8 @@ pub async fn test_voice(
     _admin: RequireAdmin,
     Json(body): Json<TestVoiceRequest>,
 ) -> ApiResult<Json<TestVoiceResponse>> {
-    body.validate().map_err(|e| Error::Validation(e.to_string()))?;
+    body.validate()
+        .map_err(|e| Error::Validation(e.to_string()))?;
     let voice = load_voice(&state, &body.voice_id).await?;
     let pcm = state
         .tts()
@@ -1642,7 +1654,8 @@ pub async fn upsert_youtube_footer(
     Path(language): Path<String>,
     Json(body): Json<UpsertYoutubeFooterRequest>,
 ) -> ApiResult<Json<YoutubeFooterRow>> {
-    body.validate().map_err(|e| Error::Validation(e.to_string()))?;
+    body.validate()
+        .map_err(|e| Error::Validation(e.to_string()))?;
     let lang = language.trim();
     if !is_valid_lang(lang) {
         return Err(Error::Validation("invalid language code".into()).into());
@@ -1707,9 +1720,7 @@ pub async fn delete_youtube_footer(
     state
         .db()
         .inner()
-        .query(format!(
-            "DELETE youtube_description_footer:`{lang}`"
-        ))
+        .query(format!("DELETE youtube_description_footer:`{lang}`"))
         .await
         .map_err(|e| Error::Database(format!("delete footer: {e}")))?
         .check()
@@ -1778,9 +1789,7 @@ pub async fn put_youtube_publish_settings(
 
 /// Public helper so the YouTube publisher can read the same singleton
 /// without going through the admin route.
-pub async fn load_youtube_publish_settings(
-    state: &AppState,
-) -> Result<YoutubePublishSettings> {
+pub async fn load_youtube_publish_settings(state: &AppState) -> Result<YoutubePublishSettings> {
     #[derive(Deserialize)]
     struct Row {
         #[serde(default)]
@@ -1811,10 +1820,7 @@ pub async fn load_youtube_publish_settings(
 /// SurrealDB-safe. ASCII letters, digits, and `-` cover every BCP-47
 /// code we'd realistically ship.
 fn is_valid_lang(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 16
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    !s.is_empty() && s.len() <= 16 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 // =========================================================================
@@ -1881,7 +1887,8 @@ pub async fn create_audiobook_category(
     _admin: RequireAdmin,
     Json(body): Json<CreateAudiobookCategoryRequest>,
 ) -> ApiResult<(StatusCode, Json<AudiobookCategoryRow>)> {
-    body.validate().map_err(|e| Error::Validation(e.to_string()))?;
+    body.validate()
+        .map_err(|e| Error::Validation(e.to_string()))?;
     let name = body.name.trim().to_string();
     if name.is_empty() {
         return Err(Error::Validation("name must not be empty".into()).into());
@@ -1928,7 +1935,8 @@ pub async fn update_audiobook_category(
     Path(id): Path<String>,
     Json(body): Json<UpdateAudiobookCategoryRequest>,
 ) -> ApiResult<Json<AudiobookCategoryRow>> {
-    body.validate().map_err(|e| Error::Validation(e.to_string()))?;
+    body.validate()
+        .map_err(|e| Error::Validation(e.to_string()))?;
     if !is_safe_record_id(&id) {
         return Err(Error::Validation("invalid id".into()).into());
     }
@@ -2045,7 +2053,12 @@ pub(crate) async fn load_categories(state: &AppState) -> Result<Vec<AudiobookCat
         .map_err(|e| Error::Database(format!("count categories (decode): {e}")))?;
     let mut counts: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
     for u in usage_rows {
-        if let Some(c) = u.category.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(c) = u
+            .category
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             *counts.entry(c.to_string()).or_default() += 1;
         }
     }
@@ -2106,9 +2119,12 @@ async fn read_category_name(state: &AppState, id: &str) -> Result<String> {
         .map_err(|e| Error::Database(format!("read category: {e}")))?
         .take(0)
         .map_err(|e| Error::Database(format!("read category (decode): {e}")))?;
-    rows.into_iter().next().map(|r| r.name).ok_or_else(|| Error::NotFound {
-        resource: format!("audiobook_category:{id}"),
-    })
+    rows.into_iter()
+        .next()
+        .map(|r| r.name)
+        .ok_or_else(|| Error::NotFound {
+            resource: format!("audiobook_category:{id}"),
+        })
 }
 
 /// SurrealDB record-id charset filter — matches what `is_valid_llm_id`

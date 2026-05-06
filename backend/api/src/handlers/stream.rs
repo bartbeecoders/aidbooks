@@ -125,9 +125,11 @@ pub async fn chapter_video(
         .join(&id)
         .join(&language)
         .join(format!("ch-{n}.video.mp4"));
-    let file = tokio::fs::File::open(&abs).await.map_err(|_| Error::NotFound {
-        resource: format!("animation for audiobook:{id} chapter {n} ({language})"),
-    })?;
+    let file = tokio::fs::File::open(&abs)
+        .await
+        .map_err(|_| Error::NotFound {
+            resource: format!("animation for audiobook:{id} chapter {n} ({language})"),
+        })?;
     let len = file
         .metadata()
         .await
@@ -188,9 +190,11 @@ pub async fn test_manim_video(
         .join(&id)
         .join("test-manim")
         .join(format!("{test_id}.mp4"));
-    let file = tokio::fs::File::open(&abs).await.map_err(|_| Error::NotFound {
-        resource: format!("test-manim:{id}/{test_id}"),
-    })?;
+    let file = tokio::fs::File::open(&abs)
+        .await
+        .map_err(|_| Error::NotFound {
+            resource: format!("test-manim:{id}/{test_id}"),
+        })?;
     let len = file
         .metadata()
         .await
@@ -363,9 +367,7 @@ async fn load_cover_rel(state: &AppState, audiobook_id: &str) -> Result<String> 
     let rows: Vec<CoverRow> = state
         .db()
         .inner()
-        .query(format!(
-            "SELECT cover_path FROM audiobook:`{audiobook_id}`"
-        ))
+        .query(format!("SELECT cover_path FROM audiobook:`{audiobook_id}`"))
         .await
         .map_err(|e| Error::Database(format!("load cover_path: {e}")))?
         .take(0)
@@ -405,9 +407,7 @@ pub async fn paragraph_image(
     assert_owner(&state, &id, &user_id).await?;
     if i == 0 {
         return Err(Error::NotFound {
-            resource: format!(
-                "paragraph image 0 for audiobook:{id} chapter {n} paragraph {p}"
-            ),
+            resource: format!("paragraph image 0 for audiobook:{id} chapter {n} paragraph {p}"),
         }
         .into());
     }
@@ -416,9 +416,7 @@ pub async fn paragraph_image(
     let file = tokio::fs::File::open(&abs)
         .await
         .map_err(|_| Error::NotFound {
-            resource: format!(
-                "paragraph image {i} for audiobook:{id} chapter {n} paragraph {p}"
-            ),
+            resource: format!("paragraph image {i} for audiobook:{id} chapter {n} paragraph {p}"),
         })?;
     let len = file
         .metadata()
@@ -623,9 +621,7 @@ async fn primary_language(state: &AppState, audiobook_id: &str) -> Result<String
     let rows: Vec<Row> = state
         .db()
         .inner()
-        .query(format!(
-            "SELECT language FROM audiobook:`{audiobook_id}`"
-        ))
+        .query(format!("SELECT language FROM audiobook:`{audiobook_id}`"))
         .await
         .map_err(|e| Error::Database(format!("primary lang: {e}")))?
         .take(0)

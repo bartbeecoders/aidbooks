@@ -142,12 +142,8 @@ async fn run_one(
     // Honor the admin's `default_for: ["chapter"]` + `priority` ranking and
     // language preference. Falls back to `Config.openrouter_default_model`
     // only when no row matches.
-    let picked = pick_llm_for_roles_lang(
-        state,
-        &[LlmRole::Chapter],
-        book.language.as_deref(),
-    )
-    .await?;
+    let picked =
+        pick_llm_for_roles_lang(state, &[LlmRole::Chapter], book.language.as_deref()).await?;
 
     let req = ChatRequest {
         model: picked.model_id.clone(),

@@ -96,10 +96,7 @@ pub fn register_from_openapi(
                     Some(n) => n.to_string(),
                     None => continue,
                 };
-                let location = p_obj
-                    .get("in")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("query");
+                let location = p_obj.get("in").and_then(|v| v.as_str()).unwrap_or("query");
                 if location != "path" && location != "query" {
                     continue;
                 }
@@ -133,7 +130,10 @@ pub fn register_from_openapi(
             let body_kind = parse_request_body(op.get("requestBody"), &components);
             match &body_kind {
                 BodyKind::None => {}
-                BodyKind::ObjectFlat { schema, required_fields } => {
+                BodyKind::ObjectFlat {
+                    schema,
+                    required_fields,
+                } => {
                     if let Some(obj) = schema.get("properties").and_then(|v| v.as_object()) {
                         for (k, v) in obj {
                             // Don't let body fields shadow path/query names.
@@ -238,10 +238,7 @@ fn parse_request_body(rb: Option<&Value>, components: &Value) -> BodyKind {
     let schema = rb
         .get("content")
         .and_then(|v| v.as_object())
-        .and_then(|c| {
-            c.get("application/json")
-                .or_else(|| c.values().next())
-        })
+        .and_then(|c| c.get("application/json").or_else(|| c.values().next()))
         .and_then(|c| c.get("schema"))
         .cloned();
     let schema = match schema {
@@ -280,10 +277,7 @@ fn resolve_ref(schema: &Value, components: &Value) -> Value {
     if let Some(r) = schema.get("$ref").and_then(|v| v.as_str()) {
         // e.g. "#/components/schemas/CreateAudiobookRequest"
         if let Some(rest) = r.strip_prefix("#/components/schemas/") {
-            if let Some(found) = components
-                .pointer(&format!("/schemas/{rest}"))
-                .cloned()
-            {
+            if let Some(found) = components.pointer(&format!("/schemas/{rest}")).cloned() {
                 return found;
             }
         }
@@ -445,17 +439,16 @@ impl ToolHandler for HttpProxyTool {
         let path = substitute_path(&self.path_template, &self.path_params, &args)?;
         let query = collect_query(&self.query_params, &args);
 
-        let body = build_body(&self.body_kind, &self.path_params, &self.query_params, &args);
+        let body = build_body(
+            &self.body_kind,
+            &self.path_params,
+            &self.query_params,
+            &args,
+        );
 
         let resp = self
             .client
-            .call(
-                &self.method,
-                &path,
-                &query,
-                body,
-                token.as_deref(),
-            )
+            .call(&self.method, &path, &query, body, token.as_deref())
             .await
             .map_err(|e| e.to_string())?;
 
@@ -592,7 +585,10 @@ mod tests {
 
     #[test]
     fn slug_handles_punctuation() {
-        assert_eq!(slug("/audiobook/:id/generate-chapters"), "audiobook_id_generate_chapters");
+        assert_eq!(
+            slug("/audiobook/:id/generate-chapters"),
+            "audiobook_id_generate_chapters"
+        );
         assert_eq!(slug("admin"), "admin");
         assert_eq!(slug("listAudiobookCategories"), "listaudiobookcategories");
     }
@@ -605,10 +601,22 @@ mod tests {
             "audiobook_generate_chapters"
         );
         assert_eq!(derive_tool_name(&op, "get", "/audiobook"), "audiobook_list");
-        assert_eq!(derive_tool_name(&op, "post", "/audiobook"), "audiobook_create");
-        assert_eq!(derive_tool_name(&op, "get", "/audiobook/{id}"), "audiobook_get");
-        assert_eq!(derive_tool_name(&op, "patch", "/audiobook/{id}"), "audiobook_update");
-        assert_eq!(derive_tool_name(&op, "delete", "/audiobook/{id}"), "audiobook_delete");
+        assert_eq!(
+            derive_tool_name(&op, "post", "/audiobook"),
+            "audiobook_create"
+        );
+        assert_eq!(
+            derive_tool_name(&op, "get", "/audiobook/{id}"),
+            "audiobook_get"
+        );
+        assert_eq!(
+            derive_tool_name(&op, "patch", "/audiobook/{id}"),
+            "audiobook_update"
+        );
+        assert_eq!(
+            derive_tool_name(&op, "delete", "/audiobook/{id}"),
+            "audiobook_delete"
+        );
         assert_eq!(derive_tool_name(&op, "get", "/health"), "health_list");
         assert_eq!(
             derive_tool_name(&op, "post", "/admin/jobs/{id}/retry"),
@@ -624,15 +632,11 @@ mod tests {
     fn substitute_axum_style_params() {
         let mut args = Map::new();
         args.insert("id".into(), Value::String("abc".into()));
-        let path = substitute_path(
-            "/audiobook/:id/chapter/:n",
-            &["id".into(), "n".into()],
-            &{
-                let mut a = args;
-                a.insert("n".into(), Value::Number(7.into()));
-                a
-            },
-        )
+        let path = substitute_path("/audiobook/:id/chapter/:n", &["id".into(), "n".into()], &{
+            let mut a = args;
+            a.insert("n".into(), Value::Number(7.into()));
+            a
+        })
         .unwrap();
         assert_eq!(path, "/audiobook/abc/chapter/7");
     }

@@ -51,15 +51,18 @@ pub struct PublishYoutubeHandler(pub AppState);
 impl JobHandler for PublishYoutubeHandler {
     async fn run(&self, ctx: &JobContext, job: JobRow) -> Result<JobOutcome> {
         let state = &self.0;
-        let user_id = job.user_id.clone().ok_or_else(|| {
-            Error::Database("publish_youtube: missing user".into())
-        })?;
-        let audiobook_id = job.audiobook_id.clone().ok_or_else(|| {
-            Error::Database("publish_youtube: missing audiobook".into())
-        })?;
-        let language = job.language.clone().ok_or_else(|| {
-            Error::Database("publish_youtube: missing language".into())
-        })?;
+        let user_id = job
+            .user_id
+            .clone()
+            .ok_or_else(|| Error::Database("publish_youtube: missing user".into()))?;
+        let audiobook_id = job
+            .audiobook_id
+            .clone()
+            .ok_or_else(|| Error::Database("publish_youtube: missing audiobook".into()))?;
+        let language = job
+            .language
+            .clone()
+            .ok_or_else(|| Error::Database("publish_youtube: missing language".into()))?;
         let user = UserId(user_id.clone());
 
         // Look the publication row up by (audiobook, language) — the unique
@@ -193,12 +196,7 @@ impl JobHandler for PublishYoutubeHandler {
                     // this is fatal.
                     if matches!(e, Error::Unauthorized) {
                         drop_account(state, &user).await.ok();
-                        return Ok(fail(
-                            state,
-                            &publication_id,
-                            Error::Unauthorized,
-                        )
-                        .await);
+                        return Ok(fail(state, &publication_id, Error::Unauthorized).await);
                     }
                     return Ok(JobOutcome::Retry(e.to_string()));
                 }
@@ -225,7 +223,10 @@ impl JobHandler for PublishYoutubeHandler {
         let podcast_playlist_id = if review {
             None
         } else {
-            load_podcast_playlist(state, &audiobook_id).await.ok().flatten()
+            load_podcast_playlist(state, &audiobook_id)
+                .await
+                .ok()
+                .flatten()
         };
 
         let effective_mode = if book.is_short.unwrap_or(false) {
@@ -377,8 +378,7 @@ async fn run_single(
                 .await);
             }
         }
-        if let Err(e) = concat_animated_chapters(state, &chapter_videos, &mp4_path).await
-        {
+        if let Err(e) = concat_animated_chapters(state, &chapter_videos, &mp4_path).await {
             return Ok(fail(state, publication_id, e).await);
         }
     } else {
@@ -394,10 +394,7 @@ async fn run_single(
         let mut image_segments: Vec<ImageSegment> = Vec::new();
         for c in chapters {
             image_segments.extend(build_chapter_image_segments(
-                c,
-                cover_path,
-                storage,
-                is_short,
+                c, cover_path, storage, is_short,
             ));
         }
 
@@ -472,33 +469,18 @@ async fn run_single(
         description_override,
         footer,
     );
-    let upload_result = match upload_one(
-        ctx,
-        job,
-        access_token,
-        &mp4_path,
-        &metadata,
-        0.35,
-        0.99,
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(Error::Unauthorized) => {
-            drop_account(state, user).await.ok();
-            return Ok(fail(state, publication_id, Error::Unauthorized).await);
-        }
-        Err(e) => return Ok(JobOutcome::Retry(e.to_string())),
-    };
+    let upload_result =
+        match upload_one(ctx, job, access_token, &mp4_path, &metadata, 0.35, 0.99).await {
+            Ok(r) => r,
+            Err(Error::Unauthorized) => {
+                drop_account(state, user).await.ok();
+                return Ok(fail(state, publication_id, Error::Unauthorized).await);
+            }
+            Err(e) => return Ok(JobOutcome::Retry(e.to_string())),
+        };
 
     let video_url = format!("https://youtu.be/{}", upload_result.video_id);
-    if let Err(e) = mark_published(
-        state,
-        publication_id,
-        &upload_result.video_id,
-        &video_url,
-    )
-    .await
+    if let Err(e) = mark_published(state, publication_id, &upload_result.video_id, &video_url).await
     {
         warn!(error = %e, "publish_youtube: persist result failed");
     }
@@ -508,20 +490,11 @@ async fn run_single(
     // the upload back — the user can re-add the video on YouTube directly
     // or re-trigger the publish, which is idempotent.
     if let Some(playlist_id) = podcast_playlist_id {
-        match playlist::add_video(
-            access_token,
-            playlist_id,
-            &upload_result.video_id,
-            None,
-        )
-        .await
-        {
+        match playlist::add_video(access_token, playlist_id, &upload_result.video_id, None).await {
             Ok(()) => {
-                let playlist_url =
-                    format!("https://www.youtube.com/playlist?list={playlist_id}");
+                let playlist_url = format!("https://www.youtube.com/playlist?list={playlist_id}");
                 if let Err(e) =
-                    mark_playlist_created(state, publication_id, playlist_id, &playlist_url)
-                        .await
+                    mark_playlist_created(state, publication_id, playlist_id, &playlist_url).await
                 {
                     warn!(error = %e, "publish_youtube: persist podcast playlist failed");
                 }
@@ -740,8 +713,7 @@ async fn run_playlist(
             // single full-chapter segment with chapter art (or cover).
             // Playlist mode is gated to non-Short books at the dispatch
             // site, so the standard slideshow tuning applies.
-            let image_segments =
-                build_chapter_image_segments(ch, cover_path, storage, false);
+            let image_segments = build_chapter_image_segments(ch, cover_path, storage, false);
 
             let chapter_wav = state
                 .config()
@@ -843,14 +815,8 @@ async fn run_playlist(
         // Best-effort custom thumbnail so each chapter tile in the
         // playlist shows its own art rather than YouTube's auto-pick
         // (which collapses to a near-identical frame across chapters).
-        upload_chapter_thumbnail(
-            state,
-            access_token,
-            &upload_result.video_id,
-            ch,
-            cover_path,
-        )
-        .await;
+        upload_chapter_thumbnail(state, access_token, &upload_result.video_id, ch, cover_path)
+            .await;
 
         // Best-effort caption upload — failures here don't fail the
         // chapter publish, but they're logged so admins can re-attempt.
@@ -876,14 +842,8 @@ async fn run_playlist(
                 // the first video lands — the call is idempotent so
                 // repeating it on later episodes is cheap.
                 if playlist_is_podcast && idx == 0 {
-                    try_designate_podcast(
-                        state,
-                        access_token,
-                        &playlist.id,
-                        &book.title,
-                        language,
-                    )
-                    .await;
+                    try_designate_podcast(state, access_token, &playlist.id, &book.title, language)
+                        .await;
                 }
             }
             Err(Error::Unauthorized) => {
@@ -1026,7 +986,6 @@ async fn run_playlist_preview(
 // ---------------------------------------------------------------------------
 // Encoding
 // ---------------------------------------------------------------------------
-
 
 /// One image slot in the slideshow video track: the image to display
 /// and how long it stays on screen. Sum of every segment's duration_ms
@@ -1355,10 +1314,7 @@ where
             per_segment_composite.push(cached.clone());
             continue;
         }
-        let stem = src_abs
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("bg");
+        let stem = src_abs.file_stem().and_then(|s| s.to_str()).unwrap_or("bg");
         // Distinct cache filename per orientation so a horizontal +
         // vertical encode of the same source don't clobber each other.
         let suffix = if vertical { "v" } else { "h" };
@@ -1386,7 +1342,10 @@ where
     //   * audio concat input
     //   * `concat=n=N:v=1:a=0` filter to splice the video segments
     let mut cmd = tokio::process::Command::new(bin);
-    cmd.arg("-y").arg("-hide_banner").arg("-loglevel").arg("error");
+    cmd.arg("-y")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error");
 
     for (seg, composite) in images.iter().zip(per_segment_composite.iter()) {
         let dur_secs = seg.duration_ms as f64 / 1000.0;
@@ -1446,21 +1405,35 @@ where
     }
     cmd.arg("-map").arg(format!("{audio_input_index}:a"));
 
-    cmd.arg("-c:v").arg("libx264")
-        .arg("-tune").arg("stillimage")
-        .arg("-preset").arg("veryfast")
-        .arg("-profile:v").arg("high")
-        .arg("-level:v").arg("4.0")
-        .arg("-crf").arg("22")
-        .arg("-pix_fmt").arg("yuv420p")
-        .arg("-r").arg("5")
-        .arg("-g").arg("300")
-        .arg("-c:a").arg("aac")
-        .arg("-b:a").arg("192k")
-        .arg("-ar").arg("48000")
+    cmd.arg("-c:v")
+        .arg("libx264")
+        .arg("-tune")
+        .arg("stillimage")
+        .arg("-preset")
+        .arg("veryfast")
+        .arg("-profile:v")
+        .arg("high")
+        .arg("-level:v")
+        .arg("4.0")
+        .arg("-crf")
+        .arg("22")
+        .arg("-pix_fmt")
+        .arg("yuv420p")
+        .arg("-r")
+        .arg("5")
+        .arg("-g")
+        .arg("300")
+        .arg("-c:a")
+        .arg("aac")
+        .arg("-b:a")
+        .arg("192k")
+        .arg("-ar")
+        .arg("48000")
         .arg("-shortest")
-        .arg("-movflags").arg("+faststart")
-        .arg("-progress").arg("pipe:1")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg("-progress")
+        .arg("pipe:1")
         .arg("-nostats")
         .arg(out_path)
         .stdout(std::process::Stdio::piped())
@@ -1637,10 +1610,14 @@ async fn compose_background(bin: &str, src: &Path, dest: &Path, vertical: bool) 
     let status = tokio::process::Command::new(bin)
         .arg("-y")
         .arg("-hide_banner")
-        .arg("-loglevel").arg("error")
-        .arg("-i").arg(src)
-        .arg("-frames:v").arg("1")
-        .arg("-vf").arg(composite_filter)
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-i")
+        .arg(src)
+        .arg("-frames:v")
+        .arg("1")
+        .arg("-vf")
+        .arg(composite_filter)
         .arg(dest)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1687,7 +1664,8 @@ async fn upload_one(
     );
     let upload_url = upload::start_session(access_token, metadata, total_bytes).await?;
 
-    ctx.progress(job, "uploading", span_start.clamp(0.0, 0.99)).await;
+    ctx.progress(job, "uploading", span_start.clamp(0.0, 0.99))
+        .await;
 
     let job_for_progress = job.clone();
     let ctx_for_progress = ctx.clone();
@@ -1702,7 +1680,8 @@ async fn upload_one(
                 sent as f32 / total as f32
             };
             let overall = span_start + (frac * span);
-            ctx.progress(&job, "uploading", overall.clamp(0.0, 0.99)).await;
+            ctx.progress(&job, "uploading", overall.clamp(0.0, 0.99))
+                .await;
         }
     })
     .await
@@ -1859,7 +1838,12 @@ fn render_description(book: &DbAudiobook, chapters: &[DbChapter], language: &str
     // book text in the publish language and the most useful context
     // a YouTube viewer can scan before pressing play.
     for ch in chapters {
-        if let Some(syn) = ch.synopsis.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(syn) = ch
+            .synopsis
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             s.push_str(syn);
             s.push_str("\n\n");
         }
@@ -1917,7 +1901,9 @@ fn render_playlist_description(
 /// the helper is a no-op when the admin hasn't configured one.
 fn append_footer(body: &str, footer: Option<&str>) -> String {
     let trimmed = footer.map(str::trim).filter(|s| !s.is_empty());
-    let Some(f) = trimmed else { return body.to_string() };
+    let Some(f) = trimmed else {
+        return body.to_string();
+    };
     let mut out = body.trim_end().to_string();
     out.push_str("\n\n");
     out.push_str(f);
@@ -1953,7 +1939,10 @@ async fn load_description_footer(state: &AppState, language: &str) -> Option<Str
         .ok()?
         .take(0)
         .ok()?;
-    rows.into_iter().next().map(|r| r.text).filter(|s| !s.trim().is_empty())
+    rows.into_iter()
+        .next()
+        .map(|r| r.text)
+        .filter(|s| !s.trim().is_empty())
 }
 
 /// Builds a compact "Models used" block from `generation_event`, or
@@ -2103,10 +2092,7 @@ async fn load_credits_block(state: &AppState, audiobook_id: &str) -> Option<Stri
 /// Splices an optional credits block into the existing per-language
 /// admin footer so the rest of the publisher's plumbing stays unchanged.
 /// The two are joined by a blank line; either side may be absent.
-fn combine_credits_and_footer(
-    credits: Option<&str>,
-    footer: Option<&str>,
-) -> Option<String> {
+fn combine_credits_and_footer(credits: Option<&str>, footer: Option<&str>) -> Option<String> {
     let c = credits.map(str::trim).filter(|s| !s.is_empty());
     let f = footer.map(str::trim).filter(|s| !s.is_empty());
     match (c, f) {
@@ -2353,8 +2339,8 @@ async fn resolve_access_token(state: &AppState, user: &UserId) -> Result<String>
     let pepper = state.config().password_pepper.as_bytes();
     let refresh = encrypt::decrypt(&row.refresh_token_enc, pepper)?;
     let cfg = state.config();
-    let resp = oauth::refresh_access(&cfg.youtube_client_id, &cfg.youtube_client_secret, &refresh)
-        .await?;
+    let resp =
+        oauth::refresh_access(&cfg.youtube_client_id, &cfg.youtube_client_secret, &refresh).await?;
     Ok(resp.access_token)
 }
 
@@ -2392,10 +2378,7 @@ async fn try_designate_podcast(
     .await
     {
         Ok(()) => {
-            tracing::info!(
-                playlist_id,
-                "publish_youtube: podcast designation enabled"
-            );
+            tracing::info!(playlist_id, "publish_youtube: podcast designation enabled");
         }
         Err(Error::Conflict(msg)) => {
             // YouTube still considers the playlist ineligible (e.g.
@@ -2841,9 +2824,7 @@ async fn upload_chapter_thumbnail(
         return;
     }
     let mime = crate::handlers::cover::detect_mime(&bytes);
-    if let Err(e) =
-        upload::upload_thumbnail(access_token, video_id, bytes, mime).await
-    {
+    if let Err(e) = upload::upload_thumbnail(access_token, video_id, bytes, mime).await {
         warn!(
             error = %e,
             video_id,
@@ -2868,8 +2849,7 @@ async fn upload_chapter_captions(
     if srt.trim().is_empty() {
         return;
     }
-    if let Err(e) =
-        upload::upload_caption(access_token, video_id, language, "AidBooks", &srt).await
+    if let Err(e) = upload::upload_caption(access_token, video_id, language, "AidBooks", &srt).await
     {
         warn!(
             error = %e,
@@ -2891,4 +2871,3 @@ fn find_cover(state: &AppState, audiobook_id: &str) -> Option<PathBuf> {
     }
     None
 }
-

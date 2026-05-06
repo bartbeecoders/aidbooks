@@ -128,9 +128,8 @@ pub async fn render_chapter(
         .and_then(|s| s.to_str())
         .unwrap_or("video");
     let scratch = parent.join(format!("{stem}.segments-tmp"));
-    std::fs::create_dir_all(&scratch).map_err(|e| {
-        RenderFailure::Transient(format!("create segments scratch dir: {e}"))
-    })?;
+    std::fs::create_dir_all(&scratch)
+        .map_err(|e| RenderFailure::Transient(format!("create segments scratch dir: {e}")))?;
 
     let total_scenes = spec.scenes.len().max(1);
     let mut segment_paths: Vec<PathBuf> = Vec::with_capacity(spec.scenes.len());
@@ -216,26 +215,12 @@ pub async fn render_chapter(
                     visual_kind = kind,
                     "segments: Manim sidecar not configured (or custom_manim code missing); rendering prose fallback"
                 );
-                render_prose_segment(
-                    spec,
-                    scene,
-                    &seg_path,
-                    bin,
-                    hwenc_override,
-                    vaapi_device,
-                )
-                .await
+                render_prose_segment(spec, scene, &seg_path, bin, hwenc_override, vaapi_device)
+                    .await
             }
             _ => {
-                render_prose_segment(
-                    spec,
-                    scene,
-                    &seg_path,
-                    bin,
-                    hwenc_override,
-                    vaapi_device,
-                )
-                .await
+                render_prose_segment(spec, scene, &seg_path, bin, hwenc_override, vaapi_device)
+                    .await
             }
         };
 
@@ -319,9 +304,15 @@ async fn render_prose_segment(
     vaapi_device: &str,
 ) -> Result<(), RenderFailure> {
     let (start_ms, end_ms) = match scene {
-        Scene::Title { start_ms, end_ms, .. }
-        | Scene::Paragraph { start_ms, end_ms, .. }
-        | Scene::Outro { start_ms, end_ms, .. } => (*start_ms, *end_ms),
+        Scene::Title {
+            start_ms, end_ms, ..
+        }
+        | Scene::Paragraph {
+            start_ms, end_ms, ..
+        }
+        | Scene::Outro {
+            start_ms, end_ms, ..
+        } => (*start_ms, *end_ms),
     };
     let duration_ms = end_ms.saturating_sub(start_ms).max(1);
 
@@ -419,9 +410,7 @@ async fn build_silent_wav(
         .arg("-f")
         .arg("lavfi")
         .arg("-i")
-        .arg(format!(
-            "anullsrc=channel_layout=mono:sample_rate=24000"
-        ))
+        .arg(format!("anullsrc=channel_layout=mono:sample_rate=24000"))
         .arg("-t")
         .arg(format!("{secs:.3}"))
         .arg("-c:a")
@@ -464,14 +453,11 @@ async fn concat_segments(
         // ffmpeg's concat demuxer needs file paths quoted (single
         // quotes) to tolerate special chars. Escape any embedded
         // single quote per its manual: `'\''`.
-        let quoted = seg
-            .to_string_lossy()
-            .replace('\'', r"'\''");
+        let quoted = seg.to_string_lossy().replace('\'', r"'\''");
         list.push_str(&format!("file '{quoted}'\n"));
     }
-    std::fs::write(&list_path, list).map_err(|e| {
-        RenderFailure::Transient(format!("write concat list: {e}"))
-    })?;
+    std::fs::write(&list_path, list)
+        .map_err(|e| RenderFailure::Transient(format!("write concat list: {e}")))?;
 
     let mut cmd = Command::new(ffmpeg_bin);
     cmd.arg("-y")

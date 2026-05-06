@@ -53,12 +53,7 @@ pub type SharedTts = std::sync::Arc<dyn TtsClient>;
 /// Factory: pick the right implementation based on whether `xai_api_key`
 /// is set. Falls back to the mock on any construction error. Language is
 /// passed per call (see `TtsClient::synthesize`), not at construction.
-pub fn build(
-    api_key: &str,
-    tts_url: &str,
-    sample_rate_hz: u32,
-    timeout_secs: u64,
-) -> SharedTts {
+pub fn build(api_key: &str, tts_url: &str, sample_rate_hz: u32, timeout_secs: u64) -> SharedTts {
     if api_key.trim().is_empty() {
         return std::sync::Arc::new(mock::MockTts::new(sample_rate_hz));
     }

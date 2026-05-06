@@ -35,7 +35,10 @@ pub fn registry(state: AppState) -> JobHandlerRegistry {
         .register(JobKind::Tts, TtsParentHandler(state.clone()))
         .register(JobKind::TtsChapter, TtsChapterHandler(state.clone()))
         .register(JobKind::Translate, TranslateHandler(state.clone()))
-        .register(JobKind::PublishYoutube, PublishYoutubeHandler(state.clone()))
+        .register(
+            JobKind::PublishYoutube,
+            PublishYoutubeHandler(state.clone()),
+        )
         .register(JobKind::Animate, AnimateParentHandler(state.clone()))
         .register(
             JobKind::AnimateChapter,
@@ -54,12 +57,14 @@ struct ChaptersHandler(AppState);
 #[async_trait]
 impl JobHandler for ChaptersHandler {
     async fn run(&self, ctx: &JobContext, job: JobRow) -> Result<JobOutcome> {
-        let user = job.user_id.clone().ok_or_else(|| {
-            Error::Database("chapters job missing user".into())
-        })?;
-        let audiobook_id = job.audiobook_id.clone().ok_or_else(|| {
-            Error::Database("chapters job missing audiobook".into())
-        })?;
+        let user = job
+            .user_id
+            .clone()
+            .ok_or_else(|| Error::Database("chapters job missing user".into()))?;
+        let audiobook_id = job
+            .audiobook_id
+            .clone()
+            .ok_or_else(|| Error::Database("chapters job missing audiobook".into()))?;
 
         ctx.progress(&job, "starting", 0.0).await;
         // Sequential by design — chapter N uses chapter N-1's ending for
@@ -117,7 +122,10 @@ impl JobHandler for ChaptersHandler {
                         publish_job_snapshot(ctx, &audiobook_id).await;
                     }
                 } else {
-                    tracing::debug!(audiobook_id, "auto-pipeline: no pipeline config — stopping after chapters");
+                    tracing::debug!(
+                        audiobook_id,
+                        "auto-pipeline: no pipeline config — stopping after chapters"
+                    );
                 }
                 Ok(JobOutcome::Done)
             }
@@ -177,7 +185,11 @@ impl JobHandler for CoverHandler {
             .map_err(|e| Error::Database(format!("cover job load (decode): {e}")))?;
         let book = match rows.into_iter().next() {
             Some(b) => b,
-            None => return Ok(JobOutcome::Fatal(format!("audiobook {audiobook_id} not found"))),
+            None => {
+                return Ok(JobOutcome::Fatal(format!(
+                    "audiobook {audiobook_id} not found"
+                )))
+            }
         };
 
         // Branch on `chapter_number` + `payload.paragraph_index`. Same
@@ -390,17 +402,14 @@ async fn run_paragraph_image(
         }
     };
 
-    let paragraph = ch
-        .paragraphs
-        .as_ref()
-        .and_then(|ps| {
-            ps.iter().find(|p| {
-                p.get("index")
-                    .and_then(serde_json::Value::as_i64)
-                    .map(|i| i == paragraph_index as i64)
-                    .unwrap_or(false)
-            })
-        });
+    let paragraph = ch.paragraphs.as_ref().and_then(|ps| {
+        ps.iter().find(|p| {
+            p.get("index")
+                .and_then(serde_json::Value::as_i64)
+                .map(|i| i == paragraph_index as i64)
+                .unwrap_or(false)
+        })
+    });
     let para_obj = match paragraph {
         Some(p) => p,
         None => {
@@ -487,9 +496,9 @@ impl JobHandler for ChapterParagraphsHandler {
             .audiobook_id
             .clone()
             .ok_or_else(|| Error::Database("chapter_paragraphs missing audiobook".into()))?;
-        let chapter_number = job.chapter_number.ok_or_else(|| {
-            Error::Database("chapter_paragraphs missing chapter_number".into())
-        })?;
+        let chapter_number = job
+            .chapter_number
+            .ok_or_else(|| Error::Database("chapter_paragraphs missing chapter_number".into()))?;
 
         // The orchestrator's payload carries the per-book
         // `images_per_paragraph` knob — captured at enqueue time so
@@ -546,9 +555,7 @@ impl JobHandler for ChapterParagraphsHandler {
                     )))
                 }
             },
-            Err(e) => {
-                return Ok(JobOutcome::Retry(format!("decode audiobook: {e}")))
-            }
+            Err(e) => return Ok(JobOutcome::Retry(format!("decode audiobook: {e}"))),
         };
 
         // Load chapter (primary language only — translations share the
@@ -586,9 +593,7 @@ impl JobHandler for ChapterParagraphsHandler {
                     )))
                 }
             },
-            Err(e) => {
-                return Ok(JobOutcome::Retry(format!("decode chapter: {e}")))
-            }
+            Err(e) => return Ok(JobOutcome::Retry(format!("decode chapter: {e}"))),
         };
         let body = chapter.body_md.as_deref().unwrap_or("");
         if body.trim().is_empty() {
@@ -650,45 +655,39 @@ impl JobHandler for ChapterParagraphsHandler {
         // marked `custom_manim`. No-op when the classifier picked
         // none (almost always — the prompt instructs the model to
         // use the custom escape hatch sparingly).
-        let manim_codes: std::collections::HashMap<u32, String> = if is_stem
-            && visuals
-                .values()
-                .any(|v| v.visual_kind == "custom_manim")
-        {
-            ctx.progress(&job, "generating_manim_code", 0.65).await;
-            let kinds_only: std::collections::HashMap<u32, String> = visuals
-                .iter()
-                .map(|(k, v)| (*k, v.visual_kind.clone()))
-                .collect();
-            // We don't yet know the per-paragraph audio durations
-            // here (audio is rendered chapter-wide later). Use the
-            // generation::manim_code default — the publisher floors
-            // run_seconds at MIN_RUN_SECONDS anyway.
-            let durations = std::collections::HashMap::new();
-            let custom = crate::generation::manim_code::custom_paragraphs(
-                &paragraphs,
-                &kinds_only,
-                &durations,
-            );
-            let codes = crate::generation::manim_code::generate_manim_code(
-                &self.0,
-                &UserId(user_raw.clone()),
-                &audiobook_id,
-                &book.title,
-                &book.topic,
-                book.genre.as_deref(),
-                &chapter.title,
-                "library",
-                &custom,
-            )
-            .await;
-            codes
-                .into_iter()
-                .map(|(k, v)| (k, v.code))
-                .collect()
-        } else {
-            std::collections::HashMap::new()
-        };
+        let manim_codes: std::collections::HashMap<u32, String> =
+            if is_stem && visuals.values().any(|v| v.visual_kind == "custom_manim") {
+                ctx.progress(&job, "generating_manim_code", 0.65).await;
+                let kinds_only: std::collections::HashMap<u32, String> = visuals
+                    .iter()
+                    .map(|(k, v)| (*k, v.visual_kind.clone()))
+                    .collect();
+                // We don't yet know the per-paragraph audio durations
+                // here (audio is rendered chapter-wide later). Use the
+                // generation::manim_code default — the publisher floors
+                // run_seconds at MIN_RUN_SECONDS anyway.
+                let durations = std::collections::HashMap::new();
+                let custom = crate::generation::manim_code::custom_paragraphs(
+                    &paragraphs,
+                    &kinds_only,
+                    &durations,
+                );
+                let codes = crate::generation::manim_code::generate_manim_code(
+                    &self.0,
+                    &UserId(user_raw.clone()),
+                    &audiobook_id,
+                    &book.title,
+                    &book.topic,
+                    book.genre.as_deref(),
+                    &chapter.title,
+                    "library",
+                    &custom,
+                )
+                .await;
+                codes.into_iter().map(|(k, v)| (k, v.code)).collect()
+            } else {
+                std::collections::HashMap::new()
+            };
 
         let chapter_id = chapter.id.id.to_raw();
         let merged = crate::generation::paragraphs::merge_for_persist(
@@ -697,9 +696,7 @@ impl JobHandler for ChapterParagraphsHandler {
             &visuals,
             &manim_codes,
         );
-        if let Err(e) =
-            crate::generation::paragraphs::persist(&self.0, &chapter_id, merged).await
-        {
+        if let Err(e) = crate::generation::paragraphs::persist(&self.0, &chapter_id, merged).await {
             return Ok(JobOutcome::Retry(format!("persist paragraphs: {e}")));
         }
 
@@ -768,12 +765,14 @@ struct ChapterRefRow {
 #[async_trait]
 impl JobHandler for TtsParentHandler {
     async fn run(&self, ctx: &JobContext, job: JobRow) -> Result<JobOutcome> {
-        let user_id = job.user_id.clone().ok_or_else(|| {
-            Error::Database("tts job missing user".into())
-        })?;
-        let audiobook_id = job.audiobook_id.clone().ok_or_else(|| {
-            Error::Database("tts job missing audiobook".into())
-        })?;
+        let user_id = job
+            .user_id
+            .clone()
+            .ok_or_else(|| Error::Database("tts job missing user".into()))?;
+        let audiobook_id = job
+            .audiobook_id
+            .clone()
+            .ok_or_else(|| Error::Database("tts job missing audiobook".into()))?;
 
         set_audiobook_status(&self.0, &audiobook_id, "chapters_running").await?;
         ctx.progress(&job, "fan_out", 0.0).await;
@@ -836,10 +835,7 @@ impl JobHandler for TtsParentHandler {
         // Aggregate: poll children until all terminal.
         loop {
             let children = ctx.repo.children(&job.id).await?;
-            let done = children
-                .iter()
-                .filter(|c| c.status.is_terminal())
-                .count();
+            let done = children.iter().filter(|c| c.status.is_terminal()).count();
             let any_dead = children
                 .iter()
                 .any(|c| c.status == listenai_core::domain::JobStatus::Dead);
@@ -891,15 +887,17 @@ struct TtsChapterHandler(AppState);
 #[async_trait]
 impl JobHandler for TtsChapterHandler {
     async fn run(&self, ctx: &JobContext, job: JobRow) -> Result<JobOutcome> {
-        let user_id = job.user_id.clone().ok_or_else(|| {
-            Error::Database("tts_chapter job missing user".into())
-        })?;
-        let audiobook_id = job.audiobook_id.clone().ok_or_else(|| {
-            Error::Database("tts_chapter job missing audiobook".into())
-        })?;
-        let chapter_number = job.chapter_number.ok_or_else(|| {
-            Error::Database("tts_chapter job missing chapter_number".into())
-        })?;
+        let user_id = job
+            .user_id
+            .clone()
+            .ok_or_else(|| Error::Database("tts_chapter job missing user".into()))?;
+        let audiobook_id = job
+            .audiobook_id
+            .clone()
+            .ok_or_else(|| Error::Database("tts_chapter job missing audiobook".into()))?;
+        let chapter_number = job
+            .chapter_number
+            .ok_or_else(|| Error::Database("tts_chapter job missing chapter_number".into()))?;
         let language = match &job.language {
             Some(l) => l.clone(),
             None => primary_language(&self.0, &audiobook_id).await?,
@@ -939,12 +937,14 @@ struct TranslateHandler(AppState);
 #[async_trait]
 impl JobHandler for TranslateHandler {
     async fn run(&self, ctx: &JobContext, job: JobRow) -> Result<JobOutcome> {
-        let user = job.user_id.clone().ok_or_else(|| {
-            Error::Database("translate job missing user".into())
-        })?;
-        let audiobook_id = job.audiobook_id.clone().ok_or_else(|| {
-            Error::Database("translate job missing audiobook".into())
-        })?;
+        let user = job
+            .user_id
+            .clone()
+            .ok_or_else(|| Error::Database("translate job missing user".into()))?;
+        let audiobook_id = job
+            .audiobook_id
+            .clone()
+            .ok_or_else(|| Error::Database("translate job missing audiobook".into()))?;
         let target = job
             .language
             .clone()
@@ -1049,11 +1049,7 @@ impl JobHandler for GcHandler {
 // Small helpers
 // ---------------------------------------------------------------------------
 
-async fn set_audiobook_status(
-    state: &AppState,
-    audiobook_id: &str,
-    status: &str,
-) -> Result<()> {
+async fn set_audiobook_status(state: &AppState, audiobook_id: &str, status: &str) -> Result<()> {
     state
         .db()
         .inner()
@@ -1313,7 +1309,10 @@ async fn enqueue_auto_publish(
     // Short flag was flipped on can't land the upload in playlist
     // mode. Mirrors the override on the manual publish handler and in
     // the publisher itself.
-    if load_audiobook_is_short(state, audiobook_id).await.unwrap_or(false) {
+    if load_audiobook_is_short(state, audiobook_id)
+        .await
+        .unwrap_or(false)
+    {
         mode = "single".to_string();
     }
 
@@ -1370,8 +1369,7 @@ async fn enqueue_auto_publish(
     } else {
         info!(
             audiobook_id,
-            publication_id,
-            "auto-pipeline: publish_youtube enqueued"
+            publication_id, "auto-pipeline: publish_youtube enqueued"
         );
     }
 }
@@ -1385,9 +1383,7 @@ async fn primary_language(state: &AppState, audiobook_id: &str) -> Result<String
     let rows: Vec<Row> = state
         .db()
         .inner()
-        .query(format!(
-            "SELECT language FROM audiobook:`{audiobook_id}`"
-        ))
+        .query(format!("SELECT language FROM audiobook:`{audiobook_id}`"))
         .await
         .map_err(|e| Error::Database(format!("primary_language: {e}")))?
         .take(0)
@@ -1412,9 +1408,7 @@ async fn load_audiobook_is_short(state: &AppState, audiobook_id: &str) -> Result
     let rows: Vec<Row> = state
         .db()
         .inner()
-        .query(format!(
-            "SELECT is_short FROM audiobook:`{audiobook_id}`"
-        ))
+        .query(format!("SELECT is_short FROM audiobook:`{audiobook_id}`"))
         .await
         .map_err(|e| Error::Database(format!("auto-publish is_short: {e}")))?
         .take(0)

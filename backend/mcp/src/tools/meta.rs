@@ -114,25 +114,46 @@ impl ToolHandler for StreamUrl {
             .get("audiobook_id")
             .and_then(|v| v.as_str())
             .ok_or("audiobook_id required")?;
-        let kind = args.get("kind").and_then(|v| v.as_str()).ok_or("kind required")?;
+        let kind = args
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .ok_or("kind required")?;
         let path = match kind {
             "cover" => format!("/audiobook/{id}/cover"),
             "chapter_audio" => {
-                let n = args.get("chapter").and_then(|v| v.as_u64()).ok_or("chapter required")?;
+                let n = args
+                    .get("chapter")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("chapter required")?;
                 format!("/audiobook/{id}/chapter/{n}/audio")
             }
             "chapter_art" => {
-                let n = args.get("chapter").and_then(|v| v.as_u64()).ok_or("chapter required")?;
+                let n = args
+                    .get("chapter")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("chapter required")?;
                 format!("/audiobook/{id}/chapter/{n}/art")
             }
             "chapter_waveform" => {
-                let n = args.get("chapter").and_then(|v| v.as_u64()).ok_or("chapter required")?;
+                let n = args
+                    .get("chapter")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("chapter required")?;
                 format!("/audiobook/{id}/chapter/{n}/waveform")
             }
             "paragraph_image" => {
-                let n = args.get("chapter").and_then(|v| v.as_u64()).ok_or("chapter required")?;
-                let p = args.get("paragraph").and_then(|v| v.as_u64()).ok_or("paragraph required")?;
-                let i = args.get("image").and_then(|v| v.as_u64()).ok_or("image required")?;
+                let n = args
+                    .get("chapter")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("chapter required")?;
+                let p = args
+                    .get("paragraph")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("paragraph required")?;
+                let i = args
+                    .get("image")
+                    .and_then(|v| v.as_u64())
+                    .ok_or("image required")?;
                 format!("/audiobook/{id}/chapter/{n}/paragraph/{p}/image/{i}")
             }
             other => return Err(format!("unknown kind `{other}`")),

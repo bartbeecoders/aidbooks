@@ -21,7 +21,9 @@ use std::time::Duration;
 
 use listenai_core::config::{Config, LogFormat};
 use listenai_core::domain::JobKind;
-use listenai_jobs::{repo::EnqueueRequest, runtime, JobContext, JobRepo, ProgressHub, WorkerConfig};
+use listenai_jobs::{
+    repo::EnqueueRequest, runtime, JobContext, JobRepo, ProgressHub, WorkerConfig,
+};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[global_allocator]
@@ -87,9 +89,7 @@ async fn run(config: Config) -> anyhow::Result<()> {
         );
     }
     if llm.is_xai_mock() {
-        tracing::info!(
-            "xai_api_key is empty — xAI-provider chat calls will use mock content"
-        );
+        tracing::info!("xai_api_key is empty — xAI-provider chat calls will use mock content");
     }
 
     let tts = tts::build(
@@ -108,19 +108,13 @@ async fn run(config: Config) -> anyhow::Result<()> {
     let job_repo = JobRepo::new(db.clone());
     let hub = ProgressHub::new();
 
-    let app_state = state::AppState::new(
-        config.clone(),
-        db,
-        llm,
-        tts,
-        job_repo.clone(),
-        hub.clone(),
-    );
+    let app_state =
+        state::AppState::new(config.clone(), db, llm, tts, job_repo.clone(), hub.clone());
 
     let registry = jobs::registry(app_state.clone());
     let worker_ctx = JobContext::new(job_repo.clone(), hub.clone());
-    let worker_cfg = WorkerConfig::default()
-        .with_animate_concurrency(config.animate_concurrency as usize);
+    let worker_cfg =
+        WorkerConfig::default().with_animate_concurrency(config.animate_concurrency as usize);
     let worker_handle = runtime::spawn(worker_ctx, registry, worker_cfg).await;
     let gc_scheduler = spawn_gc_scheduler(job_repo.clone());
 

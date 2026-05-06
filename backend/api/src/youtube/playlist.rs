@@ -16,10 +16,8 @@ use listenai_core::{Error, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-const PLAYLISTS_URL: &str =
-    "https://www.googleapis.com/youtube/v3/playlists?part=snippet,status";
-const PLAYLIST_ITEMS_URL: &str =
-    "https://www.googleapis.com/youtube/v3/playlistItems?part=snippet";
+const PLAYLISTS_URL: &str = "https://www.googleapis.com/youtube/v3/playlists?part=snippet,status";
+const PLAYLIST_ITEMS_URL: &str = "https://www.googleapis.com/youtube/v3/playlistItems?part=snippet";
 const PLAYLISTS_DELETE_URL: &str = "https://www.googleapis.com/youtube/v3/playlists";
 
 #[derive(Debug, Clone)]
@@ -99,8 +97,7 @@ pub async fn create_playlist(
         let preview = String::from_utf8_lossy(&bytes);
         // Same shape as update — empty + podcast → failedPrecondition.
         if status.as_u16() == 400
-            && (preview.contains("failedPrecondition")
-                || preview.contains("FAILED_PRECONDITION"))
+            && (preview.contains("failedPrecondition") || preview.contains("FAILED_PRECONDITION"))
         {
             return Err(Error::Conflict(format!(
                 "yt playlist create precondition failed: {}",
@@ -203,8 +200,7 @@ pub async fn update_playlist(
         // must contain at least one episode first. Surface as Conflict so
         // the caller can handle it without parsing strings.
         if status.as_u16() == 400
-            && (preview.contains("failedPrecondition")
-                || preview.contains("FAILED_PRECONDITION"))
+            && (preview.contains("failedPrecondition") || preview.contains("FAILED_PRECONDITION"))
         {
             return Err(Error::Conflict(format!(
                 "yt playlist update precondition failed: {}",

@@ -375,8 +375,7 @@ impl JobRepo {
 
         // 2^attempts seconds * base, capped at 10 minutes to avoid
         // pathological waits.
-        let exp_secs =
-            (base_backoff.num_seconds().max(1) * 2i64.pow(row.attempts.min(8))).min(600);
+        let exp_secs = (base_backoff.num_seconds().max(1) * 2i64.pow(row.attempts.min(8))).min(600);
         let sql = format!(
             r#"UPDATE job:`{jid}` SET
                 status = "queued",

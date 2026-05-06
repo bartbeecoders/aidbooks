@@ -105,10 +105,7 @@ pub fn build_router(state: AppState) -> Router {
             "/audiobook/:id/generate-audio",
             post(handlers::audiobook::generate_audio),
         )
-        .route(
-            "/audiobook/:id/animate",
-            post(handlers::audiobook::animate),
-        )
+        .route("/audiobook/:id/animate", post(handlers::audiobook::animate))
         .route(
             "/audiobook/:id/chapter/:n/animate",
             post(handlers::audiobook::animate_chapter),
@@ -171,29 +168,20 @@ pub fn build_router(state: AppState) -> Router {
             "/audiobook/:id/translate",
             post(handlers::audiobook::translate),
         )
-        .route(
-            "/audiobook/:id/costs",
-            get(handlers::audiobook::costs),
-        )
+        .route("/audiobook/:id/costs", get(handlers::audiobook::costs))
         // --- Phase 5: jobs + real-time progress ---
         .route(
             "/audiobook/:id/jobs",
             get(handlers::jobs::list_for_audiobook),
         )
-        .route(
-            "/ws/audiobook/:id",
-            get(handlers::ws::audiobook_progress),
-        )
+        .route("/ws/audiobook/:id", get(handlers::ws::audiobook_progress))
         .route("/topics/random", post(handlers::topics::random))
         .route(
             "/topic-templates",
             get(handlers::topic_templates::list_public),
         )
         .route("/voices", get(handlers::catalog::list_voices))
-        .route(
-            "/voices/:id/preview",
-            get(handlers::catalog::preview_voice),
-        )
+        .route("/voices/:id/preview", get(handlers::catalog::preview_voice))
         .route("/llms", get(handlers::catalog::list_llms))
         .route(
             "/audiobook-categories",
@@ -207,8 +195,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/admin/llm/:id",
-            axum::routing::patch(handlers::admin::patch_llm)
-                .delete(handlers::admin::delete_llm),
+            axum::routing::patch(handlers::admin::patch_llm).delete(handlers::admin::delete_llm),
         )
         .route("/admin/voice", get(handlers::admin::list_voices))
         .route(
@@ -229,24 +216,15 @@ pub fn build_router(state: AppState) -> Router {
             "/admin/jobs/:id",
             axum::routing::delete(handlers::admin::delete_job),
         )
-        .route(
-            "/admin/jobs/:id/retry",
-            post(handlers::admin::retry_job),
-        )
-        .route(
-            "/admin/jobs/:id/cancel",
-            post(handlers::admin::cancel_job),
-        )
+        .route("/admin/jobs/:id/retry", post(handlers::admin::retry_job))
+        .route("/admin/jobs/:id/cancel", post(handlers::admin::cancel_job))
         .route("/admin/test/llm", post(handlers::admin::test_llm))
         .route("/admin/test/voice", post(handlers::admin::test_voice))
         .route(
             "/admin/openrouter/models",
             get(handlers::admin::list_openrouter_models),
         )
-        .route(
-            "/admin/xai/models",
-            get(handlers::admin::list_xai_models),
-        )
+        .route("/admin/xai/models", get(handlers::admin::list_xai_models))
         .route(
             "/admin/xai/image-models",
             get(handlers::admin::list_xai_image_models),
@@ -277,8 +255,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/admin/topic-templates",
-            get(handlers::topic_templates::list_admin)
-                .post(handlers::topic_templates::create),
+            get(handlers::topic_templates::list_admin).post(handlers::topic_templates::create),
         )
         .route(
             "/admin/topic-templates/:id",
@@ -290,14 +267,10 @@ pub fn build_router(state: AppState) -> Router {
             "/ideas",
             get(handlers::ideas::list).post(handlers::ideas::create),
         )
-        .route(
-            "/ideas/suggest",
-            post(handlers::ideas::suggest),
-        )
+        .route("/ideas/suggest", post(handlers::ideas::suggest))
         .route(
             "/ideas/:id",
-            axum::routing::patch(handlers::ideas::patch)
-                .delete(handlers::ideas::delete),
+            axum::routing::patch(handlers::ideas::patch).delete(handlers::ideas::delete),
         )
         // --- Phase 11: podcasts ---
         .route(
@@ -314,10 +287,7 @@ pub fn build_router(state: AppState) -> Router {
                 .patch(handlers::podcasts::patch)
                 .delete(handlers::podcasts::delete),
         )
-        .route(
-            "/podcasts/:id/image",
-            get(handlers::podcasts::image),
-        )
+        .route("/podcasts/:id/image", get(handlers::podcasts::image))
         .route(
             "/podcasts/:id/sync-youtube",
             post(handlers::podcasts::sync_youtube),

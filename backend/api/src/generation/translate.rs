@@ -84,12 +84,9 @@ pub async fn translate_audiobook(
     // Prefer a translation-tagged model for the target language; fall back
     // to whatever's serving the chapter role so existing setups (no
     // dedicated translate row) keep working.
-    let picked = pick_llm_for_roles_lang(
-        state,
-        &[LlmRole::Translate, LlmRole::Chapter],
-        Some(target),
-    )
-    .await?;
+    let picked =
+        pick_llm_for_roles_lang(state, &[LlmRole::Translate, LlmRole::Chapter], Some(target))
+            .await?;
     let source_label = crate::i18n::label(source);
     let target_label = crate::i18n::label(target);
 
@@ -175,10 +172,7 @@ pub async fn translate_audiobook(
             .bind(("number", ch.number))
             .bind(("title", translated_title))
             .bind(("synopsis", translated_synopsis))
-            .bind((
-                "target_words",
-                ch.target_words.unwrap_or(1200),
-            ))
+            .bind(("target_words", ch.target_words.unwrap_or(1200)))
             .bind(("body_md", translated_body))
             .bind(("language", target.to_string()))
             .await
@@ -471,8 +465,7 @@ mod tests {
 
     #[test]
     fn ignores_trailing_prose() {
-        let input =
-            "{\"translation\":\"guten tag\"}\n\nLet me know if you'd like another version.";
+        let input = "{\"translation\":\"guten tag\"}\n\nLet me know if you'd like another version.";
         assert_eq!(parse_translation(input).unwrap(), "guten tag");
     }
 

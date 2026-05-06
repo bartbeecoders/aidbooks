@@ -120,10 +120,12 @@ pub async fn render(
     let out_path = spec.output.mp4.clone();
     let parent = out_path
         .parent()
-        .ok_or_else(|| RenderFailure::Fatal(format!(
-            "output.mp4 `{}` has no parent dir",
-            out_path.display()
-        )))?
+        .ok_or_else(|| {
+            RenderFailure::Fatal(format!(
+                "output.mp4 `{}` has no parent dir",
+                out_path.display()
+            ))
+        })?
         .to_path_buf();
 
     // Sidecar files live next to the MP4 with deterministic names so
@@ -232,15 +234,15 @@ pub async fn render(
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    let mut child = cmd.spawn().map_err(|e| {
-        RenderFailure::Transient(format!("spawn ffmpeg (fast path): {e}"))
-    })?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| RenderFailure::Transient(format!("spawn ffmpeg (fast path): {e}")))?;
 
-    let stderr = child.stderr.take().ok_or_else(|| {
-        RenderFailure::Transient("ffmpeg fast path stderr not piped".into())
-    })?;
-    let total_frames =
-        ((spec.chapter.duration_ms as f64 / 1000.0) * fps as f64).max(1.0) as u64;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| RenderFailure::Transient("ffmpeg fast path stderr not piped".into()))?;
+    let total_frames = ((spec.chapter.duration_ms as f64 / 1000.0) * fps as f64).max(1.0) as u64;
 
     let progress_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
@@ -267,9 +269,10 @@ pub async fn render(
         tail
     });
 
-    let status = child.wait().await.map_err(|e| {
-        RenderFailure::Transient(format!("await ffmpeg fast path: {e}"))
-    })?;
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| RenderFailure::Transient(format!("await ffmpeg fast path: {e}")))?;
     let stderr_tail = progress_task.await.unwrap_or_default();
 
     if !status.success() {
@@ -310,9 +313,8 @@ fn build_filter_graph(
     ass_path: &Path,
     encoder: Encoder,
 ) -> Result<String, RenderFailure> {
-    let total_frames = ((spec.chapter.duration_ms as f64 / 1000.0)
-        * spec.output.fps as f64)
-        .max(1.0) as u64;
+    let total_frames =
+        ((spec.chapter.duration_ms as f64 / 1000.0) * spec.output.fps as f64).max(1.0) as u64;
     let width = spec.output.width.max(1);
     let height = spec.output.height.max(1);
 
@@ -473,7 +475,12 @@ fn ass_colour(hex: &str) -> String {
     let r = &h[0..2];
     let g = &h[2..4];
     let b = &h[4..6];
-    format!("&H00{}{}{}", b.to_uppercase(), g.to_uppercase(), r.to_uppercase())
+    format!(
+        "&H00{}{}{}",
+        b.to_uppercase(),
+        g.to_uppercase(),
+        r.to_uppercase()
+    )
 }
 
 /// Format milliseconds as ASS `H:MM:SS.cc`.
@@ -598,10 +605,7 @@ mod tests {
 
     #[test]
     fn escape_ass_strips_curly_braces_and_normalises_newlines() {
-        assert_eq!(
-            escape_ass("hello\n{tag}world"),
-            "hello\\N tag world"
-        );
+        assert_eq!(escape_ass("hello\n{tag}world"), "hello\\N tag world");
     }
 
     #[test]
@@ -686,8 +690,7 @@ mod tests {
         let spec = fixture("/tmp/out.mp4");
         // Path with a colon — must be escaped for ffmpeg's filter parser.
         let graph =
-            build_filter_graph(&spec, Path::new("/tmp/foo:bar.ass"), Encoder::Software)
-                .unwrap();
+            build_filter_graph(&spec, Path::new("/tmp/foo:bar.ass"), Encoder::Software).unwrap();
         assert!(graph.contains("/tmp/foo\\:bar.ass"));
     }
 
@@ -696,8 +699,7 @@ mod tests {
         // VAAPI moves frames to GPU memory after the libass composite.
         // The chain must end with `,format=nv12,hwupload[v_out]`.
         let spec = fixture("/tmp/out.mp4");
-        let graph =
-            build_filter_graph(&spec, Path::new("/tmp/x.ass"), Encoder::Vaapi).unwrap();
+        let graph = build_filter_graph(&spec, Path::new("/tmp/x.ass"), Encoder::Vaapi).unwrap();
         assert!(
             graph.ends_with(",format=nv12,hwupload[v_out]"),
             "expected VAAPI hwupload tail, got: {graph}"
@@ -707,8 +709,7 @@ mod tests {
     #[test]
     fn build_filter_graph_no_hw_tail_for_software() {
         let spec = fixture("/tmp/out.mp4");
-        let graph =
-            build_filter_graph(&spec, Path::new("/tmp/x.ass"), Encoder::Software).unwrap();
+        let graph = build_filter_graph(&spec, Path::new("/tmp/x.ass"), Encoder::Software).unwrap();
         assert!(!graph.contains("hwupload"));
     }
 
@@ -879,8 +880,8 @@ mod tests {
         // Use renderD129 by default since that's the integrated GPU
         // path on a hybrid Intel/NVIDIA dev box; override via
         // RENDER_VAAPI_DEVICE for boxes that expose it elsewhere.
-        let device = std::env::var("RENDER_VAAPI_DEVICE")
-            .unwrap_or_else(|_| "/dev/dri/renderD129".into());
+        let device =
+            std::env::var("RENDER_VAAPI_DEVICE").unwrap_or_else(|_| "/dev/dri/renderD129".into());
         render(&spec, "ffmpeg", "vaapi", &device, tx)
             .await
             .expect("render ok");

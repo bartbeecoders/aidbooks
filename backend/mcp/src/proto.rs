@@ -180,10 +180,7 @@ pub struct CallToolResult {
     pub content: Vec<Content>,
     #[serde(rename = "isError", skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
-    #[serde(
-        rename = "structuredContent",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "structuredContent", skip_serializing_if = "Option::is_none")]
     pub structured_content: Option<Value>,
 }
 

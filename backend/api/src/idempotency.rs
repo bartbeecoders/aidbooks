@@ -68,11 +68,7 @@ pub struct Cached {
 /// Look up a cached response for `(user, key)`. Returns `Ok(None)` if the
 /// key is absent or has expired. A stale row is left in place — the GC
 /// sweep (or the next write with the same key) cleans it up.
-pub async fn lookup(
-    state: &AppState,
-    user: &UserId,
-    key: Option<&str>,
-) -> Result<Option<Cached>> {
+pub async fn lookup(state: &AppState, user: &UserId, key: Option<&str>) -> Result<Option<Cached>> {
     let Some(key) = key else {
         return Ok(None);
     };

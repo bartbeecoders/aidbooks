@@ -384,10 +384,9 @@ pub async fn publish_youtube(
         mode = "single".to_string();
     }
     if !language_ready_for_publish(&state, &audiobook_id, language).await? {
-        return Err(Error::Conflict(format!(
-            "language `{language}` is not fully narrated yet"
-        ))
-        .into());
+        return Err(
+            Error::Conflict(format!("language `{language}` is not fully narrated yet")).into(),
+        );
     }
     // Review-only runs don't talk to Google, but a real publish does. Skip
     // the connected-account check if the user only wants a preview — they
@@ -400,9 +399,7 @@ pub async fn publish_youtube(
     // that would surprise the user — better to fail loudly so they
     // POST /animate first and watch the progress.
     if animate {
-        if let Some(missing) =
-            first_missing_animation(&state, &audiobook_id, language).await?
-        {
+        if let Some(missing) = first_missing_animation(&state, &audiobook_id, language).await? {
             return Err(Error::Conflict(format!(
                 "animation not ready: missing {} (run POST /audiobook/{}/animate first)",
                 missing.display(),
@@ -632,9 +629,7 @@ pub async fn approve_publication(
     }
     let pub_row = load_publication(&state, &audiobook_id, &publication_id).await?;
     if !pub_row.review || pub_row.preview_ready_at.is_none() {
-        return Err(
-            Error::Conflict("publication is not awaiting review approval".into()).into(),
-        );
+        return Err(Error::Conflict("publication is not awaiting review approval".into()).into());
     }
     if pub_row.published_at.is_some() {
         return Err(Error::Conflict("publication already published".into()).into());
@@ -828,7 +823,9 @@ async fn serve_mp4_with_range(
     use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
     use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 
-    let range = range_header.and_then(|v| v.to_str().ok()).and_then(parse_byte_range);
+    let range = range_header
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_byte_range);
     let mut file = tokio::fs::File::open(path)
         .await
         .map_err(|e| Error::Other(anyhow::anyhow!("open preview: {e}")))?;
@@ -884,7 +881,11 @@ fn preview_mp4_paths(
     language: &str,
     mode: &str,
 ) -> Vec<std::path::PathBuf> {
-    let dir = state.config().storage_path.join(audiobook_id).join(language);
+    let dir = state
+        .config()
+        .storage_path
+        .join(audiobook_id)
+        .join(language);
     if mode == "playlist" {
         // Walk the dir and collect every chapter MP4 we find. Doing it via
         // glob keeps us from having to look up the chapter list again.
@@ -1005,8 +1006,7 @@ async fn persist_account(
 ) -> Result<()> {
     // Delete-then-create so the unique `owner` index never trips when a user
     // reconnects with a different channel.
-    let scopes_json = serde_json::to_string(oauth::SCOPES)
-        .unwrap_or_else(|_| "[]".to_string());
+    let scopes_json = serde_json::to_string(oauth::SCOPES).unwrap_or_else(|_| "[]".to_string());
     let sql = format!(
         r#"DELETE youtube_account WHERE owner = user:`{uid}`;
            CREATE youtube_account CONTENT {{
@@ -1032,11 +1032,7 @@ async fn persist_account(
     Ok(())
 }
 
-async fn persist_oauth_state(
-    state: &AppState,
-    user_id: &UserId,
-    token: &str,
-) -> Result<()> {
+async fn persist_oauth_state(state: &AppState, user_id: &UserId, token: &str) -> Result<()> {
     // 10-minute window — matches Google's own token grace and is plenty for a
     // real user clicking through the consent screen.
     let sql = format!(
@@ -1131,9 +1127,7 @@ async fn load_audiobook_is_short(state: &AppState, audiobook_id: &str) -> Result
     let rows: Vec<Row> = state
         .db()
         .inner()
-        .query(format!(
-            "SELECT is_short FROM audiobook:`{audiobook_id}`"
-        ))
+        .query(format!("SELECT is_short FROM audiobook:`{audiobook_id}`"))
         .await
         .map_err(|e| Error::Database(format!("yt pub is_short: {e}")))?
         .take(0)
@@ -1200,7 +1194,11 @@ async fn first_missing_animation(
         .map_err(|e| Error::Database(format!("animate readiness: {e}")))?
         .take(0)
         .map_err(|e| Error::Database(format!("animate readiness (decode): {e}")))?;
-    let dir = state.config().storage_path.join(audiobook_id).join(language);
+    let dir = state
+        .config()
+        .storage_path
+        .join(audiobook_id)
+        .join(language);
     for r in rows {
         let p = dir.join(format!("ch-{}.video.mp4", r.number));
         if !p.exists() {

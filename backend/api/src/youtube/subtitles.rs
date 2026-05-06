@@ -192,7 +192,8 @@ mod tests {
 
     #[test]
     fn cues_span_full_duration() {
-        let text = "Hello world. This is a test sentence. And one more sentence here. Plus another.";
+        let text =
+            "Hello world. This is a test sentence. And one more sentence here. Plus another.";
         let srt = build_srt_for_chapter(text, 10_000);
         assert!(srt.contains("00:00:00,000"));
         // Last cue should end exactly at duration.

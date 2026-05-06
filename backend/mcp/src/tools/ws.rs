@@ -60,7 +60,10 @@ impl ToolHandler for SubscribeProgress {
             .get("max_seconds")
             .and_then(|v| v.as_u64())
             .unwrap_or(600);
-        let token_arg = args.get("_token").and_then(|v| v.as_str()).map(str::to_string);
+        let token_arg = args
+            .get("_token")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let token = self
             .client
             .resolve_token(token_arg.as_deref())
@@ -172,7 +175,11 @@ fn summarise(v: &Value) -> (f64, String) {
             if total > 0.0 {
                 let sum: f64 = jobs
                     .iter()
-                    .map(|j| j.get("progress_pct").and_then(|p| p.as_f64()).unwrap_or(0.0))
+                    .map(|j| {
+                        j.get("progress_pct")
+                            .and_then(|p| p.as_f64())
+                            .unwrap_or(0.0)
+                    })
                     .sum();
                 return (sum / total, format!("{} job(s)", jobs.len()));
             }

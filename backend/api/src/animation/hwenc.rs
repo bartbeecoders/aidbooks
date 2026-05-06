@@ -63,11 +63,7 @@ const DEFAULT_QUALITY: u8 = 22;
 /// hybrid hosts). Used both at probe time and inside
 /// `pre_input_args` so the encode init points at the same node we
 /// detected.
-pub async fn detect(
-    ffmpeg_bin: &str,
-    override_choice: &str,
-    vaapi_device: &str,
-) -> Encoder {
+pub async fn detect(ffmpeg_bin: &str, override_choice: &str, vaapi_device: &str) -> Encoder {
     match override_choice.trim().to_ascii_lowercase().as_str() {
         "" | "auto" => {} // fall through to autodetect
         "none" | "software" | "cpu" => {
@@ -175,12 +171,7 @@ fn encoder_args_with_quality(encoder: Encoder, quality: u8) -> Vec<String> {
             "-b:v".into(),
             "0".into(),
         ],
-        Encoder::Vaapi => vec![
-            "-c:v".into(),
-            "h264_vaapi".into(),
-            "-qp".into(),
-            q,
-        ],
+        Encoder::Vaapi => vec!["-c:v".into(), "h264_vaapi".into(), "-qp".into(), q],
         Encoder::Qsv => vec![
             "-c:v".into(),
             "h264_qsv".into(),
@@ -305,7 +296,11 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(
-            rt.block_on(detect("ffmpeg-not-real", "magic-future-encoder", TEST_DEVICE)),
+            rt.block_on(detect(
+                "ffmpeg-not-real",
+                "magic-future-encoder",
+                TEST_DEVICE
+            )),
             Encoder::Software
         );
     }

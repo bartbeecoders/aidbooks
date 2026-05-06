@@ -98,12 +98,7 @@ pub async fn run(
     // Honor the admin's `default_for: ["outline"]` + `priority` ranking,
     // and prefer rows whose `languages` includes the book's language. Falls
     // back to `Config.openrouter_default_model` only when no row matches.
-    let picked = pick_llm_for_roles_lang(
-        state,
-        &[LlmRole::Outline],
-        Some(language),
-    )
-    .await?;
+    let picked = pick_llm_for_roles_lang(state, &[LlmRole::Outline], Some(language)).await?;
 
     let req = ChatRequest {
         model: picked.model_id.clone(),
@@ -202,7 +197,8 @@ fn sanitize_tags(raw: &[String]) -> Vec<String> {
             continue;
         }
         // Tolerate models that returned a closing wrapper form.
-        let normalized = if let Some(inner) = t.strip_prefix("</").and_then(|s| s.strip_suffix('>')) {
+        let normalized = if let Some(inner) = t.strip_prefix("</").and_then(|s| s.strip_suffix('>'))
+        {
             format!("<{inner}>")
         } else {
             t

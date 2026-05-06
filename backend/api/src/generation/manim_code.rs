@@ -101,19 +101,14 @@ pub async fn generate_manim_code(
         vars.insert("run_seconds", format!("{:.1}", cp.run_seconds));
         vars.insert("paragraph_text", cp.text.to_string());
 
-        let rendered = match crate::generation::prompts::render(
-            state,
-            PromptRole::ManimCode,
-            &vars,
-        )
-        .await
-        {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(error = %e, idx = cp.index, "manim_code: render prompt failed");
-                continue;
-            }
-        };
+        let rendered =
+            match crate::generation::prompts::render(state, PromptRole::ManimCode, &vars).await {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(error = %e, idx = cp.index, "manim_code: render prompt failed");
+                    continue;
+                }
+            };
 
         let req = ChatRequest {
             model: picked.model_id.clone(),
@@ -196,10 +191,7 @@ pub async fn generate_manim_code(
             summary = %summary,
             "manim_code: generated"
         );
-        out.insert(
-            cp.index,
-            ParagraphCode { summary, code },
-        );
+        out.insert(cp.index, ParagraphCode { summary, code });
     }
 
     out

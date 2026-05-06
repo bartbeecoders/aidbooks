@@ -3,9 +3,9 @@
 //! `Server::handle_message` and `Server::stream_call`.
 
 use crate::proto::{
-    codes, CallToolParams, CallToolResult, Id, InitializeParams, InitializeResult,
-    ListToolsResult, Notification, ProgressParams, Response, ServerCapabilities, ServerInfo,
-    ToolsCapability, MCP_PROTOCOL_VERSION,
+    codes, CallToolParams, CallToolResult, Id, InitializeParams, InitializeResult, ListToolsResult,
+    Notification, ProgressParams, Response, ServerCapabilities, ServerInfo, ToolsCapability,
+    MCP_PROTOCOL_VERSION,
 };
 use crate::tools::{ProgressSink, Registry};
 use serde_json::{json, Value};
@@ -40,11 +40,7 @@ impl Server {
     /// (`tools/call` with a progress token) push intermediate
     /// `notifications/progress` notifications onto `outbound` while the
     /// final response is also routed through it.
-    pub async fn dispatch(
-        self: Arc<Self>,
-        raw: Value,
-        outbound: UnboundedSender<Outbound>,
-    ) {
+    pub async fn dispatch(self: Arc<Self>, raw: Value, outbound: UnboundedSender<Outbound>) {
         // We accept both single objects and arrays (batch). Batches are rare
         // in MCP clients but cheap to support.
         let msgs = match raw {
@@ -98,7 +94,9 @@ impl Server {
             // empty list rather than method-not-found so older clients that
             // probe for these don't show errors.
             "resources/list" => Response::ok(id.clone(), json!({"resources": []})),
-            "resources/templates/list" => Response::ok(id.clone(), json!({"resourceTemplates": []})),
+            "resources/templates/list" => {
+                Response::ok(id.clone(), json!({"resourceTemplates": []}))
+            }
             "prompts/list" => Response::ok(id.clone(), json!({"prompts": []})),
             other => Response::err(
                 id.clone(),
@@ -143,19 +141,13 @@ impl Server {
                 version: env!("CARGO_PKG_VERSION"),
             },
         };
-        Response::ok(
-            id,
-            serde_json::to_value(result).unwrap_or(Value::Null),
-        )
+        Response::ok(id, serde_json::to_value(result).unwrap_or(Value::Null))
     }
 
     async fn handle_list_tools(&self, id: Id) -> Response {
         let tools = self.registry.list();
         let result = ListToolsResult { tools };
-        Response::ok(
-            id,
-            serde_json::to_value(result).unwrap_or(Value::Null),
-        )
+        Response::ok(id, serde_json::to_value(result).unwrap_or(Value::Null))
     }
 
     async fn handle_call_tool(
@@ -167,11 +159,7 @@ impl Server {
         let parsed: CallToolParams = match serde_json::from_value(params) {
             Ok(p) => p,
             Err(e) => {
-                return Response::err(
-                    id,
-                    codes::INVALID_PARAMS,
-                    format!("tools/call params: {e}"),
-                );
+                return Response::err(id, codes::INVALID_PARAMS, format!("tools/call params: {e}"));
             }
         };
         let handler = match self.registry.get(&parsed.name) {
@@ -214,10 +202,7 @@ impl Server {
             Ok(r) => r,
             Err(msg) => CallToolResult::error(msg),
         };
-        Response::ok(
-            id,
-            serde_json::to_value(result).unwrap_or(Value::Null),
-        )
+        Response::ok(id, serde_json::to_value(result).unwrap_or(Value::Null))
     }
 }
 

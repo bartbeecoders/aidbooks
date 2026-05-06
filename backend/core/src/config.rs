@@ -190,8 +190,8 @@ impl Default for Config {
             xai_tts_cost_per_1k_chars: 0.0042,
             youtube_client_id: String::new(),
             youtube_client_secret: String::new(),
-            youtube_redirect_uri:
-                "http://localhost:8787/integrations/youtube/oauth/callback".into(),
+            youtube_redirect_uri: "http://localhost:8787/integrations/youtube/oauth/callback"
+                .into(),
             youtube_post_connect_redirect: "http://localhost:5173/app/settings".into(),
             ffmpeg_bin: "ffmpeg".into(),
             animate_node_bin: "node".into(),

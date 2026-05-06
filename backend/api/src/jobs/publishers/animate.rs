@@ -249,10 +249,7 @@ impl AnimateChapterHandler {
     /// caller is expected to handle the error before calling here.
     fn resolve_sidecar_path(renderer_cmd: &str) -> PathBuf {
         let raw = PathBuf::from(renderer_cmd);
-        let file_name = raw
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
+        let file_name = raw.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         if file_name == "cli.js" {
             warn!(
                 cmd = renderer_cmd,
@@ -400,8 +397,7 @@ impl JobHandler for AnimateChapterHandler {
         // (translations share the same image set), so always load
         // tiles from the primary chapter row regardless of the
         // animate target language.
-        let paragraph_tiles =
-            load_paragraph_tiles(state, &audiobook_id, chapter_number).await;
+        let paragraph_tiles = load_paragraph_tiles(state, &audiobook_id, chapter_number).await;
         let output_mp4 =
             planner::output_mp4_path(&storage, &audiobook_id, &language, chapter_number);
         if let Some(parent) = output_mp4.parent() {
@@ -443,10 +439,8 @@ impl JobHandler for AnimateChapterHandler {
         // existing flags select.
         let is_stem = load_is_stem(state, &audiobook_id).await;
         let has_diagrams = segments::has_diagram_scenes(&spec);
-        let use_stem_segments = cfg.animate_fast_path
-            && !cfg.animate_mock
-            && is_stem
-            && has_diagrams;
+        let use_stem_segments =
+            cfg.animate_fast_path && !cfg.animate_mock && is_stem && has_diagrams;
         // Surface the routing decision so users debugging "why
         // didn't Manim run?" can grep their logs and see which
         // condition flipped. Cheap (info-level, once per render).
@@ -572,12 +566,8 @@ impl JobHandler for AnimateChapterHandler {
             }
             let pool = match self.pool().await {
                 Ok(p) => p,
-                Err(sidecar::RenderFailure::Transient(msg)) => {
-                    return Ok(JobOutcome::Retry(msg))
-                }
-                Err(sidecar::RenderFailure::Fatal(msg)) => {
-                    return Ok(JobOutcome::Fatal(msg))
-                }
+                Err(sidecar::RenderFailure::Transient(msg)) => return Ok(JobOutcome::Retry(msg)),
+                Err(sidecar::RenderFailure::Fatal(msg)) => return Ok(JobOutcome::Fatal(msg)),
             };
             // Drain progress events from the pool through the
             // existing job-progress hub. Pool drops `tx` when the
@@ -587,9 +577,7 @@ impl JobHandler for AnimateChapterHandler {
             let progress_fut = async {
                 while let Some(evt) = rx.recv().await {
                     match evt {
-                        RenderEvent::Started => {
-                            ctx.progress(&job, "rendering", 0.10).await
-                        }
+                        RenderEvent::Started => ctx.progress(&job, "rendering", 0.10).await,
                         RenderEvent::Frame { frame, total } => {
                             let pct = if total == 0 {
                                 0.10
@@ -604,9 +592,7 @@ impl JobHandler for AnimateChapterHandler {
                             let bounded = 0.85 + 0.14 * pct.clamp(0.0, 1.0);
                             ctx.progress(&job, "encoding", bounded).await;
                         }
-                        RenderEvent::Done { .. } => {
-                            ctx.progress(&job, "encoded", 0.99).await
-                        }
+                        RenderEvent::Done { .. } => ctx.progress(&job, "encoded", 0.99).await,
                         // Ready / Bye / Error never escape the pool
                         // — render() handles them internally.
                         _ => {}
@@ -780,7 +766,10 @@ async fn load_is_stem(state: &AppState, audiobook_id: &str) -> bool {
     };
     rows.into_iter()
         .next()
-        .map(|r| r.stem_override.unwrap_or_else(|| r.stem_detected.unwrap_or(false)))
+        .map(|r| {
+            r.stem_override
+                .unwrap_or_else(|| r.stem_detected.unwrap_or(false))
+        })
         .unwrap_or(false)
 }
 
@@ -970,10 +959,9 @@ async fn load_book_for_classify(state: &AppState, audiobook_id: &str) -> Result<
         .map_err(|e| Error::Database(format!("animate classify load book: {e}")))?
         .take(0)
         .map_err(|e| Error::Database(format!("animate classify decode book: {e}")))?;
-    let row = rows
-        .into_iter()
-        .next()
-        .ok_or_else(|| Error::Database(format!("animate classify: book {audiobook_id} not found")))?;
+    let row = rows.into_iter().next().ok_or_else(|| {
+        Error::Database(format!("animate classify: book {audiobook_id} not found"))
+    })?;
     Ok(BookCtx {
         title: row.title,
         topic: row.topic,
@@ -1146,7 +1134,11 @@ async fn ensure_chapter_classified(
 
     // ----- Branch B/C: partial. Existing paragraphs present. ----------
     let none_classified = existing.iter().all(|p| {
-        p.visual_kind.as_deref().map(str::trim).unwrap_or("").is_empty()
+        p.visual_kind
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
     });
     let custom_missing_code: Vec<u32> = existing
         .iter()
@@ -1332,10 +1324,7 @@ async fn run_code_gen_for_custom_manim(
     paragraphs: &[crate::generation::paragraphs::Paragraph],
     visuals: &std::collections::HashMap<u32, crate::generation::paragraphs::ParagraphVisual>,
 ) -> std::collections::HashMap<u32, String> {
-    if !visuals
-        .values()
-        .any(|v| v.visual_kind == "custom_manim")
-    {
+    if !visuals.values().any(|v| v.visual_kind == "custom_manim") {
         return std::collections::HashMap::new();
     }
     let kinds_only: std::collections::HashMap<u32, String> = visuals

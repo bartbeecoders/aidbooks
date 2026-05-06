@@ -86,10 +86,28 @@ pub async fn run_one_by_number(
             .unwrap_or(false);
 
     if multi_voice {
-        synth_multi_voice(state, user, audiobook_id, &ch, body, &book, &primary_voice, language)
-            .await
+        synth_multi_voice(
+            state,
+            user,
+            audiobook_id,
+            &ch,
+            body,
+            &book,
+            &primary_voice,
+            language,
+        )
+        .await
     } else {
-        synth_one(state, user, audiobook_id, &ch, body, &primary_voice, language).await
+        synth_one(
+            state,
+            user,
+            audiobook_id,
+            &ch,
+            body,
+            &primary_voice,
+            language,
+        )
+        .await
     }
 }
 

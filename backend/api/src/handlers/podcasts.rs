@@ -341,7 +341,11 @@ pub async fn patch(
             .check()
             .map_err(|e| Error::Database(format!("patch podcast description: {e}")))?;
     }
-    if let Some(b64) = body.image_base64.as_deref().filter(|s| !s.trim().is_empty()) {
+    if let Some(b64) = body
+        .image_base64
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
         persist_image(&state, &id, b64).await?;
     }
 
@@ -555,17 +559,12 @@ pub async fn sync_youtube(
 
     let token = match yt_account::access_token(&state, &user.id).await {
         Ok(Some(t)) => t,
-        Ok(None) => {
-            return Err(
-                Error::Conflict("connect a YouTube channel first".into()).into(),
-            )
-        }
+        Ok(None) => return Err(Error::Conflict("connect a YouTube channel first".into()).into()),
         Err(Error::Unauthorized) => {
             yt_account::drop_account(&state, &user.id).await.ok();
-            return Err(Error::Conflict(
-                "YouTube reconnect required (token rejected)".into(),
-            )
-            .into());
+            return Err(
+                Error::Conflict("YouTube reconnect required (token rejected)".into()).into(),
+            );
         }
         Err(e) => return Err(e.into()),
     };
@@ -773,11 +772,7 @@ impl std::fmt::Display for SyncAction {
 /// the existing playlist's metadata. Persists the playlist id on the
 /// row when freshly minted. Caller is responsible for resolving the
 /// access token.
-async fn sync_with_token(
-    state: &AppState,
-    podcast_id: &str,
-    token: &str,
-) -> Result<SyncAction> {
+async fn sync_with_token(state: &AppState, podcast_id: &str, token: &str) -> Result<SyncAction> {
     #[derive(Deserialize)]
     struct Row {
         title: String,

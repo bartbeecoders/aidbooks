@@ -83,7 +83,10 @@ impl Registry {
     }
 
     pub fn list(&self) -> Vec<Tool> {
-        self.tools.values().map(|h| h.descriptor().clone()).collect()
+        self.tools
+            .values()
+            .map(|h| h.descriptor().clone())
+            .collect()
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn DynToolHandler>> {
@@ -103,10 +106,9 @@ pub async fn build_registry(client: Arc<ApiClient>, ws_url: String) -> anyhow::R
     meta::register(&mut reg, client.clone());
     ws::register(&mut reg, client.clone(), ws_url);
 
-    let spec = client
-        .fetch_openapi()
-        .await
-        .map_err(|e| anyhow::anyhow!("fetch /openapi.json failed: {e}. Is listenai-api running?"))?;
+    let spec = client.fetch_openapi().await.map_err(|e| {
+        anyhow::anyhow!("fetch /openapi.json failed: {e}. Is listenai-api running?")
+    })?;
 
     let added = http::register_from_openapi(&mut reg, client, &spec)?;
     tracing::info!(

@@ -1842,10 +1842,6 @@ function ActivityLog({
   pendingKind: "chapters" | "tts" | null;
   publications: PublicationRow[];
 }): JSX.Element | null {
-  const hasJobs = parentJobs.length > 0 || pendingKind !== null;
-  const hasPubs = publications.length > 0;
-  if (!hasJobs && !hasPubs) return null;
-
   // Auto-open on first render when something needs the user's attention.
   // Once they toggle it themselves, the local state owns the panel.
   const [open, setOpen] = useState(() => {
@@ -1863,6 +1859,13 @@ function ActivityLog({
     );
     return running || previewReady || failed;
   });
+  // Completed jobs are noisy once they pile up — hide them by default
+  // and let the user opt back in with the toggle.
+  const [showCompleted, setShowCompleted] = useState(false);
+
+  const hasJobs = parentJobs.length > 0 || pendingKind !== null;
+  const hasPubs = publications.length > 0;
+  if (!hasJobs && !hasPubs) return null;
 
   const activeCount = parentJobs.filter(
     (j) =>
@@ -1879,9 +1882,6 @@ function ActivityLog({
   const completedCount = parentJobs.filter(
     (j) => j.status === "completed",
   ).length;
-  // Completed jobs are noisy once they pile up — hide them by default
-  // and let the user opt back in with the toggle.
-  const [showCompleted, setShowCompleted] = useState(false);
   const visibleParentJobs = showCompleted
     ? parentJobs
     : parentJobs.filter((j) => j.status !== "completed");

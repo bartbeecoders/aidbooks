@@ -147,9 +147,7 @@ fn update_mtime(hasher: &mut Sha256, path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::animation::spec::{
-        AudioRef, Background, ChapterMeta, Output, Scene, SceneSpec,
-    };
+    use crate::animation::spec::{AudioRef, Background, ChapterMeta, Output, Scene, SceneSpec};
 
     fn fixture_spec(out: &Path) -> SceneSpec {
         SceneSpec::new(

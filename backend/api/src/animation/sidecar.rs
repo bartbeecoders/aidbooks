@@ -368,9 +368,7 @@ async fn render_one(
         };
 
         match evt {
-            RenderEvent::Started
-            | RenderEvent::Frame { .. }
-            | RenderEvent::Encoding { .. } => {
+            RenderEvent::Started | RenderEvent::Frame { .. } | RenderEvent::Encoding { .. } => {
                 let _ = events_tx.send(evt);
             }
             RenderEvent::Done { .. } => {
