@@ -190,6 +190,10 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::topic_templates::list_public),
         )
         .route("/voices", get(handlers::catalog::list_voices))
+        .route(
+            "/voices/:id/preview",
+            get(handlers::catalog::preview_voice),
+        )
         .route("/llms", get(handlers::catalog::list_llms))
         .route(
             "/audiobook-categories",

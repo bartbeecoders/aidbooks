@@ -76,6 +76,11 @@ pub struct PublishYoutubeRequest {
     /// generated one (topic + chapter list with timestamps).
     #[serde(default)]
     pub description: Option<String>,
+    /// Per-video override for the "Like & Subscribe!" overlay.
+    ///   `None`  → inherit the global setting (admin → YouTube settings).
+    ///   `Some(true)` / `Some(false)` → force on/off for this publication.
+    #[serde(default)]
+    pub like_subscribe_overlay: Option<bool>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -120,6 +125,11 @@ pub struct PublicationRow {
     /// Per-chapter videos for playlist mode. Empty for `single` mode.
     #[serde(default)]
     pub videos: Vec<PublicationVideoRow>,
+    /// Per-publication override for the "Like & Subscribe!" overlay.
+    /// `null` means the publication inherits the global setting; `true`
+    /// or `false` is an explicit override.
+    #[serde(default)]
+    pub like_subscribe_overlay: Option<bool>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -402,8 +412,16 @@ pub async fn publish_youtube(
         }
     }
 
-    let publication_id =
-        upsert_publication(&state, &audiobook_id, language, &privacy, &mode, review).await?;
+    let publication_id = upsert_publication(
+        &state,
+        &audiobook_id,
+        language,
+        &privacy,
+        &mode,
+        review,
+        body.like_subscribe_overlay,
+    )
+    .await?;
 
     let mut payload = serde_json::json!({
         "publication_id": publication_id,
@@ -482,6 +500,8 @@ pub async fn list_publications(
         published_at: Option<DateTime<Utc>>,
         #[serde(default)]
         last_error: Option<String>,
+        #[serde(default)]
+        like_subscribe_overlay: Option<bool>,
         created_at: DateTime<Utc>,
         updated_at: DateTime<Utc>,
     }
@@ -567,6 +587,7 @@ pub async fn list_publications(
                     created_at: r.created_at,
                     updated_at: r.updated_at,
                     videos,
+                    like_subscribe_overlay: r.like_subscribe_overlay,
                 }
             })
             .collect(),
@@ -1196,6 +1217,10 @@ async fn upsert_publication(
     privacy: &str,
     mode: &str,
     review: bool,
+    // `None` clears any existing override (publication will inherit the
+    // global setting); `Some(true)`/`Some(false)` writes an explicit
+    // override that takes precedence over the global.
+    like_subscribe_overlay: Option<bool>,
 ) -> Result<String> {
     // Fast path: existing row → update + return its id. Switching mode on
     // an existing publication clears any previously stored single-video id
@@ -1239,6 +1264,7 @@ async fn upsert_publication(
                     privacy_status = $p, \
                     mode = $m, \
                     review = $r, \
+                    like_subscribe_overlay = $ls, \
                     preview_ready_at = NONE, \
                     last_error = NONE, \
                     updated_at = time::now() \
@@ -1247,6 +1273,7 @@ async fn upsert_publication(
             .bind(("p", privacy.to_string()))
             .bind(("m", mode.to_string()))
             .bind(("r", review))
+            .bind(("ls", like_subscribe_overlay))
             .await
             .map_err(|e| Error::Database(format!("yt pub update: {e}")))?
             .check()
@@ -1279,13 +1306,15 @@ async fn upsert_publication(
                 language: $lang,
                 privacy_status: $p,
                 mode: $m,
-                review: $r
+                review: $r,
+                like_subscribe_overlay: $ls
             }}"#
         ))
         .bind(("lang", language.to_string()))
         .bind(("p", privacy.to_string()))
         .bind(("m", mode.to_string()))
         .bind(("r", review))
+        .bind(("ls", like_subscribe_overlay))
         .await
         .map_err(|e| Error::Database(format!("yt pub create: {e}")))?
         .check()

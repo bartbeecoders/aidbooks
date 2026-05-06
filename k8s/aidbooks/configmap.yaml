@@ -1,0 +1,64 @@
+# Non-secret env for the api. Anything that varies between dev and prod but
+# isn't credentials lives here. Real secrets (API keys, JWT secret, password
+# pepper, OAuth client secrets) live in the Secret object — see
+# secret.example.yaml.
+#
+# All keys map to LISTENAI_* env vars in the api container via envFrom.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: aidbooks-api-config
+  namespace: aidbooks
+data:
+  # --- Server ---
+  # Bind to all interfaces inside the pod so the Service can reach us.
+  LISTENAI_HOST: "0.0.0.0"
+  LISTENAI_PORT: "8787"
+  LISTENAI_LOG: "listenai=info,tower_http=info,info"
+  LISTENAI_LOG_FORMAT: "json"
+  LISTENAI_REQUEST_TIMEOUT_SECS: "180"
+  # CORS: only the public hostname is allowed. Same-origin requests from
+  # the frontend land here as `https://aidbooks.hideterms.com`.
+  # figment parses Vec<String> from a JSON-style array.
+  LISTENAI_CORS_ALLOW_ORIGINS: '["https://aidbooks.hideterms.com"]'
+
+  # --- Storage (PVC mount lives at /data) ---
+  LISTENAI_DATABASE_PATH: "/data/db"
+  LISTENAI_STORAGE_PATH: "/data/audio"
+
+  # --- Auth TTLs (15 min access / 30 day refresh) ---
+  LISTENAI_ACCESS_TOKEN_TTL_SECS: "900"
+  LISTENAI_REFRESH_TOKEN_TTL_SECS: "2592000"
+
+  # --- Dev seed: hard off in prod. ---
+  LISTENAI_DEV_SEED: "false"
+
+  # --- LLM (OpenRouter) ---
+  LISTENAI_OPENROUTER_BASE_URL: "https://openrouter.ai/api/v1"
+  LISTENAI_OPENROUTER_REQUEST_TIMEOUT_SECS: "120"
+  LISTENAI_OPENROUTER_DEFAULT_MODEL: "anthropic/claude-haiku-4.5"
+
+  # --- TTS (xAI) ---
+  LISTENAI_XAI_TTS_URL: "https://api.x.ai/v1/tts"
+  LISTENAI_XAI_TTS_LANGUAGE: "en"
+  LISTENAI_XAI_DEFAULT_VOICE: "eve"
+  LISTENAI_XAI_SAMPLE_RATE_HZ: "24000"
+  LISTENAI_XAI_REQUEST_TIMEOUT_SECS: "180"
+
+  # --- YouTube publishing ---
+  # Callback URLs MUST match the Authorized Redirect URIs configured on the
+  # Google OAuth client. The post-connect redirect is where the user lands
+  # in the SPA after a successful connect.
+  LISTENAI_YOUTUBE_REDIRECT_URI: "https://aidbooks.hideterms.com/api/integrations/youtube/oauth/callback"
+  LISTENAI_YOUTUBE_POST_CONNECT_REDIRECT: "https://aidbooks.hideterms.com/app/settings"
+  LISTENAI_FFMPEG_BIN: "ffmpeg"
+
+  # --- Animation: disabled in this image (no Node sidecar / Manim shipped).
+  # Animate jobs refuse to run while these are empty; the rest of the app
+  # works fine. Re-enable later by baking the renderer into the api image
+  # and setting LISTENAI_ANIMATE_RENDERER_CMD.
+  LISTENAI_ANIMATE_RENDERER_CMD: ""
+  LISTENAI_ANIMATE_MOCK: "false"
+  LISTENAI_ANIMATE_FAST_PATH: "false"
+  LISTENAI_ANIMATE_HWENC: "none"
+  LISTENAI_ANIMATE_MANIM_CMD: ""

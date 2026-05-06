@@ -1,0 +1,19 @@
+# Internal-only Service for the api. The frontend nginx pod proxies
+# /api/* here. Not exposed outside the cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: aidbooks-api
+  namespace: aidbooks
+  labels:
+    app.kubernetes.io/name: aidbooks-api
+    app.kubernetes.io/part-of: aidbooks
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: aidbooks-api
+  ports:
+    - name: http
+      port: 8787
+      targetPort: http
+      protocol: TCP

@@ -179,3 +179,7 @@ This would be an optional feature that can be enabled in the audiobook settings.
 
 
 Add the possibility to add a like and subscribe button inside the youtube video.
+
+
+Add the multi voice narration settings to the new audiobook entry page. Now it only is visible when you start generating the audiobook.
+When doing the voice narration, show in the activity log, the voice being used for the chapter.

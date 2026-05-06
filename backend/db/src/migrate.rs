@@ -173,6 +173,10 @@ const MIGRATIONS: &[Migration] = &[
         name: "0039_youtube_like_subscribe_overlay",
         sql: include_str!("../migrations/0039_youtube_like_subscribe_overlay.surql"),
     },
+    Migration {
+        name: "0040_youtube_publication_overlay",
+        sql: include_str!("../migrations/0040_youtube_publication_overlay.surql"),
+    },
 ];
 
 /// Run any pending migrations. Safe to call on every startup.

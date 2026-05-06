@@ -167,7 +167,15 @@ export type Voice = S["Voice"];
 // `function`/`languages`/`priority` were added after the cached schema
 // snapshot was generated; intersection here keeps callers type-safe until
 // `npm run gen:api` is re-run.
-export type Llm = S["Llm"] & {
+//
+// `default_for` is also widened: the backend's `LlmRole` enum has gained
+// `manim_code`, `translate`, and `voice_extract` since the schema was
+// last regenerated. Re-running `npm run gen:api` collapses the widening
+// into a no-op once the schema catches up.
+export type ExtraLlmRole = "manim_code" | "translate" | "voice_extract";
+export type LlmRole = S["LlmRole"] | ExtraLlmRole;
+export type Llm = Omit<S["Llm"], "default_for"> & {
+  default_for: LlmRole[];
   function?: string | null;
   languages?: string[];
   priority?: number;
@@ -191,7 +199,9 @@ export type CoverPreviewRequest = S["CoverPreviewRequest"] & WithArtStyle & {
   is_short?: boolean | null;
 };
 export type CoverPreviewResponse = S["CoverPreviewResponse"];
-export type LlmRole = S["LlmRole"];
+// `LlmRole` is exported above with the `ExtraLlmRole` widening — keep
+// this comment as a reminder so a future schema regen drops the alias
+// instead of leaving a duplicate.
 export type TranslateRequest = S["TranslateRequest"];
 export type TranslateResponse = S["TranslateResponse"];
 
@@ -505,6 +515,12 @@ export interface PublishYoutubeRequest {
    * `animate` job; the API 409s otherwise). */
   animate?: boolean | null;
   description?: string | null;
+  /**
+   * Per-video override for the "Like & Subscribe!" overlay.
+   *   `null` / omitted → inherit the global admin setting.
+   *   `true` / `false` → force on/off for this publication.
+   */
+  like_subscribe_overlay?: boolean | null;
 }
 
 export interface PublishYoutubeResponse {
@@ -544,6 +560,8 @@ export interface PublicationRow {
   created_at: string;
   updated_at: string;
   videos: PublicationVideoRow[];
+  /** Per-publication override; `null` means it inherits the global. */
+  like_subscribe_overlay: boolean | null;
 }
 
 export interface PublicationList {
@@ -572,6 +590,16 @@ export interface TestVoiceRequest {
   text: string;
 }
 export interface TestVoiceResponse {
+  audio_wav_base64: string;
+  sample_rate_hz: number;
+  duration_ms: number;
+  mocked: boolean;
+}
+
+/** Mirrors the backend `VoicePreviewResponse` returned by
+ * `GET /voices/{id}/preview`. Hand-written until `npm run gen:api`
+ * picks up the new endpoint. */
+export interface VoicePreviewResponse {
   audio_wav_base64: string;
   sample_rate_hz: number;
   duration_ms: number;

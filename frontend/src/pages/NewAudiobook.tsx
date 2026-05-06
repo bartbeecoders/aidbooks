@@ -18,6 +18,12 @@ import type {
 import { ArtStyleSelect } from "../components/ArtStylePicker";
 import { DEFAULT_ART_STYLE } from "../lib/art-styles";
 import { imageCapableLlms } from "../lib/cover-llm";
+import { voicesForLanguage } from "../lib/voices";
+import {
+  useVoicePreview,
+  type VoicePreviewState,
+} from "../lib/useVoicePreview";
+import { VoicePreviewButton } from "../components/VoicePreview";
 import { Field, inputClass, primaryBtn } from "./Login";
 
 const GENRE_PRESETS: { label: string; icon: string }[] = [
@@ -93,6 +99,12 @@ export function NewAudiobook(): JSX.Element {
   // 0 = chapter cover tiles only.
   const [imagesPerParagraph, setImagesPerParagraph] = useState<number>(0);
   const [autoAudio, setAutoAudio] = useState(true);
+  // Multi-voice settings the user picks before creation. Mirrors the
+  // BookDetail panel's two pieces of state (toggle + role→voice map);
+  // both go straight into the create body so the audiobook starts out
+  // already configured rather than requiring an extra patch.
+  const [multiVoiceEnabled, setMultiVoiceEnabled] = useState(false);
+  const [voiceRoles, setVoiceRoles] = useState<Record<string, string>>({});
   const [autoPublish, setAutoPublish] = useState(false);
   const [publishMode, setPublishMode] = useState<"single" | "playlist">("single");
   const [publishPrivacy, setPublishPrivacy] =
@@ -131,6 +143,21 @@ export function NewAudiobook(): JSX.Element {
     [categoriesQuery.data],
   );
   const youtubeConnected = youtubeAccount.data?.connected ?? false;
+
+  // Drop voice picks that don't match the new language so the form
+  // doesn't silently submit a hidden, language-mismatched voice.
+  useEffect(() => {
+    const all = voicesQuery.data?.items ?? [];
+    const allowed = new Set(voicesForLanguage(all, language).map((v) => v.id));
+    if (allowed.size === 0) return;
+    if (voiceId && !allowed.has(voiceId)) setVoiceId(null);
+    setVoiceRoles((prev) => {
+      const next = Object.fromEntries(
+        Object.entries(prev).filter(([, vid]) => allowed.has(vid)),
+      );
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+    });
+  }, [language, voicesQuery.data, voiceId]);
 
   const applyTemplate = (t: TopicTemplate): void => {
     setTopic(t.topic);
@@ -221,6 +248,11 @@ export function NewAudiobook(): JSX.Element {
           autoCover && imagesPerParagraph > 0 ? imagesPerParagraph : 0,
         is_short: isShort,
         auto_pipeline,
+        // Only ship the role map when multi-voice is on: an empty map
+        // with the toggle off would otherwise overwrite a future
+        // server-side default.
+        multi_voice_enabled: multiVoiceEnabled,
+        voice_roles: multiVoiceEnabled ? voiceRoles : undefined,
       });
     },
     onSuccess: (book) => {
@@ -432,12 +464,26 @@ export function NewAudiobook(): JSX.Element {
 
             <Field label="Voice (optional)">
               <VoicePicker
-                voices={voicesQuery.data?.items ?? []}
+                voices={voicesForLanguage(
+                  voicesQuery.data?.items ?? [],
+                  language,
+                )}
                 isLoading={voicesQuery.isLoading}
                 selected={voiceId}
                 onSelect={setVoiceId}
               />
             </Field>
+
+            <MultiVoicePanel
+              enabled={multiVoiceEnabled}
+              roles={voiceRoles}
+              onEnabled={setMultiVoiceEnabled}
+              onRoles={setVoiceRoles}
+              voices={voicesForLanguage(
+                voicesQuery.data?.items ?? [],
+                language,
+              )}
+            />
           </div>
 
           <div className="space-y-4">
@@ -952,6 +998,7 @@ function VoicePicker({
   selected: string | null;
   onSelect: (id: string | null) => void;
 }): JSX.Element {
+  const preview = useVoicePreview();
   if (isLoading) {
     return <p className="text-xs text-slate-500">Loading voices…</p>;
   }
@@ -963,25 +1010,32 @@ function VoicePicker({
     );
   }
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-      <VoiceCard
-        active={selected === null}
-        onSelect={() => onSelect(null)}
-        icon="✨"
-        title="Default"
-        subtitle="Server pick"
-      />
-      {voices.map((v) => (
+    <>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
         <VoiceCard
-          key={v.id}
-          active={selected === v.id}
-          onSelect={() => onSelect(v.id)}
-          icon={VOICE_ICONS[v.gender] ?? "🎙️"}
-          title={v.name}
-          subtitle={v.accent}
+          active={selected === null}
+          onSelect={() => onSelect(null)}
+          icon="✨"
+          title="Default"
+          subtitle="Server pick"
         />
-      ))}
-    </div>
+        {voices.map((v) => (
+          <VoiceCard
+            key={v.id}
+            active={selected === v.id}
+            onSelect={() => onSelect(v.id)}
+            icon={VOICE_ICONS[v.gender] ?? "🎙️"}
+            title={v.name}
+            subtitle={v.accent}
+            previewState={preview.stateFor(v.id)}
+            onPreview={() => preview.toggle(v.id)}
+          />
+        ))}
+      </div>
+      {preview.error && (
+        <p className="mt-2 text-xs text-rose-400">{preview.error}</p>
+      )}
+    </>
   );
 }
 
@@ -991,33 +1045,46 @@ function VoiceCard({
   icon,
   title,
   subtitle,
+  previewState,
+  onPreview,
 }: {
   active: boolean;
   onSelect: () => void;
   icon: string;
   title: string;
   subtitle: string;
+  previewState?: VoicePreviewState;
+  onPreview?: () => void;
 }): JSX.Element {
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={`flex flex-col items-start gap-1 rounded-md border px-3 py-2 text-left ${
+    <div
+      className={`relative flex flex-col items-start gap-1 rounded-md border px-3 py-2 pr-9 text-left ${
         active
           ? "border-sky-600 bg-sky-600/10"
           : "border-slate-700 bg-slate-950 hover:border-slate-600"
       }`}
     >
-      <span className="text-lg leading-none">{icon}</span>
+      <button
+        type="button"
+        onClick={onSelect}
+        className="absolute inset-0 rounded-md focus:outline-none focus:ring-1 focus:ring-sky-500"
+        aria-label={`Select ${title}`}
+      />
+      <span className="relative text-lg leading-none">{icon}</span>
       <span
-        className={`text-sm font-medium ${
+        className={`relative text-sm font-medium ${
           active ? "text-sky-200" : "text-slate-100"
         }`}
       >
         {title}
       </span>
-      <span className="text-[11px] capitalize text-slate-400">{subtitle}</span>
-    </button>
+      <span className="relative text-[11px] capitalize text-slate-400">
+        {subtitle}
+      </span>
+      {onPreview && previewState && (
+        <VoicePreviewButton state={previewState} onToggle={onPreview} />
+      )}
+    </div>
   );
 }
 
@@ -1089,6 +1156,144 @@ function CoverArtPicker({
           Editing topic or genre will clear the preview.
         </p>
         {error && <p className="text-xs text-rose-400">{error}</p>}
+      </div>
+    </div>
+  );
+}
+
+const MULTI_VOICE_ROLES: { id: string; label: string; hint: string }[] = [
+  { id: "narrator", label: "Narrator", hint: "Descriptive prose & action" },
+  { id: "dialogue_male", label: "Male dialogue", hint: "Speech by male characters" },
+  {
+    id: "dialogue_female",
+    label: "Female dialogue",
+    hint: "Speech by female characters",
+  },
+];
+
+/**
+ * Multi-voice settings for the create flow — same shape as the
+ * BookDetail panel but drives local state instead of patching a saved
+ * audiobook. Values flow into `audiobooks.create({ multi_voice_enabled,
+ * voice_roles })` so the new book starts out already configured.
+ */
+function MultiVoicePanel({
+  enabled,
+  roles,
+  onEnabled,
+  onRoles,
+  voices,
+}: {
+  enabled: boolean;
+  roles: Record<string, string>;
+  onEnabled: (v: boolean) => void;
+  onRoles: (next: Record<string, string>) => void;
+  voices: Voice[];
+}): JSX.Element {
+  const onPickRole = (roleId: string, voiceId: string | null): void => {
+    const next = { ...roles };
+    if (voiceId) next[roleId] = voiceId;
+    else delete next[roleId];
+    onRoles(next);
+  };
+
+  return (
+    <details
+      open={enabled}
+      className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900/40"
+    >
+      <summary className="flex cursor-pointer select-none items-center gap-2 px-4 py-2.5 text-sm text-slate-200 hover:bg-slate-900/70">
+        <span aria-hidden="true" className="text-xs text-slate-500">
+          {enabled ? "▾" : "▸"}
+        </span>
+        <span className="font-medium">Multi-voice narration</span>
+        {enabled ? (
+          <span className="rounded-full border border-emerald-700 bg-emerald-950/40 px-2 py-0.5 text-[11px] uppercase tracking-wide text-emerald-200">
+            on
+          </span>
+        ) : (
+          <span className="rounded-full border border-slate-700 bg-slate-950 px-2 py-0.5 text-[11px] uppercase tracking-wide text-slate-400">
+            off
+          </span>
+        )}
+      </summary>
+      <div className="space-y-4 border-t border-slate-800 px-4 py-4">
+        <p className="text-xs text-slate-400">
+          When on, narration runs an extra LLM pass to split prose by
+          speaker, then renders each segment with the role&apos;s mapped
+          voice. The voice above is used as the narrator fallback for
+          any role you leave unset.
+        </p>
+        <label className="inline-flex cursor-pointer items-center gap-2 text-sm text-slate-200">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => onEnabled(e.target.checked)}
+            className="h-4 w-4 accent-sky-500"
+          />
+          Enable multi-voice narration
+        </label>
+        {enabled && (
+          <div className="space-y-3">
+            {MULTI_VOICE_ROLES.map((r) => (
+              <RoleVoicePicker
+                key={r.id}
+                role={r}
+                value={roles[r.id] ?? null}
+                voices={voices}
+                onChange={(v) => onPickRole(r.id, v)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function RoleVoicePicker({
+  role,
+  value,
+  voices,
+  onChange,
+}: {
+  role: { id: string; label: string; hint: string };
+  value: string | null;
+  voices: Voice[];
+  onChange: (voiceId: string | null) => void;
+}): JSX.Element {
+  // Visual hint: voices whose gender matches the role get a checkmark.
+  // Narrator is gender-neutral so no badge.
+  const genderHint =
+    role.id === "dialogue_male"
+      ? "male"
+      : role.id === "dialogue_female"
+        ? "female"
+        : null;
+  return (
+    <div className="rounded-md border border-slate-800 bg-slate-950/40 p-3">
+      <div className="flex items-baseline justify-between gap-2">
+        <div>
+          <p className="text-sm font-medium text-slate-100">{role.label}</p>
+          <p className="text-[11px] text-slate-500">{role.hint}</p>
+        </div>
+        <select
+          value={value ?? ""}
+          onChange={(e) => onChange(e.target.value || null)}
+          className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-slate-100 outline-none focus:border-sky-600"
+        >
+          <option value="">— Use narrator —</option>
+          {voices.map((v) => {
+            const match = genderHint && v.gender === genderHint;
+            return (
+              <option key={v.id} value={v.id}>
+                {v.name}
+                {v.gender ? ` (${v.gender})` : ""}
+                {match ? " ✓" : ""}
+              </option>
+            );
+          })}
+        </select>
       </div>
     </div>
   );

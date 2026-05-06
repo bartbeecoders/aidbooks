@@ -905,7 +905,13 @@ impl JobHandler for TtsChapterHandler {
             None => primary_language(&self.0, &audiobook_id).await?,
         };
 
-        ctx.progress(&job, "narrating", 0.0).await;
+        // Surface which voice this chapter will narrate with so the
+        // activity log shows e.g. "narrating with Eve" instead of the
+        // generic "narrating" — multi-voice books get all three role
+        // voices listed.
+        let voice_label = audio_gen::chapter_voice_summary(&self.0, &audiobook_id).await;
+        let stage = format!("narrating with {voice_label}");
+        ctx.progress(&job, &stage, 0.0).await;
         match audio_gen::run_one_by_number(
             &self.0,
             &UserId(user_id),

@@ -80,6 +80,7 @@ impl JobHandler for PublishYoutubeHandler {
         let mode = pub_row.mode;
         let existing_playlist_id = pub_row.playlist_id;
         let review = pub_row.review;
+        let overlay_override = pub_row.like_subscribe_overlay;
         // Shorts always upload as a single vertical clip. Even if the
         // publication row was somehow flagged as `playlist`, override
         // that here so the encoder + uploader take the single-video
@@ -144,10 +145,16 @@ impl JobHandler for PublishYoutubeHandler {
             .as_ref()
             .map(|s| s.include_credits)
             .unwrap_or(false);
-        let like_subscribe_overlay = publish_settings
-            .as_ref()
-            .map(|s| s.like_subscribe_overlay)
-            .unwrap_or(false);
+        // Per-publication override wins; otherwise fall back to the
+        // singleton's default. `overlay_override` is `Some(_)` only when
+        // the publish form explicitly set "Yes" or "No" — leaving the
+        // tri-state on "Default" stores `NONE` and we inherit here.
+        let like_subscribe_overlay = overlay_override.unwrap_or(
+            publish_settings
+                .as_ref()
+                .map(|s| s.like_subscribe_overlay)
+                .unwrap_or(false),
+        );
         let credits = if include_credits {
             load_credits_block(state, &audiobook_id).await
         } else {
@@ -2206,6 +2213,10 @@ struct PublicationLookup {
     mode: String,
     playlist_id: Option<String>,
     review: bool,
+    /// Per-publication override for the like-and-subscribe overlay.
+    /// `None` = inherit the global setting; `Some(_)` = explicit
+    /// override that wins regardless of the singleton.
+    like_subscribe_overlay: Option<bool>,
 }
 
 async fn find_publication(
@@ -2223,12 +2234,15 @@ async fn find_publication(
         playlist_id: Option<String>,
         #[serde(default)]
         review: Option<bool>,
+        #[serde(default)]
+        like_subscribe_overlay: Option<bool>,
     }
     let rows: Vec<Row> = state
         .db()
         .inner()
         .query(format!(
-            "SELECT id, privacy_status, mode, playlist_id, review \
+            "SELECT id, privacy_status, mode, playlist_id, review, \
+                    like_subscribe_overlay \
              FROM youtube_publication \
              WHERE audiobook = audiobook:`{audiobook_id}` AND language = $lang LIMIT 1"
         ))
@@ -2243,6 +2257,7 @@ async fn find_publication(
         mode: r.mode.unwrap_or_else(|| "single".to_string()),
         playlist_id: r.playlist_id,
         review: r.review.unwrap_or(false),
+        like_subscribe_overlay: r.like_subscribe_overlay,
     }))
 }
 

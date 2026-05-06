@@ -30,6 +30,12 @@ import { ArtStyleSelect } from "../components/ArtStylePicker";
 import { CopyButton } from "../components/CopyButton";
 import { ART_STYLES, styleIcon, styleLabel } from "../lib/art-styles";
 import { imageCapableLlms } from "../lib/cover-llm";
+import { voicesForLanguage } from "../lib/voices";
+import {
+  useVoicePreview,
+  type VoicePreviewState,
+} from "../lib/useVoicePreview";
+import { VoicePreviewButton } from "../components/VoicePreview";
 import { StatusPill } from "./Library";
 
 const ALL_LANGUAGES: { code: string; label: string; flag: string }[] = [
@@ -341,8 +347,9 @@ export function BookDetail(): JSX.Element {
   const canNarrate = haveText && !generateAudio.isPending;
   const ready = isPrimaryView && data.status === "audio_ready";
 
-  const voices = voicesQuery.data?.items ?? [];
-  const voiceLabel = voiceFor(voices, data.voice_id ?? null);
+  const allVoices = voicesQuery.data?.items ?? [];
+  const voices = voicesForLanguage(allVoices, data.language);
+  const voiceLabel = voiceFor(allVoices, data.voice_id ?? null);
 
   const pendingKind: "chapters" | "tts" | null =
     parentJobs.length > 0
@@ -681,6 +688,7 @@ export function BookDetail(): JSX.Element {
         audiobookId={data.id}
         accessToken={accessToken}
         parentJobs={parentJobs}
+        jobStages={progress.jobStages}
         pendingKind={pendingKind}
         publications={publications.data?.items ?? []}
       />
@@ -1159,6 +1167,7 @@ function ChangeVoiceDialog({
   onSaved: () => void;
 }): JSX.Element {
   const [picked, setPicked] = useState<string | null>(currentVoiceId);
+  const preview = useVoicePreview();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -1207,9 +1216,14 @@ function ChangeVoiceDialog({
               onSelect={() => setPicked(v.id)}
               title={v.name}
               subtitle={v.accent}
+              previewState={preview.stateFor(v.id)}
+              onPreview={() => preview.toggle(v.id)}
             />
           ))}
         </div>
+        {preview.error && (
+          <p className="mt-3 text-xs text-rose-400">{preview.error}</p>
+        )}
         {save.error && (
           <p className="mt-3 text-xs text-rose-400">
             {save.error instanceof ApiError
@@ -1243,31 +1257,44 @@ function SelectableVoice({
   onSelect,
   title,
   subtitle,
+  previewState,
+  onPreview,
 }: {
   active: boolean;
   onSelect: () => void;
   title: string;
   subtitle: string;
+  previewState?: VoicePreviewState;
+  onPreview?: () => void;
 }): JSX.Element {
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      className={`flex flex-col items-start gap-0.5 rounded-md border px-3 py-2 text-left ${
+    <div
+      className={`relative flex flex-col items-start gap-0.5 rounded-md border px-3 py-2 pr-9 text-left ${
         active
           ? "border-sky-600 bg-sky-600/10"
           : "border-slate-700 bg-slate-950 hover:border-slate-600"
       }`}
     >
+      <button
+        type="button"
+        onClick={onSelect}
+        className="absolute inset-0 rounded-md focus:outline-none focus:ring-1 focus:ring-sky-500"
+        aria-label={`Select ${title}`}
+      />
       <span
-        className={`text-sm font-medium ${
+        className={`relative text-sm font-medium ${
           active ? "text-sky-200" : "text-slate-100"
         }`}
       >
         {title}
       </span>
-      <span className="text-[11px] capitalize text-slate-400">{subtitle}</span>
-    </button>
+      <span className="relative text-[11px] capitalize text-slate-400">
+        {subtitle}
+      </span>
+      {onPreview && previewState && (
+        <VoicePreviewButton state={previewState} onToggle={onPreview} />
+      )}
+    </div>
   );
 }
 
@@ -1700,7 +1727,18 @@ function formatUsd(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
-function ParentJobRow({ job }: { job: JobSnapshot }): JSX.Element {
+function ParentJobRow({
+  job,
+  stage,
+}: {
+  job: JobSnapshot;
+  /**
+   * Live `stage` string from the WebSocket for this job's id, e.g.
+   * `"narrating with Eve"`. Empty/null when no progress event has
+   * arrived yet (or after a terminal event clears it).
+   */
+  stage: string | null;
+}): JSX.Element {
   const indeterminate = job.status === "queued" || job.status === "throttled";
   const title = activityJobTitle(job);
   const label =
@@ -1711,6 +1749,10 @@ function ParentJobRow({ job }: { job: JobSnapshot }): JSX.Element {
         : job.status === "throttled"
           ? "throttled — retrying soon"
           : job.status;
+  // Only surface the stage line while the job is actively running —
+  // queued/throttled jobs haven't picked up a worker yet, and finished
+  // jobs already say "completed" in the right-aligned label.
+  const showStage = job.status === "running" && stage && stage.length > 0;
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-900/40 p-3">
       <div className="flex items-center justify-between text-sm">
@@ -1719,6 +1761,9 @@ function ParentJobRow({ job }: { job: JobSnapshot }): JSX.Element {
         </span>
         <span className="text-xs text-slate-400">{label}</span>
       </div>
+      {showStage && (
+        <p className="mt-1 text-[11px] text-slate-400">{stage}</p>
+      )}
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
         {indeterminate ? (
           <div className="indeterminate-bar h-full w-1/3 rounded-full bg-sky-500" />
@@ -1781,12 +1826,19 @@ function ActivityLog({
   audiobookId,
   accessToken,
   parentJobs,
+  jobStages,
   pendingKind,
   publications,
 }: {
   audiobookId: string;
   accessToken: string;
   parentJobs: JobSnapshot[];
+  /**
+   * Live per-job `stage` strings from the WebSocket. Threaded through
+   * to `ParentJobRow` so e.g. narration rows can show "narrating with
+   * Eve" — see `chapter_voice_summary` on the backend.
+   */
+  jobStages: Record<string, string>;
   pendingKind: "chapters" | "tts" | null;
   publications: PublicationRow[];
 }): JSX.Element | null {
@@ -1890,7 +1942,13 @@ function ActivityLog({
               )}
               {parentJobs.length > 0 ? (
                 visibleParentJobs.length > 0 ? (
-                  visibleParentJobs.map((j) => <ParentJobRow key={j.id} job={j} />)
+                  visibleParentJobs.map((j) => (
+                    <ParentJobRow
+                      key={j.id}
+                      job={j}
+                      stage={jobStages[j.id] ?? null}
+                    />
+                  ))
                 ) : (
                   <p className="text-center text-xs text-slate-500">
                     All {completedCount} job{completedCount === 1 ? "" : "s"} completed.
@@ -2208,6 +2266,13 @@ function PublishYoutubeDialog({
   // needing an effect to keep them in sync.
   const [animate, setAnimate] = useState(animationsReady && !isShort);
   const [description, setDescription] = useState("");
+  // Tri-state for the like-and-subscribe overlay:
+  //   "default" → don't send the field; backend inherits the global setting
+  //   "on"      → force `true` on this publication
+  //   "off"     → force `false` on this publication
+  const [likeSubscribe, setLikeSubscribe] = useState<"default" | "on" | "off">(
+    "default",
+  );
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -2226,6 +2291,10 @@ function PublishYoutubeDialog({
         review,
         animate,
         description: description.trim() ? description : null,
+        like_subscribe_overlay:
+          likeSubscribe === "default"
+            ? null
+            : likeSubscribe === "on",
       }),
     onSuccess: onQueued,
   });
@@ -2389,6 +2458,47 @@ function PublishYoutubeDialog({
                   className="sr-only"
                 />
                 {v}
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
+        <fieldset className="mt-4">
+          <legend className="text-xs font-medium text-slate-300">
+            Like &amp; Subscribe overlay
+          </legend>
+          <p className="mt-1 text-[11px] text-slate-500">
+            Burn a centred call-to-action near the bottom of the frame
+            for a few seconds early on and again before the end. Leave
+            on <strong>Default</strong> to inherit the admin setting; pick{" "}
+            <strong>On</strong> or <strong>Off</strong> to override it just
+            for this video.
+          </p>
+          <div className="mt-2 grid grid-cols-3 gap-2">
+            {(
+              [
+                { value: "default", label: "Default" },
+                { value: "on", label: "On" },
+                { value: "off", label: "Off" },
+              ] as const
+            ).map((opt) => (
+              <label
+                key={opt.value}
+                className={`flex cursor-pointer items-center justify-center rounded-md border px-3 py-2 text-sm ${
+                  likeSubscribe === opt.value
+                    ? "border-rose-600 bg-rose-600/10 text-rose-200"
+                    : "border-slate-700 bg-slate-950 text-slate-200 hover:border-slate-600"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="like-subscribe"
+                  value={opt.value}
+                  checked={likeSubscribe === opt.value}
+                  onChange={() => setLikeSubscribe(opt.value)}
+                  className="sr-only"
+                />
+                {opt.label}
               </label>
             ))}
           </div>

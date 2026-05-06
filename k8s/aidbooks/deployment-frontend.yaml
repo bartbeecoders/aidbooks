@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aidbooks-frontend
+  namespace: aidbooks
+  labels:
+    app.kubernetes.io/name: aidbooks-frontend
+    app.kubernetes.io/part-of: aidbooks
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aidbooks-frontend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aidbooks-frontend
+        app.kubernetes.io/part-of: aidbooks
+    spec:
+      imagePullSecrets:
+        - name: acr-secret
+      securityContext:
+        # nginx-alpine runs as root by default for the master process and
+        # drops to nginx (uid 101) for workers. We don't override that —
+        # the official image already binds to a non-privileged container
+        # port (80) and writes to /var/cache/nginx as the nginx user.
+        runAsNonRoot: false
+      containers:
+        - name: nginx
+          image: beecodersregistry.azurecr.io/aidbooks-frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "20m"
+              memory: "32Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3

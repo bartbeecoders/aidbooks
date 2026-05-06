@@ -76,6 +76,7 @@ import type {
   UpdateUserRequest,
   UpdateVoiceRequest,
   VoiceList,
+  VoicePreviewResponse,
   YoutubeAccountStatus,
 } from "./types";
 
@@ -251,6 +252,10 @@ export const audiobooks = {
 // --- catalog + topics ----------------------------------------------------
 export const catalog = {
   voices: () => apiFetch<VoiceList>("/voices"),
+  previewVoice: (id: string) =>
+    apiFetch<VoicePreviewResponse>(
+      `/voices/${encodeURIComponent(id)}/preview`,
+    ),
   llms: () => apiFetch<import("./types").LlmList>("/llms"),
   audiobookCategories: () =>
     apiFetch<AudiobookCategoryNameList>("/audiobook-categories"),

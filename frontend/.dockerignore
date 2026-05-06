@@ -1,0 +1,10 @@
+# Used when building the frontend image with the frontend/ dir as context.
+# Mostly redundant with the root .dockerignore but kept here so a manual
+# `podman build frontend/` from the frontend dir still gets a clean context.
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local

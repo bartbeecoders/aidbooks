@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aidbooks-api
+  namespace: aidbooks
+  labels:
+    app.kubernetes.io/name: aidbooks-api
+    app.kubernetes.io/part-of: aidbooks
+spec:
+  # SurrealDB embedded + RWO PVC = exactly one writer. Don't bump replicas
+  # without first switching to a remote SurrealDB or splitting storage.
+  replicas: 1
+  strategy:
+    # Same reason as above: no two pods can hold the RocksDB lock at once.
+    # Recreate forces the old pod down before the new one starts.
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aidbooks-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aidbooks-api
+        app.kubernetes.io/part-of: aidbooks
+    spec:
+      imagePullSecrets:
+        - name: acr-secret
+      securityContext:
+        # The Dockerfile creates uid/gid 1000. fsGroup makes the kubelet
+        # chown the PVC mount to that gid on first attach so the api can
+        # write to /data without escalating.
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: api
+          image: beecodersregistry.azurecr.io/aidbooks-api:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8787
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: aidbooks-api-config
+            - secretRef:
+                name: aidbooks-api-secret
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          # /health is the cheap liveness check (process up, router built).
+          # /ready waits for db handle + worker pool, so it's the readiness
+          # gate.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Cold start touches RocksDB compaction + schema migrations; give
+          # it a generous startup window before liveness kicks in.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: aidbooks-data

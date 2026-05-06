@@ -1,0 +1,619 @@
+[
+  {
+    "voice_id": "ara",
+    "name": "Ara",
+    "language": "multilingual",
+    "gender": "female"
+  },
+  {
+    "voice_id": "eve",
+    "name": "Eve",
+    "language": "multilingual",
+    "gender": "female"
+  },
+  {
+    "voice_id": "leo",
+    "name": "Leo",
+    "language": "multilingual",
+    "gender": "male"
+  },
+  {
+    "voice_id": "rex",
+    "name": "Rex",
+    "language": "multilingual",
+    "gender": "male"
+  },
+  {
+    "voice_id": "sal",
+    "name": "Sal",
+    "language": "multilingual",
+    "gender": "male"
+  },
+  {
+    "voice_id": "f702f406",
+    "name": "Olli",
+    "language": "fi-FI",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "f4b9d6fc",
+    "name": "Omar",
+    "language": "ar",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "f331ee80",
+    "name": "Ahmet",
+    "language": "tr",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "f2f41225",
+    "name": "Maria",
+    "language": "es",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "f15c6a6a",
+    "name": "Henry",
+    "language": "en-GB",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "ef4ce33e",
+    "name": "Daan",
+    "language": "nl-NL",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "eacafe1e",
+    "name": "Vincent",
+    "language": "fr-BE",
+    "gender": "male",
+    "age": "old"
+  },
+  {
+    "voice_id": "e5da67a7",
+    "name": "Linh",
+    "language": "vi",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "e5d4f53e",
+    "name": "Pol",
+    "language": "ca-ES",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "e521cc67",
+    "name": "Hui",
+    "language": "zh",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "e1fc5a89",
+    "name": "Felix",
+    "language": "de",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "e1b1007e",
+    "name": "Rohan",
+    "language": "bn",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "d74461c6",
+    "name": "Hyun-woo",
+    "language": "ko",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "d2313a0d",
+    "name": "Pablo",
+    "language": "es",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "d11249e6",
+    "name": "Emma",
+    "language": "en-US",
+    "gender": "female",
+    "age": "old"
+  },
+  {
+    "voice_id": "cfccf16b",
+    "name": "Mads",
+    "language": "da-DK",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "ce19f825",
+    "name": "Magdalena",
+    "language": "pl-PL",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "cdb1cec8",
+    "name": "Lieke",
+    "language": "nl-NL",
+    "gender": "female",
+    "age": "old"
+  },
+  {
+    "voice_id": "c630b236",
+    "name": "Jordi",
+    "language": "ca-ES",
+    "gender": "male",
+    "age": "old"
+  },
+  {
+    "voice_id": "c3cdb7a4",
+    "name": "Bram",
+    "language": "nl-BE",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "bedd6226",
+    "name": "Olivia",
+    "language": "en-GB",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "bcf738e4",
+    "name": "Vihaan",
+    "language": "hi",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "bab9c92f",
+    "name": "Elsa",
+    "language": "sv-SE",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "aedba6b4",
+    "name": "Jeroen",
+    "language": "nl-BE",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "a7b78b05",
+    "name": "Sean",
+    "language": "en-IE",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "a69bdfe7",
+    "name": "Astrid",
+    "language": "da-DK",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "a656d78f",
+    "name": "Budi",
+    "language": "id",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "a5341c30",
+    "name": "Nicha",
+    "language": "th-TH",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "a2aa4b79",
+    "name": "Pooja",
+    "language": "bn",
+    "gender": "female"
+  },
+  {
+    "voice_id": "a24f5341",
+    "name": "Mikhail",
+    "language": "ru",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "a0fa45a6",
+    "name": "Pedro",
+    "language": "pt",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "a00ce99a",
+    "name": "Priya",
+    "language": "hi",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "9efdd836",
+    "name": "Istvan",
+    "language": "hu-HU",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "9ec6157c",
+    "name": "Aino",
+    "language": "fi-FI",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "9ab26871",
+    "name": "Wei",
+    "language": "zh",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "93bea908",
+    "name": "William",
+    "language": "sv-SE",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "7f989258",
+    "name": "Adi",
+    "language": "id",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "777d3f85",
+    "name": "Catarina",
+    "language": "pt",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "7160ae2c",
+    "name": "Krisztina",
+    "language": "hu-HU",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "70071d42",
+    "name": "Tomasz",
+    "language": "pl-PL",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "6fe32f8a",
+    "name": "Sophie",
+    "language": "nl-NL",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "6a41d324",
+    "name": "Liam",
+    "language": "en-US",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "6997b0ec",
+    "name": "Yang",
+    "language": "zh",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "681cd005",
+    "name": "Gabor",
+    "language": "hu-HU",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "6583fcc2",
+    "name": "Eszter",
+    "language": "hu-HU",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "5f0c2251",
+    "name": "Youssef",
+    "language": "ar",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "5e3e2cbe",
+    "name": "Mikko",
+    "language": "fi-FI",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "5d695b41",
+    "name": "Marc",
+    "language": "en-ZA",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "57b26f54",
+    "name": "Anika",
+    "language": "bn",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "57700f39",
+    "name": "Leon",
+    "language": "it",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "524f4cb1",
+    "name": "Lucas",
+    "language": "da-DK",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "4e1d5545",
+    "name": "Quang",
+    "language": "vi",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "4d9e4c6f",
+    "name": "Mathieu",
+    "language": "fr-BE",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "4d3af3e1",
+    "name": "Mireia",
+    "language": "ca-ES",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "4c7f16ff",
+    "name": "Oscar",
+    "language": "sv-SE",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "4b7af2d7",
+    "name": "Somchai",
+    "language": "th-TH",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "4984accb",
+    "name": "Zofia",
+    "language": "pl-PL",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "47519c37",
+    "name": "Freja",
+    "language": "da-DK",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "46a802e3",
+    "name": "Lucia",
+    "language": "es",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "45357fd3",
+    "name": "Mathilde",
+    "language": "fr-BE",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "44c91d64",
+    "name": "Sonja",
+    "language": "de",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "43423dee",
+    "name": "Giulia",
+    "language": "it",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "3b7f37c9",
+    "name": "Anke",
+    "language": "nl-BE",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "3b312632",
+    "name": "Alice",
+    "language": "sv-SE",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "3a3e080c",
+    "name": "Sofia",
+    "language": "fi-FI",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "39e46ca3",
+    "name": "Hoang",
+    "language": "vi",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "355dca53",
+    "name": "Niamh",
+    "language": "en-IE",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "330f1e6d",
+    "name": "Pim",
+    "language": "th-TH",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "2902bcfd",
+    "name": "Piotr",
+    "language": "pl-PL",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "20fa3f2e",
+    "name": "Sri",
+    "language": "id",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "1ebfec36",
+    "name": "Marco",
+    "language": "it",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "1a59f327",
+    "name": "Carlos",
+    "language": "es",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "18245f0d",
+    "name": "Bas",
+    "language": "nl-NL",
+    "gender": "male",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "155d4e9b",
+    "name": "Nuria",
+    "language": "ca-ES",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "135ff7ec",
+    "name": "Thandi",
+    "language": "en-ZA",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "0d3372eb",
+    "name": "Sergei",
+    "language": "ru",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "0b875ae2",
+    "name": "Sonia",
+    "language": "ru",
+    "gender": "female",
+    "age": "middle-aged"
+  },
+  {
+    "voice_id": "0b54c30d",
+    "name": "Tanvir",
+    "language": "bn",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "09b02491",
+    "name": "Mei",
+    "language": "zh",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "07e283bf",
+    "name": "Aisyah",
+    "language": "id",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "0735ff93",
+    "name": "Diya",
+    "language": "hi",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "0463086e",
+    "name": "Thanawat",
+    "language": "th-TH",
+    "gender": "male",
+    "age": "young"
+  },
+  {
+    "voice_id": "025a38c5",
+    "name": "Yasmin",
+    "language": "ar",
+    "gender": "female",
+    "age": "young"
+  },
+  {
+    "voice_id": "01a7edae",
+    "name": "Chloe",
+    "language": "fr-BE",
+    "gender": "female",
+    "age": "middle-aged"
+  }
+]

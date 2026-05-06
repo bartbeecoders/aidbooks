@@ -18,6 +18,10 @@ build/
 .env.*.local
 !.env.example
 
+# K3S deploy: real Secret manifests must never be committed.
+# Apply via `./scripts/deploy-k3s.sh secret` after copying secret.example.yaml.
+k8s/aidbooks/secret.yaml
+
 # Runtime storage (audio files, embedded DB) — repo-root and per-crate copies
 /storage/
 !/storage/.gitkeep

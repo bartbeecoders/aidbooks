@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aidbooks
+  labels:
+    app.kubernetes.io/name: aidbooks
+    app.kubernetes.io/part-of: aidbooks

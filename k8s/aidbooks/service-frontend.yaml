@@ -1,0 +1,24 @@
+# Public-facing Service. Cloudflare Tunnel points at <node>:32085 and
+# forwards traffic from https://aidbooks.hideterms.com.
+#
+# Why NodePort instead of an Ingress? Cloudflare Tunnel does TLS termination
+# + DNS for us, so we just need a stable in-cluster port to point cloudflared
+# at. NodePort is the simplest way to expose that on a single-node K3s.
+apiVersion: v1
+kind: Service
+metadata:
+  name: aidbooks-frontend
+  namespace: aidbooks
+  labels:
+    app.kubernetes.io/name: aidbooks-frontend
+    app.kubernetes.io/part-of: aidbooks
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: aidbooks-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 32085
+      protocol: TCP

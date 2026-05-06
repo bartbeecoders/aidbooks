@@ -27,7 +27,7 @@ use crate::handlers::auth::{
     AuthResponse, LoginRequest, LogoutRequest, RefreshRequest, RegisterRequest,
 };
 use crate::handlers::catalog::{
-    AudiobookCategoryName, AudiobookCategoryNameList, LlmList, VoiceList,
+    AudiobookCategoryName, AudiobookCategoryNameList, LlmList, VoiceList, VoicePreviewResponse,
 };
 use crate::handlers::health::{DbReadiness, Health, ReadinessReport};
 use crate::handlers::integrations::{
@@ -98,6 +98,7 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         crate::handlers::jobs::list_for_audiobook,
         crate::handlers::topics::random,
         crate::handlers::catalog::list_voices,
+        crate::handlers::catalog::preview_voice,
         crate::handlers::catalog::list_llms,
         // --- Phase 7: admin ---
         crate::handlers::admin::system_overview,
@@ -212,6 +213,7 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         LlmProvider,
         LlmRole,
         VoiceList,
+        VoicePreviewResponse,
         LlmList,
         // jobs + progress
         JobKind,

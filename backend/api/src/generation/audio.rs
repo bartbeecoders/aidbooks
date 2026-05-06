@@ -55,6 +55,11 @@ struct VoiceMini {
     provider_voice_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct VoiceLabel {
+    name: String,
+}
+
 /// Generate audio for a single chapter by number, in the requested language.
 pub async fn run_one_by_number(
     state: &AppState,
@@ -223,6 +228,83 @@ async fn resolve_primary_voice(state: &AppState, book: &AudiobookMini) -> Result
         }
         None => state.config().xai_default_voice.clone(),
     })
+}
+
+/// Human-readable description of which voice(s) the next narration of
+/// this audiobook will use, suitable for surfacing in progress events
+/// (e.g. `"Eve"`, `"Eve / John / Anna"`, `"default voice"`).
+///
+/// Single-voice books return the primary voice's display name, falling
+/// back to `"default voice"` when no `primary_voice` is set. Multi-voice
+/// books return the three role voices joined with ` / ` in canonical
+/// order (narrator, male dialogue, female dialogue), substituting the
+/// narrator's voice for any role the user hasn't mapped — same fallback
+/// the audio path itself applies, so what we render matches what we
+/// label.
+pub async fn chapter_voice_summary(state: &AppState, audiobook_id: &str) -> String {
+    let book = match load_audiobook_mini(state, audiobook_id).await {
+        Ok(b) => b,
+        Err(_) => return "default voice".to_string(),
+    };
+    let multi_voice = book.multi_voice_enabled.unwrap_or(false)
+        && book
+            .voice_roles
+            .as_ref()
+            .map(|m| !m.is_empty())
+            .unwrap_or(false);
+
+    let primary_label = match book.primary_voice.as_ref() {
+        Some(thing) => resolve_voice_label(state, &thing.id.to_raw())
+            .await
+            .unwrap_or_else(|| "default voice".to_string()),
+        None => "default voice".to_string(),
+    };
+
+    if !multi_voice {
+        return primary_label;
+    }
+
+    // Multi-voice: resolve each canonical role through the user's
+    // mapping → fallback to narrator → fallback to the primary label.
+    let roles = book.voice_roles.clone().unwrap_or_default();
+    let mut out: HashMap<&'static str, String> = HashMap::new();
+    for (role, voice_id) in &roles {
+        let canonical = voices::canonical_role(role);
+        if let Some(label) = resolve_voice_label(state, voice_id).await {
+            out.insert(canonical, label);
+        }
+    }
+    let narrator = out
+        .get(voices::ROLE_NARRATOR)
+        .cloned()
+        .unwrap_or_else(|| primary_label.clone());
+    let male = out
+        .get(voices::ROLE_DIALOGUE_MALE)
+        .cloned()
+        .unwrap_or_else(|| narrator.clone());
+    let female = out
+        .get(voices::ROLE_DIALOGUE_FEMALE)
+        .cloned()
+        .unwrap_or_else(|| narrator.clone());
+    format!("{narrator} / {male} / {female}")
+}
+
+/// Look up `voice:<id>.name`. Returns `None` when the row is missing
+/// (admin removed the voice between save and narration). Used by
+/// `chapter_voice_summary` for the user-facing stage label.
+async fn resolve_voice_label(state: &AppState, voice_raw_id: &str) -> Option<String> {
+    let rows: Vec<VoiceLabel> = state
+        .db()
+        .inner()
+        .query(format!("SELECT name FROM voice:`{voice_raw_id}`"))
+        .await
+        .ok()?
+        .take(0)
+        .ok()?;
+    rows.into_iter()
+        .next()
+        .map(|v| v.name.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Look up `voice:<id>.provider_voice_id`. Returns `None` when the

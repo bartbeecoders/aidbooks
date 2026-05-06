@@ -1,0 +1,47 @@
+# Keep the build context small — Rust target/ alone is multi-GB.
+backend/target/
+backend/storage/
+backend/render/node_modules/
+backend/render/dist/
+backend/manim/.venv/
+backend/manim/smoke_output/
+
+frontend/dist/
+frontend/node_modules/
+**/node_modules/
+**/.vite/
+**/*.tsbuildinfo
+
+# Runtime data — never goes into an image.
+storage/
+.pids/
+.logs/
+
+# Secrets / env — must never leak into a layer.
+.env
+.env.local
+.env.*.local
+k8s/aidbooks/secret.yaml
+
+# VCS / editor / OS
+.git/
+.gitignore
+.github/
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Docs / planning that the image doesn't need.
+Vibecoding/
+docs/
+plan.md
+plan-animation.md
+README.md
+
+# Claude Code local state.
+.claude/
+
+# Native client we don't deploy.
+ios/

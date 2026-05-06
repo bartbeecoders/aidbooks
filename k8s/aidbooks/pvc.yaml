@@ -1,0 +1,19 @@
+# Persistent storage for SurrealDB (embedded RocksDB) and generated audio /
+# video files. K3s ships with the `local-path` provisioner by default, which
+# binds the volume to /var/lib/rancher/k3s/storage on the node.
+#
+# Single-node cluster, RWO is fine. If we ever go multi-node we'll need to
+# either pin the api Deployment to the storage node or move to a networked
+# volume (Longhorn / NFS).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: aidbooks-data
+  namespace: aidbooks
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 20Gi

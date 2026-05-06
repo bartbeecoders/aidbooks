@@ -1,11 +1,15 @@
 //! Idempotent seed data.
 //!
 //! Always runs on startup:
-//!   * 5 x.ai voices
-//!   * 2 default OpenRouter LLM configs
+//!   * the x.ai voice catalogue (snapshot of `GET /v1/tts/voices`)
+//!   * the prompt library
 //!
 //! Runs only when `dev_seed` is true (set via `LISTENAI_DEV_SEED=true`):
 //!   * demo admin user — email `demo@listenai.local`, password `demo`
+//!
+//! LLM rows are *not* seeded — admins manage them via the admin UI.
+//! Re-seeding them on every boot would clobber any priority / cost /
+//! `default_for` tweaks made there.
 //!
 //! `UPSERT`/`MERGE` make every seed step safe to re-run.
 
@@ -16,7 +20,6 @@ use tracing::{info, warn};
 
 pub async fn run(db: &Db, dev_seed: bool, password_pepper: &str) -> Result<()> {
     seed_voices(db).await?;
-    seed_llms(db).await?;
     seed_prompts(db).await?;
     if dev_seed {
         seed_demo_admin(db, password_pepper).await?;
@@ -145,17 +148,21 @@ async fn seed_prompts(db: &Db) -> Result<()> {
 }
 
 async fn seed_voices(db: &Db) -> Result<()> {
-    // Mirrors https://docs.x.ai/developers/model-capabilities/audio/voice-agent
-    let voices: &[Value] = &[
-        json!({ "id": "eve", "name": "Eve", "gender": "female", "accent": "energetic" }),
-        json!({ "id": "ara", "name": "Ara", "gender": "female", "accent": "warm" }),
-        json!({ "id": "rex", "name": "Rex", "gender": "male",   "accent": "confident" }),
-        json!({ "id": "sal", "name": "Sal", "gender": "neutral","accent": "smooth" }),
-        json!({ "id": "leo", "name": "Leo", "gender": "male",   "accent": "authoritative" }),
-    ];
+    // Snapshot of `GET https://api.x.ai/v1/tts/voices` — refresh by re-running
+    // that endpoint and writing `.voices` to `xai_voices.json`. Each entry has
+    // `voice_id`, `name`, `language` (BCP-47 or `multilingual`), `gender`, and
+    // an optional `age` we map onto the `accent` column.
+    const RAW: &str = include_str!("xai_voices.json");
+    let voices: Vec<Value> = serde_json::from_str(RAW)
+        .map_err(|e| Error::Database(format!("parse xai_voices.json: {e}")))?;
 
-    for v in voices {
-        let id = v["id"].as_str().expect("seed voice id");
+    for v in &voices {
+        let id = v["voice_id"].as_str().expect("seed voice id");
+        let name = v["name"].as_str().expect("seed voice name");
+        let gender = v["gender"].as_str().expect("seed voice gender");
+        let language = v["language"].as_str().expect("seed voice language");
+        let accent = v.get("age").and_then(|a| a.as_str()).unwrap_or("");
+
         let sql = format!(
             r#"UPSERT voice:`{id}` CONTENT {{
                 name: $name,
@@ -163,17 +170,18 @@ async fn seed_voices(db: &Db) -> Result<()> {
                 provider_voice_id: $voice_id,
                 gender: $gender,
                 accent: $accent,
-                language: "en",
+                language: $language,
                 enabled: true,
                 premium_only: false
             }}"#
         );
         db.inner()
             .query(&sql)
-            .bind(("name", v["name"].as_str().unwrap().to_string()))
+            .bind(("name", name.to_string()))
             .bind(("voice_id", id.to_string()))
-            .bind(("gender", v["gender"].as_str().unwrap().to_string()))
-            .bind(("accent", v["accent"].as_str().unwrap().to_string()))
+            .bind(("gender", gender.to_string()))
+            .bind(("accent", accent.to_string()))
+            .bind(("language", language.to_string()))
             .await
             .map_err(|e| Error::Database(format!("seed voice {id}: {e}")))?
             .check()
@@ -183,82 +191,3 @@ async fn seed_voices(db: &Db) -> Result<()> {
     Ok(())
 }
 
-async fn seed_llms(db: &Db) -> Result<()> {
-    let llms: &[Value] = &[
-        json!({
-            "id":            "claude_sonnet_4_6",
-            "name":          "Claude Sonnet 4.6",
-            "model_id":      "anthropic/claude-sonnet-4.6",
-            "context":       200000,
-            "cost_prompt":   3.0,
-            "cost_completion": 15.0,
-            "default_for":   ["outline", "chapter"],
-            "function":      "text",
-            "languages":     [],
-            "priority":      10,
-        }),
-        json!({
-            "id":            "claude_haiku_4_5",
-            "name":          "Claude Haiku 4.5",
-            "model_id":      "anthropic/claude-haiku-4.5",
-            "context":       200000,
-            "cost_prompt":   0.25,
-            "cost_completion": 1.25,
-            "default_for":   ["random_topic", "title"],
-            "function":      "text",
-            "languages":     [],
-            "priority":      20,
-        }),
-    ];
-
-    for l in llms {
-        let id = l["id"].as_str().expect("seed llm id");
-        let default_for: Vec<String> = l["default_for"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap().to_string())
-            .collect();
-        let languages: Vec<String> = l["languages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap().to_string())
-            .collect();
-        // UPSERT MERGE so re-running doesn't clobber an admin's tweaks to
-        // priority/cost/etc. on existing rows.
-        let sql = format!(
-            r#"UPSERT llm:`{id}` MERGE {{
-                name: $name,
-                provider: "open_router",
-                model_id: $model_id,
-                context_window: $context,
-                cost_prompt_per_1k: $cost_p,
-                cost_completion_per_1k: $cost_c,
-                cost_per_megapixel: 0.0,
-                enabled: true,
-                default_for: $default_for,
-                function: $function,
-                languages: $languages,
-                priority: $priority
-            }}"#
-        );
-        db.inner()
-            .query(&sql)
-            .bind(("name", l["name"].as_str().unwrap().to_string()))
-            .bind(("model_id", l["model_id"].as_str().unwrap().to_string()))
-            .bind(("context", l["context"].as_i64().unwrap()))
-            .bind(("cost_p", l["cost_prompt"].as_f64().unwrap()))
-            .bind(("cost_c", l["cost_completion"].as_f64().unwrap()))
-            .bind(("default_for", default_for))
-            .bind(("function", l["function"].as_str().unwrap().to_string()))
-            .bind(("languages", languages))
-            .bind(("priority", l["priority"].as_i64().unwrap()))
-            .await
-            .map_err(|e| Error::Database(format!("seed llm {id}: {e}")))?
-            .check()
-            .map_err(|e| Error::Database(format!("seed llm {id}: {e}")))?;
-    }
-    info!(count = llms.len(), "llms seeded");
-    Ok(())
-}
