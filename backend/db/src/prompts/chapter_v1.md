@@ -15,7 +15,7 @@ Previous chapter ended with:
 Writing rules:
 - Pure prose, in GitHub-flavored Markdown. Paragraphs only — no headings, no lists, no tables.
 - Natural spoken rhythm: short sentences, varied cadence, no URLs or citations.
-- Open with a sentence that flows from the previous chapter (if any).
+- {{opening_rule}}
 - End on a clean beat — no dangling questions unless the synopsis demands one.
 - Do not restate the chapter title in the body.
 - No code blocks, no markdown tables, no images.
