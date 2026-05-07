@@ -1230,6 +1230,7 @@ async fn concat_animated_chapters(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // ffmpeg encoder driver; grouping flags into a struct adds noise without value
 async fn encode_mp4_segmented<F, Fut>(
     state: &AppState,
     images: &[ImageSegment],

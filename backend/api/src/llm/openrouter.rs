@@ -602,15 +602,13 @@ fn extract_message(message: &Value) -> (String, Option<String>) {
                         text_parts.push(t.to_string());
                     }
                 }
-                "image_url" => {
-                    if from_content_image.is_none() {
-                        if let Some(url) = block
-                            .get("image_url")
-                            .and_then(|u| u.get("url"))
-                            .and_then(Value::as_str)
-                        {
-                            from_content_image = Some(strip_data_url(url));
-                        }
+                "image_url" if from_content_image.is_none() => {
+                    if let Some(url) = block
+                        .get("image_url")
+                        .and_then(|u| u.get("url"))
+                        .and_then(Value::as_str)
+                    {
+                        from_content_image = Some(strip_data_url(url));
                     }
                 }
                 _ => {}

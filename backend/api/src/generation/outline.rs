@@ -58,6 +58,7 @@ const OUTLINE_MODEL_FALLBACK_HINT: &str = "outline LLM produced invalid JSON";
 /// budget so the result fits inside a 90-second YouTube Short — a single
 /// chapter capped at 225 words (~1.5 minutes of narration at 150 wpm).
 /// The `length` preset is ignored in that case.
+#[allow(clippy::too_many_arguments)] // pipeline-stage entrypoint; extracting a struct just hides the params
 pub async fn run(
     state: &AppState,
     user: &UserId,

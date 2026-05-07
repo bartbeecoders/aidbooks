@@ -182,7 +182,9 @@ pub async fn render_chapter(
                     duration_ms,
                     output_mp4: seg_path.clone(),
                 };
-                let pool = manim_pool.as_ref().unwrap();
+                let Some(pool) = manim_pool.as_ref() else {
+                    unreachable!("manim_pool.is_some() guard above")
+                };
                 pool.render(&req).await
             }
             Scene::Paragraph {
@@ -199,7 +201,9 @@ pub async fn render_chapter(
                     duration_ms,
                     output_mp4: seg_path.clone(),
                 };
-                let pool = manim_pool.as_ref().unwrap();
+                let Some(pool) = manim_pool.as_ref() else {
+                    unreachable!("manim_pool.is_some() guard above")
+                };
                 pool.render(&req).await
             }
             Scene::Paragraph {
@@ -410,7 +414,7 @@ async fn build_silent_wav(
         .arg("-f")
         .arg("lavfi")
         .arg("-i")
-        .arg(format!("anullsrc=channel_layout=mono:sample_rate=24000"))
+        .arg("anullsrc=channel_layout=mono:sample_rate=24000")
         .arg("-t")
         .arg(format!("{secs:.3}"))
         .arg("-c:a")

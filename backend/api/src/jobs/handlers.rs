@@ -1068,6 +1068,7 @@ async fn set_audiobook_status(state: &AppState, audiobook_id: &str, status: &str
 /// typed DTO — going through `serde_json::Value` doesn't round-trip
 /// reliably through SurrealDB's `option<object>` (inner fields silently
 /// default), which is why pre-2026-04 audiobooks never auto-narrated.
+#[allow(clippy::result_large_err)] // surrealdb::Error is ~144 bytes; only used internally before mapping to anyhow
 async fn load_auto_pipeline(
     state: &AppState,
     audiobook_id: &str,
@@ -1253,6 +1254,7 @@ async fn publish_job_snapshot(ctx: &JobContext, audiobook_id: &str) {
 /// a warn (instead of a hard fail) when the user has no YouTube account
 /// connected — we don't want a successful narration to look broken just
 /// because the publish step couldn't run.
+#[allow(clippy::result_large_err)] // surrealdb::Error is ~144 bytes; only used internally before mapping to anyhow
 async fn enqueue_auto_publish(
     state: &AppState,
     ctx: &JobContext,

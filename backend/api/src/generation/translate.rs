@@ -445,6 +445,12 @@ fn extract_translation_via_regex(s: &str) -> Option<String> {
     None
 }
 
+// silences `unused` warning on json! when we add structured logging later.
+#[allow(dead_code)]
+fn _keep_json_used() -> serde_json::Value {
+    json!({})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,10 +487,4 @@ mod tests {
         let input = "{\"translation\":\"ciao\" oops more text";
         assert_eq!(parse_translation(input).unwrap(), "ciao");
     }
-}
-
-// silences `unused` warning on json! when we add structured logging later.
-#[allow(dead_code)]
-fn _keep_json_used() -> serde_json::Value {
-    json!({})
 }

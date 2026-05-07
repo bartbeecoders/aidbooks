@@ -227,8 +227,8 @@ pub struct AnimateChapterHandler {
     pool: Arc<OnceCell<Arc<RendererPool>>>,
     /// Phase G.6 — lazily-initialised Manim sidecar pool. None
     /// until the first STEM diagram render needs it; built once
-    /// from `Config::animate_manim_cmd` + `animate_manim_python_bin`
-    /// + `animate_manim_ld_preload`. Stays cold for non-STEM books
+    /// from `Config::animate_manim_cmd`, `animate_manim_python_bin`,
+    /// and `animate_manim_ld_preload`. Stays cold for non-STEM books
     /// so non-STEM users don't pay the Python/Manim startup cost.
     manim_pool: Arc<OnceCell<Option<Arc<ManimRendererPool>>>>,
 }
@@ -724,7 +724,7 @@ async fn primary_language(state: &AppState, audiobook_id: &str) -> Result<String
 }
 
 /// Effective STEM flag for an audiobook: `stem_override > stem_detected
-/// > false`. Same fallback the detail endpoint uses. Returns `false`
+/// \> false`. Same fallback the detail endpoint uses. Returns `false`
 /// on any DB error so a transient query hiccup degrades to "treat as
 /// non-STEM" (i.e. take the existing render path) rather than failing
 /// the render outright.
