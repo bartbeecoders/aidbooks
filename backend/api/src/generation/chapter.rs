@@ -36,6 +36,10 @@ struct AudiobookMini {
     /// when `outline.rs` persisted it.
     #[serde(default)]
     tags: Vec<String>,
+    /// Drives the chapter prompt's opening-rule branch: shorts get a
+    /// hook-shaped opener, long-form books keep the smooth-flow opener.
+    #[serde(default)]
+    is_short: Option<bool>,
 }
 
 /// Generate every `pending` (or failed) chapter in order. Updates each
@@ -137,6 +141,10 @@ async fn run_one(
             previous_ending.to_string()
         },
     );
+    vars.insert(
+        "opening_rule",
+        opening_rule_for(book.is_short.unwrap_or(false)).to_string(),
+    );
 
     let rendered = prompts::render(state, PromptRole::Chapter, &vars).await?;
     // Honor the admin's `default_for: ["chapter"]` + `priority` ranking and
@@ -230,7 +238,7 @@ async fn load_audiobook(state: &AppState, audiobook_id: &str) -> Result<Audioboo
         .db()
         .inner()
         .query(format!(
-            "SELECT title, genre, language, tags FROM audiobook:`{audiobook_id}`"
+            "SELECT title, genre, language, tags, is_short FROM audiobook:`{audiobook_id}`"
         ))
         .await
         .map_err(|e| Error::Database(format!("load audiobook: {e}")))?
@@ -239,6 +247,18 @@ async fn load_audiobook(state: &AppState, audiobook_id: &str) -> Result<Audioboo
     rows.into_iter().next().ok_or(Error::NotFound {
         resource: format!("audiobook:{audiobook_id}"),
     })
+}
+
+/// Pick the opening-line instruction the chapter writer sees. Shorts need
+/// to grab a Shorts-feed viewer in the first 1–3 seconds before they swipe,
+/// so the rule is explicit about what kind of hook works and which openings
+/// to avoid (issue #1).
+fn opening_rule_for(is_short: bool) -> &'static str {
+    if is_short {
+        "Open with a punchy 6–14 word hook that stops a YouTube Shorts viewer mid-swipe — a counter-intuitive claim, a sharp question, a vivid image, or a surprising fact. No preamble, no greetings, no \"In this short…\" or \"Today we'll explore…\". The hook must work without any prior context."
+    } else {
+        "Open with a sentence that flows from the previous chapter (if any)."
+    }
 }
 
 /// Render the tag palette into the human-readable form the chapter prompt
@@ -344,4 +364,19 @@ fn tail(s: &str, n: usize) -> String {
         start -= 1;
     }
     s[start..].to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opening_rule_branches_on_is_short() {
+        let long = opening_rule_for(false);
+        let short = opening_rule_for(true);
+        assert_ne!(long, short);
+        assert!(long.contains("previous chapter"));
+        assert!(short.contains("hook"));
+        assert!(short.contains("Shorts"));
+    }
 }
