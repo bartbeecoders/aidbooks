@@ -5,5 +5,7 @@ pub mod manim_code;
 pub mod outline;
 pub mod paragraphs;
 pub mod prompts;
+pub mod song_snippets;
+pub mod songbook;
 pub mod translate;
 pub mod voices;

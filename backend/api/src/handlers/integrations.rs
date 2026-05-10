@@ -72,6 +72,19 @@ pub struct PublishYoutubeRequest {
     /// loop. Defaults to false.
     #[serde(default)]
     pub animate: Option<bool>,
+    /// When true, render the visual track via the Hyperframes service:
+    /// content-aware scenes (title card, per-chapter intro, image +
+    /// caption, occasional pull-quote) with animated transitions.
+    /// Mutually exclusive with `animate`. Works for both Shorts (9:16)
+    /// and long-form (16:9) — in single + playlist mode for the latter.
+    #[serde(default)]
+    pub hyperframes: Option<bool>,
+    /// Number of scene "steps" the Hyperframes composition should
+    /// allocate. `None`, `0`, or `1` = auto-scale by narration duration
+    /// (≈ 1 step per 15 s, capped at 120). Otherwise clamped to
+    /// `2..=120`. In playlist mode the value is per chapter.
+    #[serde(default)]
+    pub hyperframes_steps: Option<u32>,
     /// Optional override for the YouTube video description; falls back to a
     /// generated one (topic + chapter list with timestamps).
     #[serde(default)]
@@ -373,6 +386,18 @@ pub async fn publish_youtube(
     }
     let review = body.review.unwrap_or(false);
     let animate = body.animate.unwrap_or(false);
+    let hyperframes = body.hyperframes.unwrap_or(false);
+    // 0/1/None = "auto" (renderer derives ~1 step / 15 s capped at 120);
+    // anything else clamps into [2..=120].
+    let hyperframes_steps = match body.hyperframes_steps {
+        Some(n) if n >= 2 => Some(n.min(120)),
+        _ => None,
+    };
+    if animate && hyperframes {
+        return Err(
+            Error::Validation("pick either `animate` or `hyperframes`, not both".into()).into(),
+        );
+    }
 
     // Ownership + readiness checks.
     assert_owner(&state, &audiobook_id, &user.id).await?;
@@ -426,6 +451,9 @@ pub async fn publish_youtube(
         "mode": mode,
         "review": review,
         "animate": animate,
+        "hyperframes": hyperframes,
+        // Sent when explicitly chosen; absence = renderer auto-scale.
+        "hyperframes_steps": hyperframes_steps,
     });
     if let Some(desc) = body.description.as_deref().filter(|s| !s.trim().is_empty()) {
         payload["description"] = serde_json::json!(desc);

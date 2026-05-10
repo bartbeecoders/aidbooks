@@ -81,6 +81,26 @@ pub struct Config {
     /// Path to the `ffmpeg` binary used to assemble the publish-time MP4.
     /// Empty = the publish handler refuses to run.
     pub ffmpeg_bin: String,
+    pub hyperframes_base_url: String,
+    pub hyperframes_api_key: String,
+
+    // --- Tinyfish (songbook category) ---
+    /// Path to the `tinyfish` CLI binary. Install with
+    /// `npm i -g @tiny-fish/cli`. Songbook outline runs shell out to
+    /// it and pipe `TINYFISH_API_KEY` via env. Defaults to `tinyfish`
+    /// (relies on PATH).
+    pub tinyfish_bin: String,
+    /// Tinyfish API key. Empty = mock mode: songbook outlines run
+    /// without lyrics lookup (a `warn!` log fires and the LLM gets
+    /// blank `lyrics`/`artist_bio`/`song_meaning` vars). Get one at
+    /// https://agent.tinyfish.ai/api-keys.
+    pub tinyfish_api_key: String,
+    /// Path to the `yt-dlp` binary used by the songbook snippet job.
+    /// Defaults to `yt-dlp` (relies on PATH). Empty disables snippet
+    /// download — the job fails fast with a warn so the songbook
+    /// still produces an outline + chapters; only the audio clips
+    /// are skipped.
+    pub yt_dlp_bin: String,
 
     // --- animation (companion video, feature/animation) ---
     /// Path to the Node binary used to drive the Revideo sidecar.
@@ -194,6 +214,11 @@ impl Default for Config {
                 .into(),
             youtube_post_connect_redirect: "http://localhost:5173/app/settings".into(),
             ffmpeg_bin: "ffmpeg".into(),
+            hyperframes_base_url: "https://hyperframes.hideterms.com/api".into(),
+            hyperframes_api_key: String::new(),
+            tinyfish_bin: "tinyfish".into(),
+            tinyfish_api_key: String::new(),
+            yt_dlp_bin: "yt-dlp".into(),
             animate_node_bin: "node".into(),
             animate_renderer_cmd: String::new(),
             animate_mock: false,

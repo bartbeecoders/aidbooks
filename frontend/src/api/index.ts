@@ -273,6 +273,43 @@ export const coverArt = {
     apiFetch<CoverPreviewResponse>("/cover-art/preview", { method: "POST", body }),
 };
 
+// --- songbook preview ---------------------------------------------------
+/** One previewed clip; pair `index` with the preview URL pattern. */
+export interface SongbookPreviewItem {
+  index: number;
+  duration_ms: number;
+}
+
+export interface SongbookPreviewResponse {
+  preview_id: string;
+  /** YouTube URL the snippets were cut from, if Tinyfish found one. */
+  youtube_url: string | null;
+  items: SongbookPreviewItem[];
+  /** Human-readable failure reason when no clips landed. */
+  error: string | null;
+}
+
+export const songbook = {
+  /** Run the snippet pipeline against a topic without creating an
+   * audiobook. The returned `preview_id` is good for the lifetime of
+   * the storage dir (no GC for now). */
+  previewSnippets: (body: { topic: string; count: number }) =>
+    apiFetch<SongbookPreviewResponse>("/songbook/preview-snippets", {
+      method: "POST",
+      body,
+    }),
+};
+
+/** URL the browser's `<audio>` tag points at to play one preview clip. */
+export function snippetPreviewUrl(
+  previewId: string,
+  index: number,
+  accessToken: string,
+): string {
+  const qs = new URLSearchParams({ access_token: accessToken });
+  return `/api/songbook/preview/${previewId}/${index}/audio?${qs.toString()}`;
+}
+
 /** URL of the saved cover for an audiobook. Used as `<img src>`. */
 export function coverImageUrl(audiobookId: string, accessToken: string): string {
   return `/api/audiobook/${audiobookId}/cover?access_token=${encodeURIComponent(accessToken)}`;

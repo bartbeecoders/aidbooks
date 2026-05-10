@@ -64,6 +64,11 @@ impl Default for WorkerConfig {
                 // `with_animate_concurrency` — kept at 2 here as a
                 // safe fallback for callers that don't override.
                 (JobKind::AnimateChapter, 2),
+                // Network + ffmpeg-bound: yt-dlp downloads each
+                // snippet sequentially inside the handler. One
+                // worker is plenty; parallel runs would hammer the
+                // same YouTube host.
+                (JobKind::SongSnippets, 1),
             ],
         }
     }

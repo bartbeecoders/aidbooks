@@ -545,7 +545,7 @@ async fn load_chapter_art_rel(
 /// Accept either the `Authorization: Bearer …` header (standard) OR the
 /// `?access_token=` query param (for `<audio>` / `<img>` consumers that can't
 /// set headers).
-fn resolve_user(
+pub(crate) fn resolve_user(
     state: &AppState,
     header_auth: Option<Authenticated>,
     q: &StreamAuthQuery,

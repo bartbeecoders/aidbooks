@@ -74,6 +74,15 @@ async fn seed_prompts(db: &Db) -> Result<()> {
             "body": include_str!("prompts/outline_v1.md"),
         }),
         json!({
+            "id": "outline_songbook_v1",
+            "role": "outline_songbook",
+            "variables": [
+                "topic", "chapter_count", "words_per_chapter",
+                "language", "lyrics", "artist_bio", "song_meaning"
+            ],
+            "body": include_str!("prompts/outline_songbook_v1.md"),
+        }),
+        json!({
             "id": "chapter_v1",
             "role": "chapter",
             "variables": [

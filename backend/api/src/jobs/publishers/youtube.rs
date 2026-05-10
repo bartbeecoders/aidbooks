@@ -31,6 +31,8 @@
 
 use std::path::{Path, PathBuf};
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use listenai_core::id::UserId;
 use listenai_core::{Error, Result};
@@ -39,7 +41,7 @@ use listenai_jobs::{
     repo::JobRow,
     JobHandler,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::state::AppState;
@@ -109,6 +111,26 @@ impl JobHandler for PublishYoutubeHandler {
             .and_then(|p| p.get("animate"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let hyperframes = job
+            .payload
+            .as_ref()
+            .and_then(|p| p.get("hyperframes"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        // None / 0 / 1 → renderer auto-scales by narration duration
+        // (~1 step / 15 s, capped at 120). Anything else clamps in.
+        let hyperframes_steps: Option<usize> = job
+            .payload
+            .as_ref()
+            .and_then(|p| p.get("hyperframes_steps"))
+            .and_then(|v| v.as_u64())
+            .and_then(|n| {
+                if n >= 2 {
+                    Some(n.min(120) as usize)
+                } else {
+                    None
+                }
+            });
 
         tracing::debug!(
             job_id = %job.id,
@@ -247,6 +269,19 @@ impl JobHandler for PublishYoutubeHandler {
             )
             .await);
         }
+        // Hyperframes is its own visual track (built from book content
+        // by the render server), so combining it with the per-chapter
+        // animations would just throw one of the tracks away. Reject
+        // the combination loudly — the HTTP layer also catches it but
+        // a stale job from before that check could still arrive here.
+        if animate && hyperframes {
+            return Ok(fail(
+                state,
+                &publication_id,
+                Error::Conflict("animate and hyperframes are mutually exclusive — pick one".into()),
+            )
+            .await);
+        }
         match effective_mode {
             "playlist" => {
                 // Prefer the podcast's playlist over a per-publication one
@@ -276,6 +311,8 @@ impl JobHandler for PublishYoutubeHandler {
                     footer.as_deref(),
                     review,
                     animate,
+                    hyperframes,
+                    hyperframes_steps,
                     like_subscribe_overlay,
                 )
                 .await
@@ -300,6 +337,8 @@ impl JobHandler for PublishYoutubeHandler {
                     footer.as_deref(),
                     review,
                     animate,
+                    hyperframes,
+                    hyperframes_steps,
                     like_subscribe_overlay,
                 )
                 .await
@@ -331,6 +370,8 @@ async fn run_single(
     footer: Option<&str>,
     review: bool,
     animate: bool,
+    hyperframes: bool,
+    hyperframes_steps: Option<usize>,
     like_subscribe_overlay: bool,
 ) -> Result<JobOutcome> {
     // ---- ffmpeg encode. ----------------------------------------------------
@@ -355,7 +396,54 @@ async fn run_single(
     let storage = &state.config().storage_path;
     let is_short = book.is_short.unwrap_or(false);
 
-    if animate {
+    if hyperframes {
+        // Shorts (≤ 90 s) fit in a single round-trip to the
+        // Hyperframes service. Long-form would otherwise blow past the
+        // service's per-render budget, so we split the book into
+        // per-chapter compositions and ffmpeg-concat them at the end.
+        // The user's requested `hyperframes_steps` is treated as a
+        // book-level total and allocated across chapters by duration.
+        if is_short {
+            let total_ms: u64 = chapters
+                .iter()
+                .map(|c| c.duration_ms.unwrap_or(0).max(0) as u64)
+                .sum();
+            if let Err(e) = render_hyperframes_video(
+                state,
+                ctx,
+                job,
+                book,
+                chapters,
+                audiobook_id,
+                language,
+                cover_path,
+                total_ms,
+                hyperframes_steps,
+                true,
+                "all",
+                &mp4_path,
+            )
+            .await
+            {
+                return Ok(fail(state, publication_id, e).await);
+            }
+        } else if let Err(e) = render_hyperframes_long_chunked(
+            state,
+            ctx,
+            job,
+            book,
+            chapters,
+            audiobook_id,
+            language,
+            cover_path,
+            hyperframes_steps,
+            &mp4_path,
+        )
+        .await
+        {
+            return Ok(fail(state, publication_id, e).await);
+        }
+    } else if animate {
         let chapter_videos: Vec<PathBuf> = chapters
             .iter()
             .map(|c| {
@@ -391,24 +479,63 @@ async fn run_single(
         // without paragraph art (or Shorts with `images_per_paragraph =
         // 0`) get a single full-duration cover/chapter-art segment via
         // the same fallback as before.
+        // Songbook snippets — interleave one snippet WAV between
+        // chapter i and chapter i+1 for each available
+        // `snippet-<i>.wav` on disk. Missing files are tolerated:
+        // the snippet job is best-effort, so a partial set is normal.
+        // The visual track during a snippet just shows the cover.
+        let snippet_dir = state
+            .config()
+            .storage_path
+            .join(audiobook_id)
+            .join("snippets");
+        let snippet_count = book.snippet_count.unwrap_or(0).clamp(0, 12) as u32;
+
         let mut image_segments: Vec<ImageSegment> = Vec::new();
-        for c in chapters {
+        let mut wavs: Vec<PathBuf> = Vec::new();
+        let mut spliced_snippet_ms: u64 = 0;
+        for (idx, c) in chapters.iter().enumerate() {
             image_segments.extend(build_chapter_image_segments(
                 c, cover_path, storage, is_short,
             ));
-        }
-
-        let wavs: Vec<PathBuf> = chapters
-            .iter()
-            .map(|c| {
+            wavs.push(
                 state
                     .config()
                     .storage_path
                     .join(audiobook_id)
                     .join(language)
-                    .join(format!("ch-{}.wav", c.number))
-            })
-            .collect();
+                    .join(format!("ch-{}.wav", c.number)),
+            );
+            let snippet_idx = (idx as u32) + 1;
+            if snippet_idx <= snippet_count {
+                let path = snippet_dir.join(format!("snippet-{snippet_idx}.wav"));
+                if path.exists() {
+                    match wav_duration_ms(&path) {
+                        Ok(dur_ms) if dur_ms > 0 => {
+                            wavs.push(path.clone());
+                            image_segments.push(ImageSegment {
+                                image_src: cover_path.to_path_buf(),
+                                duration_ms: dur_ms,
+                            });
+                            spliced_snippet_ms += dur_ms;
+                        }
+                        Ok(_) => {
+                            warn!(
+                                snippet = ?path,
+                                "publish: snippet has zero duration; skipping"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                snippet = ?path,
+                                error = %e,
+                                "publish: probe snippet wav failed; skipping"
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // Map ffmpeg's [0..1] encode progress onto [0.10..0.30] of the
         // overall publish progress so the bar moves smoothly through the
@@ -417,7 +544,8 @@ async fn run_single(
         let total_ms: u64 = chapters
             .iter()
             .map(|c| c.duration_ms.unwrap_or(0).max(0) as u64)
-            .sum();
+            .sum::<u64>()
+            + spliced_snippet_ms;
 
         let job_for_encode = job.clone();
         let ctx_for_encode = ctx.clone();
@@ -577,6 +705,8 @@ async fn run_playlist(
     footer: Option<&str>,
     review: bool,
     animate: bool,
+    hyperframes: bool,
+    hyperframes_steps: Option<usize>,
     like_subscribe_overlay: bool,
 ) -> Result<JobOutcome> {
     // Review mode: just encode every chapter MP4 and stop. We deliberately
@@ -590,9 +720,12 @@ async fn run_playlist(
             audiobook_id,
             language,
             publication_id,
+            book,
             chapters,
             cover_path,
             animate,
+            hyperframes,
+            hyperframes_steps,
             like_subscribe_overlay,
         )
         .await;
@@ -606,9 +739,14 @@ async fn run_playlist(
             url: format!("https://www.youtube.com/playlist?list={id}"),
         },
         _ => {
-            let title = trim_to(&book.title, 150);
+            let title = trim_to(&sanitize_for_youtube(&book.title), 150);
             let description = trim_to(
-                &render_playlist_description(book, description_override, footer, language),
+                &sanitize_for_youtube(&render_playlist_description(
+                    book,
+                    description_override,
+                    footer,
+                    language,
+                )),
                 5000,
             );
             match playlist::create_playlist(
@@ -680,11 +818,54 @@ async fn run_playlist(
 
         let storage = &state.config().storage_path;
 
-        // animate=true: the per-chapter `ch-N.video.mp4` from the
-        // animate job already has visuals + audio. Use it directly
-        // (no re-encode). For the original path, build a per-chapter
-        // slideshow + encode from cover + WAV.
-        let mp4_path = if animate {
+        // hyperframes=true: render a content-aware composition for
+        // this chapter via the Hyperframes service, then mux with the
+        // chapter's WAV. Same orientation as the book (Shorts get the
+        // 9:16 short layout, otherwise 16:9 landscape via rotation +
+        // transpose). Skips the slideshow path below.
+        let mp4_path = if hyperframes {
+            let path = state
+                .config()
+                .storage_path
+                .join(audiobook_id)
+                .join(language)
+                .join(format!("youtube-ch-{}.mp4", ch.number));
+            let chapter_total_ms = ch.duration_ms.unwrap_or(0).max(0) as u64;
+            let suffix = format!("ch-{}", ch.number);
+            // Per-chapter scope so each chapter's render server entry
+            // is independent (we delete it on completion either way).
+            if let Err(e) = render_hyperframes_video(
+                state,
+                ctx,
+                job,
+                book,
+                std::slice::from_ref(ch),
+                audiobook_id,
+                language,
+                cover_path,
+                chapter_total_ms,
+                hyperframes_steps,
+                false, // playlist mode is gated to non-Shorts at dispatch.
+                &suffix,
+                &path,
+            )
+            .await
+            {
+                mark_chapter_video_error(state, publication_id, ch, &e.to_string()).await;
+                return Ok(fail(state, publication_id, e).await);
+            }
+            // Encode-stage progress: jump to the encode-end milestone
+            // (~30 % of the chapter span) — the renderer reports its
+            // own progress sub-stages already.
+            let span_30 = span_start + (span_end - span_start) * 0.30;
+            ctx.progress(
+                job,
+                &format!("ch{} hyperframes ready", ch.number),
+                span_30.clamp(0.0, 0.99),
+            )
+            .await;
+            path
+        } else if animate {
             let p = storage
                 .join(audiobook_id)
                 .join(language)
@@ -883,9 +1064,12 @@ async fn run_playlist_preview(
     audiobook_id: &str,
     language: &str,
     publication_id: &str,
+    book: &DbAudiobook,
     chapters: &[DbChapter],
     cover_path: &Path,
     animate: bool,
+    hyperframes: bool,
+    hyperframes_steps: Option<usize>,
     like_subscribe_overlay: bool,
 ) -> Result<JobOutcome> {
     let total = chapters.len().max(1);
@@ -894,6 +1078,43 @@ async fn run_playlist_preview(
         let span_end = 0.10 + ((idx + 1) as f32 / total as f32) * 0.89;
 
         let storage = &state.config().storage_path;
+
+        if hyperframes {
+            let path = state
+                .config()
+                .storage_path
+                .join(audiobook_id)
+                .join(language)
+                .join(format!("youtube-ch-{}.mp4", ch.number));
+            let chapter_total_ms = ch.duration_ms.unwrap_or(0).max(0) as u64;
+            let suffix = format!("ch-{}", ch.number);
+            if let Err(e) = render_hyperframes_video(
+                state,
+                ctx,
+                job,
+                book,
+                std::slice::from_ref(ch),
+                audiobook_id,
+                language,
+                cover_path,
+                chapter_total_ms,
+                hyperframes_steps,
+                false,
+                &suffix,
+                &path,
+            )
+            .await
+            {
+                return Ok(fail(state, publication_id, e).await);
+            }
+            ctx.progress(
+                job,
+                &format!("ch{} hyperframes ready", ch.number),
+                span_end.clamp(0.0, 0.99),
+            )
+            .await;
+            continue;
+        }
 
         if animate {
             // Animation already exists on disk; nothing to do but
@@ -986,6 +1207,8 @@ async fn run_playlist_preview(
 // ---------------------------------------------------------------------------
 // Encoding
 // ---------------------------------------------------------------------------
+
+use crate::generation::song_snippets::wav_duration_ms;
 
 /// One image slot in the slideshow video track: the image to display
 /// and how long it stays on screen. Sum of every segment's duration_ms
@@ -1223,6 +1446,1320 @@ async fn concat_animated_chapters(
         let tail = String::from_utf8_lossy(&output.stderr).into_owned();
         return Err(Error::Other(anyhow::anyhow!(
             "ffmpeg (animate concat) exited with {}: {}",
+            output.status,
+            tail.trim_end()
+        )));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct HyperframesCompositionRequest {
+    id: String,
+    title: String,
+    subtitle: String,
+    duration: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    html: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HyperframesStatusResponse {
+    status: String,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+/// Map an explicit step request to an effective per-composition count.
+/// `None` (or the integrations handler's "0/1 = auto" sentinel) →
+/// auto-scale at ≈ 1 step / 15 s of narration, capped at 120 and floored
+/// at the chapter count so every chapter still gets at least a beat.
+fn effective_hyperframes_steps(steps: Option<usize>, total_ms: u64, chapter_count: usize) -> usize {
+    let auto = (total_ms / 15_000).clamp(2, 120) as usize;
+    let chosen = steps.unwrap_or(auto);
+    chosen.max(chapter_count).clamp(2, 120)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn render_hyperframes_video(
+    state: &AppState,
+    ctx: &JobContext,
+    job: &JobRow,
+    book: &DbAudiobook,
+    chapters: &[DbChapter],
+    audiobook_id: &str,
+    language: &str,
+    cover_path: &Path,
+    total_ms: u64,
+    steps: Option<usize>,
+    vertical: bool,
+    composition_suffix: &str,
+    out_path: &Path,
+) -> Result<()> {
+    let cfg = state.config();
+    let api_key = cfg.hyperframes_api_key.trim();
+    if api_key.is_empty() {
+        return Err(Error::Config(
+            "hyperframes_api_key is not configured".into(),
+        ));
+    }
+    let base = cfg.hyperframes_base_url.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Err(Error::Config(
+            "hyperframes_base_url is not configured".into(),
+        ));
+    }
+    if chapters.is_empty() {
+        return Err(Error::Conflict("no chapters for Hyperframes render".into()));
+    }
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::Other(anyhow::anyhow!("create hyperframes output dir: {e}")))?;
+    }
+    ctx.progress(job, "hyperframes_composing", 0.10).await;
+
+    // Bounded HTTP client. The per-request timeout has to swallow the
+    // tail-end MP4 download, which scales with composition length —
+    // at a conservative 5 Mbit/s a 30 min render can take a couple of
+    // minutes to pull down. We give it 30 minutes here and rely on the
+    // poll loop's wall-budget (below) plus the 10 s connect timeout to
+    // detect a hung render server.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30 * 60))
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| Error::Upstream(format!("hyperframes http client: {e}")))?;
+
+    // Render duration matches narration length (rounded up). Vertical
+    // = Shorts, capped at YouTube's 180 s upper bound. Landscape =
+    // long-form audiobook, capped at one hour so a misconfigured book
+    // can't queue a multi-hour render against a shared service.
+    let max_secs: u64 = if vertical { 180 } else { 60 * 60 };
+    let duration_secs = total_ms.max(1).div_ceil(1000).clamp(5, max_secs);
+    let effective_steps = effective_hyperframes_steps(steps, total_ms, chapters.len());
+    // Scope the composition id by audiobook + language + suffix so
+    // failures on the shared Hyperframes server are easier to trace
+    // back to a publication, and per-chapter playlist renders don't
+    // collide with one another.
+    let safe_lang = language.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+    let safe_book = audiobook_id.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+    let safe_suffix = composition_suffix.replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+    let id = format!(
+        "aidbooks-{safe_book}-{safe_lang}-{safe_suffix}-{}",
+        uuid::Uuid::new_v4().simple()
+    );
+    let storage_root = state.config().storage_path.as_path();
+    let html = if vertical {
+        build_hyperframes_html_short(
+            &id,
+            book,
+            chapters,
+            cover_path,
+            storage_root,
+            effective_steps,
+            duration_secs,
+        )?
+    } else {
+        build_hyperframes_html_long(
+            &id,
+            book,
+            chapters,
+            cover_path,
+            storage_root,
+            effective_steps,
+            duration_secs,
+        )?
+    };
+    let body = HyperframesCompositionRequest {
+        id: id.clone(),
+        title: book.title.clone(),
+        subtitle: String::new(),
+        duration: duration_secs,
+        html: Some(html),
+    };
+
+    tracing::info!(
+        composition_id = %id,
+        duration_secs,
+        steps = effective_steps,
+        chapters = chapters.len(),
+        vertical,
+        "hyperframes: creating composition"
+    );
+
+    let composition_url = format!("{base}/compositions");
+    let res = client
+        .post(&composition_url)
+        .bearer_auth(api_key)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| Error::Upstream(format!("hyperframes create composition: {e}")))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        return Err(Error::Upstream(format!(
+            "hyperframes create composition failed {status}: {text}"
+        )));
+    }
+
+    ctx.progress(job, "hyperframes_render_started", 0.15).await;
+    let render_url = format!("{base}/render/{id}");
+    let res = client
+        .post(&render_url)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|e| Error::Upstream(format!("hyperframes start render: {e}")))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        let _ = delete_hyperframes_composition(&client, base, api_key, &id).await;
+        return Err(Error::Upstream(format!(
+            "hyperframes start render failed {status}: {text}"
+        )));
+    }
+
+    let status_url = format!("{base}/status/{id}");
+    // The render server captures the page frame-by-frame in headless
+    // Chromium and re-encodes with ffmpeg, so wall-clock time scales
+    // with the composition duration rather than being a fixed cap. We
+    // budget ≈ 6× real-time (Shorts: 90 s narration → 9 min budget;
+    // 30 min book → 3 hr budget) and clamp the upper bound at 4 hours
+    // so a stuck render still fails the job eventually instead of
+    // pinning a worker forever.
+    let render_budget = Duration::from_secs((duration_secs * 6).clamp(8 * 60, 4 * 60 * 60));
+    // Polling cadence backs off for long renders — there's no point
+    // hammering a 1-hour render every two seconds.
+    let poll_interval = if duration_secs <= 180 {
+        Duration::from_secs(2)
+    } else if duration_secs <= 30 * 60 {
+        Duration::from_secs(5)
+    } else {
+        Duration::from_secs(10)
+    };
+    let started = std::time::Instant::now();
+    let mut completed = false;
+    let mut attempt: u64 = 0;
+    while started.elapsed() < render_budget {
+        attempt += 1;
+        tokio::time::sleep(poll_interval).await;
+        let res = match client.get(&status_url).bearer_auth(api_key).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, "hyperframes status request failed; will retry");
+                continue;
+            }
+        };
+        if !res.status().is_success() {
+            let status = res.status();
+            let text = res.text().await.unwrap_or_default();
+            let _ = delete_hyperframes_composition(&client, base, api_key, &id).await;
+            return Err(Error::Upstream(format!(
+                "hyperframes status failed {status}: {text}"
+            )));
+        }
+        let status: HyperframesStatusResponse = res
+            .json()
+            .await
+            .map_err(|e| Error::Upstream(format!("hyperframes status decode: {e}")))?;
+        match status.status.as_str() {
+            "completed" => {
+                completed = true;
+                break;
+            }
+            "failed" => {
+                let upstream_err = status.error.unwrap_or_else(|| "unknown error".into());
+                tracing::warn!(
+                    composition_id = %id,
+                    upstream_error = %upstream_err,
+                    elapsed_secs = started.elapsed().as_secs(),
+                    "hyperframes: render server returned failed"
+                );
+                let _ = delete_hyperframes_composition(&client, base, api_key, &id).await;
+                return Err(Error::Upstream(format!(
+                    "hyperframes render failed: {upstream_err}"
+                )));
+            }
+            _ => {
+                // Map elapsed/budget onto [0.15..0.80] so the bar
+                // creeps forward steadily even on multi-hour renders.
+                let elapsed_frac =
+                    (started.elapsed().as_secs_f32() / render_budget.as_secs_f32()).clamp(0.0, 1.0);
+                let pct = 0.15 + 0.65 * elapsed_frac;
+                ctx.progress(job, "hyperframes_rendering", pct).await;
+                if attempt.is_multiple_of(30) {
+                    tracing::info!(
+                        composition_id = %id,
+                        elapsed_secs = started.elapsed().as_secs(),
+                        budget_secs = render_budget.as_secs(),
+                        "hyperframes: still rendering"
+                    );
+                }
+                continue;
+            }
+        }
+    }
+    if !completed {
+        let _ = delete_hyperframes_composition(&client, base, api_key, &id).await;
+        return Err(Error::Upstream(format!(
+            "hyperframes render timed out after {} s waiting for completion (composition duration {duration_secs} s)",
+            render_budget.as_secs()
+        )));
+    }
+
+    ctx.progress(job, "hyperframes_downloading", 0.85).await;
+    // Suffix-scoped filename so per-chapter renders in playlist mode
+    // don't clobber one another's intermediate file.
+    let visual_path =
+        out_path.with_file_name(format!("youtube.hyperframes.visual-{safe_suffix}.mp4"));
+    let download_url = format!("{base}/download/{id}");
+    let bytes = client
+        .get(&download_url)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|e| Error::Upstream(format!("hyperframes download: {e}")))?
+        .error_for_status()
+        .map_err(|e| Error::Upstream(format!("hyperframes download status: {e}")))?
+        .bytes()
+        .await
+        .map_err(|e| Error::Upstream(format!("hyperframes download bytes: {e}")))?;
+    tracing::info!(
+        composition_id = %id,
+        bytes = bytes.len(),
+        "hyperframes: downloaded visual"
+    );
+    tokio::fs::write(&visual_path, bytes)
+        .await
+        .map_err(|e| Error::Other(anyhow::anyhow!("write hyperframes visual: {e}")))?;
+
+    ctx.progress(job, "hyperframes_muxing", 0.92).await;
+    let mux_result =
+        mux_hyperframes_visual_with_audio(state, chapters, &visual_path, out_path, !vertical).await;
+
+    // Best-effort cleanup regardless of mux outcome — composition stays on
+    // the shared global server otherwise. Failures are logged, not bubbled.
+    let _ = delete_hyperframes_composition(&client, base, api_key, &id).await;
+    let _ = std::fs::remove_file(&visual_path);
+
+    mux_result?;
+    ctx.progress(job, "hyperframes_done", 0.95).await;
+    Ok(())
+}
+
+/// Long-form Hyperframes pipeline: render one composition per chapter,
+/// then ffmpeg-concat into a single MP4.
+///
+/// The shared Hyperframes render server has its own internal time
+/// budget per composition (empirically ~5 minutes wall-clock); a single
+/// composition for an entire 30-minute audiobook reliably hits that
+/// limit and comes back as `status:"failed"`. By splitting the book at
+/// chapter boundaries we keep each upstream request small enough to
+/// finish, at the cost of one extra concat pass on our side.
+///
+/// User-requested `hyperframes_steps` is treated as a *book-level*
+/// total when present and allocated across chapters in proportion to
+/// their narration duration; `None` lets each chapter auto-scale on
+/// its own duration.
+#[allow(clippy::too_many_arguments)]
+async fn render_hyperframes_long_chunked(
+    state: &AppState,
+    ctx: &JobContext,
+    job: &JobRow,
+    book: &DbAudiobook,
+    chapters: &[DbChapter],
+    audiobook_id: &str,
+    language: &str,
+    cover_path: &Path,
+    total_steps: Option<usize>,
+    out_path: &Path,
+) -> Result<()> {
+    if chapters.is_empty() {
+        return Err(Error::Conflict("no chapters for Hyperframes render".into()));
+    }
+
+    let chapter_alloc: Option<Vec<usize>> = total_steps.map(|steps| {
+        let chosen = steps.max(chapters.len()).clamp(2, 120);
+        allocate_steps(chapters, chosen)
+    });
+
+    let dir = out_path
+        .parent()
+        .ok_or_else(|| Error::Other(anyhow::anyhow!("youtube output path has no parent")))?
+        .to_path_buf();
+    let mut chunk_paths: Vec<PathBuf> = Vec::with_capacity(chapters.len());
+    let n = chapters.len();
+    for (idx, ch) in chapters.iter().enumerate() {
+        let span_start = 0.10 + (idx as f32 / n as f32) * 0.75;
+        let span_end = 0.10 + ((idx + 1) as f32 / n as f32) * 0.75;
+        ctx.progress(
+            job,
+            &format!("hyperframes ch{}/{}", idx + 1, n),
+            span_start.clamp(0.0, 0.99),
+        )
+        .await;
+
+        let chunk_path = dir.join(format!("youtube.hyperframes.ch-{}.mp4", ch.number));
+        let chapter_total_ms = (ch.duration_ms.unwrap_or(0).max(0) as u64).max(1);
+        let chapter_steps = chapter_alloc.as_ref().and_then(|a| a.get(idx).copied());
+        let suffix = format!("ch-{}", ch.number);
+
+        if let Err(e) = render_hyperframes_video(
+            state,
+            ctx,
+            job,
+            book,
+            std::slice::from_ref(ch),
+            audiobook_id,
+            language,
+            cover_path,
+            chapter_total_ms,
+            chapter_steps,
+            false,
+            &suffix,
+            &chunk_path,
+        )
+        .await
+        {
+            // Best-effort cleanup of any chunks we did manage to render.
+            for p in &chunk_paths {
+                let _ = std::fs::remove_file(p);
+            }
+            return Err(e);
+        }
+        chunk_paths.push(chunk_path);
+        ctx.progress(
+            job,
+            &format!("hyperframes ch{}/{} done", idx + 1, n),
+            span_end.clamp(0.0, 0.99),
+        )
+        .await;
+    }
+
+    if chunk_paths.len() == 1 {
+        // Single-chapter book: just rename the chunk to the final
+        // output path; no concat pass needed.
+        std::fs::rename(&chunk_paths[0], out_path).map_err(|e| {
+            Error::Other(anyhow::anyhow!("rename hyperframes chunk to output: {e}"))
+        })?;
+    } else {
+        ctx.progress(job, "hyperframes_concat", 0.86).await;
+        concat_hyperframes_chunks(state, &chunk_paths, out_path).await?;
+        for p in &chunk_paths {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+    ctx.progress(job, "hyperframes_done", 0.90).await;
+    Ok(())
+}
+
+/// ffmpeg `concat` demuxer pass — stitches per-chapter Hyperframes
+/// MP4s into a single output without re-encoding (`-c copy`). All
+/// inputs share the same H.264/AAC profile because they all come out
+/// of `mux_hyperframes_visual_with_audio`, so concat-copy is safe.
+async fn concat_hyperframes_chunks(
+    state: &AppState,
+    chunks: &[PathBuf],
+    out_path: &Path,
+) -> Result<()> {
+    let bin = state.config().ffmpeg_bin.trim();
+    if bin.is_empty() {
+        return Err(Error::Config("ffmpeg_bin is not configured".into()));
+    }
+    let list_path = out_path.with_extension("hyperframes-chunks.txt");
+    let mut list = String::new();
+    for p in chunks {
+        let abs = std::fs::canonicalize(p).map_err(|e| {
+            Error::Other(anyhow::anyhow!("canonicalize chunk {}: {e}", p.display()))
+        })?;
+        let escaped = abs.display().to_string().replace('\'', r"'\''");
+        list.push_str("file '");
+        list.push_str(&escaped);
+        list.push_str("'\n");
+    }
+    std::fs::write(&list_path, list)
+        .map_err(|e| Error::Other(anyhow::anyhow!("write hyperframes chunk list: {e}")))?;
+
+    let output = tokio::process::Command::new(bin)
+        .arg("-y")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("warning")
+        .arg("-f")
+        .arg("concat")
+        .arg("-safe")
+        .arg("0")
+        .arg("-i")
+        .arg(&list_path)
+        .arg("-c")
+        .arg("copy")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg(out_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|e| Error::Other(anyhow::anyhow!("spawn ffmpeg (hyperframes concat): {e}")))?;
+    let _ = std::fs::remove_file(&list_path);
+    if !output.status.success() {
+        let tail = String::from_utf8_lossy(&output.stderr).into_owned();
+        return Err(Error::Other(anyhow::anyhow!(
+            "ffmpeg (hyperframes concat) exited with {}: {}",
+            output.status,
+            tail.trim_end()
+        )));
+    }
+    Ok(())
+}
+
+async fn delete_hyperframes_composition(
+    client: &reqwest::Client,
+    base: &str,
+    api_key: &str,
+    id: &str,
+) -> Result<()> {
+    let url = format!("{base}/compositions/{id}");
+    let res = client
+        .delete(&url)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|e| Error::Upstream(format!("hyperframes delete: {e}")))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        tracing::warn!(
+            composition_id = %id,
+            %status,
+            body = %text,
+            "hyperframes delete returned non-success"
+        );
+    } else {
+        tracing::info!(composition_id = %id, "hyperframes: composition deleted");
+    }
+    Ok(())
+}
+
+/// Build a content-aware HTML composition for a YouTube Shorts narration.
+///
+/// Each chapter gets one or more "scenes" allocated proportionally to its
+/// audio duration (largest-remainder method, with at least one scene per
+/// chapter; if `steps < chapters.len()` the effective step count rises to
+/// `chapters.len()`). Each scene shows a chapter image (chapter art →
+/// paragraph illustration → cover fallback, in that order) with a Ken-Burns
+/// zoom and an animated chapter-title / tagline overlay. The tagline cycles
+/// through sentences extracted from the chapter synopsis (or body when
+/// synopsis is missing).
+///
+/// All images are inlined as base64 `data:` URLs so the public Hyperframes
+/// renderer can fetch them without seeing local storage. Images larger than
+/// `MAX_IMAGE_INLINE_BYTES` are skipped and the scene falls back to a
+/// gradient — keeps the request body manageable.
+fn build_hyperframes_html_short(
+    composition_id: &str,
+    book: &DbAudiobook,
+    chapters: &[DbChapter],
+    cover_path: &Path,
+    storage_root: &Path,
+    steps: usize,
+    total_secs: u64,
+) -> Result<String> {
+    if chapters.is_empty() {
+        return Err(Error::Conflict("no chapters for Hyperframes render".into()));
+    }
+
+    let alloc = allocate_steps(chapters, steps);
+
+    struct SceneSpec {
+        start_secs: f64,
+        duration_secs: f64,
+        image_data_url: Option<String>,
+        ch_num: i64,
+        ch_title: String,
+        tagline: String,
+        is_first: bool,
+    }
+    let mut scenes: Vec<SceneSpec> = Vec::new();
+    let mut t_acc_ms: u64 = 0;
+    for (ci, ch) in chapters.iter().enumerate() {
+        let n = alloc.get(ci).copied().unwrap_or(1).max(1);
+        let dur_ms = (ch.duration_ms.unwrap_or(0).max(0) as u64).max(1);
+
+        let mut images: Vec<PathBuf> = Vec::new();
+        if let Some(rel) = ch.chapter_art_path.as_deref() {
+            let p = storage_root.join(rel);
+            if p.exists() {
+                images.push(p);
+            }
+        }
+        if let Some(ps) = ch.paragraphs.as_ref() {
+            for p in ps {
+                for rel in &p.image_paths {
+                    if rel.trim().is_empty() {
+                        continue;
+                    }
+                    let abs = storage_root.join(rel);
+                    if abs.exists() && !images.iter().any(|x| x == &abs) {
+                        images.push(abs);
+                    }
+                }
+            }
+        }
+        if images.is_empty() {
+            images.push(cover_path.to_path_buf());
+        }
+
+        let synopsis_src = ch.synopsis.as_deref().unwrap_or("");
+        let body_src = ch.body_md.as_deref().unwrap_or("");
+        let mut sentences = split_into_sentences(synopsis_src, n);
+        if sentences.len() < n {
+            let need = n - sentences.len();
+            sentences.extend(split_into_sentences(body_src, need));
+        }
+
+        let scene_dur_ms = dur_ms / n as u64;
+        for k in 0..n {
+            let img_path = &images[k % images.len()];
+            let data_url = read_image_as_data_url(img_path, MAX_IMAGE_INLINE_BYTES);
+            let this_scene_ms = if k + 1 == n {
+                dur_ms - scene_dur_ms * (n as u64 - 1)
+            } else {
+                scene_dur_ms
+            };
+            let start_secs = (t_acc_ms as f64) / 1000.0;
+            let dur_secs = (this_scene_ms as f64) / 1000.0;
+            let tagline = sentences
+                .get(k)
+                .map(|s| truncate_sentence(s, 140))
+                .unwrap_or_default();
+            scenes.push(SceneSpec {
+                start_secs,
+                duration_secs: dur_secs,
+                image_data_url: data_url,
+                ch_num: ch.number,
+                ch_title: ch.title.clone(),
+                tagline,
+                is_first: scenes.is_empty(),
+            });
+            t_acc_ms += this_scene_ms;
+        }
+    }
+
+    let book_title_html = html_escape(&book.title);
+
+    let mut scene_html = String::new();
+    let mut tween_js = String::new();
+    for (i, sc) in scenes.iter().enumerate() {
+        let bg_css = match &sc.image_data_url {
+            Some(url) => {
+                let safe = url.replace('\'', "%27");
+                format!("background-image:url('{safe}')")
+            }
+            None => {
+                "background:linear-gradient(135deg,#1a2f5a 0%,#2e1a5a 50%,#5a1a3f 100%)".to_string()
+            }
+        };
+        let ch_label = html_escape(&format!("Chapter {}", sc.ch_num));
+        let title_html = html_escape(&sc.ch_title);
+        let tagline_html = html_escape(&sc.tagline);
+        let opener_html = if sc.is_first {
+            format!(r#"<div class="opener">{}</div>"#, book_title_html)
+        } else {
+            String::new()
+        };
+        scene_html.push_str(&format!(
+            r#"<div class="scene" id="sc-{i}"><div class="img" style="{bg_css}"></div><div class="vignette"></div><div class="gradient"></div><div class="ch-num">{ch_label}</div><div class="title">{title_html}</div>{opener_html}<div class="tagline">{tagline_html}</div></div>"#
+        ));
+
+        let t_start = sc.start_secs;
+        let t_dur = sc.duration_secs.max(0.4);
+        let t_in = (t_dur * 0.20).min(0.5);
+        let t_out_at = (t_start + t_dur - t_in).max(t_start);
+        let t_text_in = t_start + t_in.min(0.15);
+        let t_tagline_in = t_start + t_in.min(0.30);
+        tween_js.push_str(&format!(
+            "tl.fromTo('#sc-{i}',{{opacity:0}},{{opacity:1,duration:{t_in:.3}}},{t_start:.3});\n"
+        ));
+        tween_js.push_str(&format!(
+            "tl.fromTo('#sc-{i} .img',{{scale:1.0,xPercent:0}},{{scale:1.12,xPercent:-2,duration:{t_dur:.3},ease:'none'}},{t_start:.3});\n"
+        ));
+        tween_js.push_str(&format!(
+            "tl.fromTo('#sc-{i} .title',{{y:40,opacity:0}},{{y:0,opacity:1,duration:0.7,ease:'power2.out'}},{t_text_in:.3});\n"
+        ));
+        tween_js.push_str(&format!(
+            "tl.fromTo('#sc-{i} .tagline',{{y:30,opacity:0}},{{y:0,opacity:1,duration:0.6,ease:'power2.out'}},{t_tagline_in:.3});\n"
+        ));
+        if sc.is_first {
+            let t_opener_out = t_start + t_dur * 0.6;
+            tween_js.push_str(&format!(
+                "tl.fromTo('#sc-{i} .opener',{{y:60,opacity:0}},{{y:0,opacity:1,duration:0.9,ease:'power3.out'}},{t_start:.3});\n"
+            ));
+            tween_js.push_str(&format!(
+                "tl.to('#sc-{i} .opener',{{opacity:0,duration:0.5,ease:'power1.in'}},{t_opener_out:.3});\n"
+            ));
+        }
+        tween_js.push_str(&format!(
+            "tl.to('#sc-{i}',{{opacity:0,duration:{t_in:.3},ease:'power1.in'}},{t_out_at:.3});\n"
+        ));
+    }
+
+    let total_secs_f = total_secs as f64;
+    let html = format!(
+        r##"<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>{book_title_html}</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<style>
+html,body{{margin:0;padding:0;background:#000;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;color:#fff;overflow:hidden}}
+#stage{{position:relative;width:1080px;height:1920px;overflow:hidden;background:#000}}
+.scene{{position:absolute;inset:0;opacity:0;will-change:opacity}}
+.scene .img{{position:absolute;inset:-4%;background-size:cover;background-position:center;will-change:transform;transform-origin:center center}}
+.scene .vignette{{position:absolute;inset:0;background:radial-gradient(ellipse at center,transparent 35%,rgba(0,0,0,0.55) 100%);pointer-events:none}}
+.scene .gradient{{position:absolute;left:0;right:0;bottom:0;height:60%;background:linear-gradient(180deg,transparent 0%,rgba(0,0,0,0.85) 100%);pointer-events:none}}
+.scene .ch-num{{position:absolute;left:60px;top:120px;font-size:32px;letter-spacing:8px;color:#9bd6ff;text-transform:uppercase;font-weight:600;text-shadow:0 2px 8px rgba(0,0,0,0.6)}}
+.scene .title{{position:absolute;left:60px;right:60px;bottom:480px;font-size:96px;font-weight:800;line-height:1.05;letter-spacing:-1px;text-shadow:0 4px 20px rgba(0,0,0,0.7)}}
+.scene .tagline{{position:absolute;left:60px;right:60px;bottom:240px;font-size:42px;font-weight:300;line-height:1.3;color:#dfe5f0;text-shadow:0 2px 12px rgba(0,0,0,0.7)}}
+.scene .opener{{position:absolute;left:60px;right:60px;top:50%;transform:translateY(-50%);text-align:center;font-size:120px;font-weight:800;letter-spacing:-2px;line-height:1.0;background:linear-gradient(120deg,#6ea8ff 0%,#c08bff 50%,#ffb86b 100%);-webkit-background-clip:text;background-clip:text;color:transparent}}
+.progress-bar{{position:absolute;left:0;right:0;bottom:0;height:6px;background:rgba(255,255,255,0.12)}}
+.progress-bar > .fill{{position:absolute;left:0;top:0;bottom:0;width:0;background:linear-gradient(90deg,#6ea8ff,#c08bff,#ffb86b)}}
+</style></head><body>
+<div id="stage" data-composition-id="{composition_id}" data-start="0" data-duration="{total_secs}" data-track-index="0">
+{scene_html}
+<div class="progress-bar"><div class="fill"></div></div>
+</div>
+<script>
+window.__timelines = window.__timelines || {{}};
+(function(){{
+  var tl = gsap.timeline({{paused:true}});
+{tween_js}
+  tl.fromTo('.progress-bar > .fill',{{width:'0%'}},{{width:'100%',duration:{total_secs_f},ease:'none'}},0);
+  window.__timelines['{composition_id}'] = tl;
+}})();
+</script>
+</body></html>"##
+    );
+
+    Ok(html)
+}
+
+/// Build the long-form (16:9 landscape) Hyperframes composition.
+///
+/// The Hyperframes render server is hard-wired to a 1080×1920 portrait
+/// viewport (it ignores width/height/aspect_ratio fields on the
+/// composition request, see `memory/project_hyperframes_api.md`). To
+/// produce a true 1920×1080 landscape MP4 we instead author the HTML
+/// with a 1920×1080 inner canvas rotated -90° inside the portrait
+/// viewport; the renderer captures content sideways at 1080×1920 and
+/// the mux step then applies `ffmpeg -vf transpose=1` to rotate the
+/// output upright.
+///
+/// Compared to the Shorts builder, the scene plan picks from four
+/// distinct kinds — title card (book-level opener), chapter-intro
+/// card (large chapter number + title at the start of every chapter),
+/// image-with-caption (the staple), and pull-quote (sentence-only
+/// card on a gradient background, sprinkled in for rhythm). Each
+/// scene gets its own GSAP tween block; sentences come from the
+/// chapter synopsis falling back to body prose, identical to the
+/// Shorts pass.
+fn build_hyperframes_html_long(
+    composition_id: &str,
+    book: &DbAudiobook,
+    chapters: &[DbChapter],
+    cover_path: &Path,
+    storage_root: &Path,
+    steps: usize,
+    total_secs: u64,
+) -> Result<String> {
+    if chapters.is_empty() {
+        return Err(Error::Conflict("no chapters for Hyperframes render".into()));
+    }
+
+    // Scene-slot plan — title card + per-chapter intro + body slots.
+    // Per-chapter rendering (playlist mode passes chapters.len()==1)
+    // skips the book title card so each chapter video opens with its
+    // own intro instead of the same book splash.
+    let include_title_card = chapters.len() > 1;
+    let title_slots: usize = if include_title_card { 1 } else { 0 };
+    let intro_slots = chapters.len();
+    let mut body_slots = steps.saturating_sub(title_slots + intro_slots);
+    // Always leave at least one body scene per chapter so a low `steps`
+    // value doesn't strip the chapter prose visuals entirely.
+    if body_slots < chapters.len() {
+        body_slots = chapters.len();
+    }
+    let body_alloc = allocate_steps(chapters, body_slots);
+
+    // Resolve images per chapter (chapter art → paragraph art → cover).
+    let mut chapter_images: Vec<Vec<PathBuf>> = Vec::with_capacity(chapters.len());
+    for ch in chapters {
+        let mut images: Vec<PathBuf> = Vec::new();
+        if let Some(rel) = ch.chapter_art_path.as_deref() {
+            let p = storage_root.join(rel);
+            if p.exists() {
+                images.push(p);
+            }
+        }
+        if let Some(ps) = ch.paragraphs.as_ref() {
+            for p in ps {
+                for rel in &p.image_paths {
+                    if rel.trim().is_empty() {
+                        continue;
+                    }
+                    let abs = storage_root.join(rel);
+                    if abs.exists() && !images.iter().any(|x| x == &abs) {
+                        images.push(abs);
+                    }
+                }
+            }
+        }
+        if images.is_empty() {
+            images.push(cover_path.to_path_buf());
+        }
+        chapter_images.push(images);
+    }
+
+    enum Kind {
+        TitleCard,
+        ChapterIntro,
+        ImageCaption,
+        PullQuote,
+    }
+    struct SceneSpec {
+        kind: Kind,
+        start_secs: f64,
+        duration_secs: f64,
+        image_data_url: Option<String>,
+        ch_num: i64,
+        ch_title: String,
+        text: String,
+    }
+
+    let mut scenes: Vec<SceneSpec> = Vec::new();
+    let mut t_acc_ms: u64 = 0;
+
+    // Time budget: a TitleCard sits at the very top and steals from the
+    // first chapter; ChapterIntros sit inside their chapter's window.
+    // Both have a fixed target with chapter-proportional caps so a
+    // very short chapter can't leave 0 ms for body scenes.
+    const TITLE_CARD_TARGET_MS: u64 = 3_500;
+    const CHAPTER_INTRO_TARGET_MS: u64 = 2_500;
+
+    for (ci, ch) in chapters.iter().enumerate() {
+        let ch_dur_ms = (ch.duration_ms.unwrap_or(0).max(0) as u64).max(1);
+        let body_n = body_alloc.get(ci).copied().unwrap_or(1).max(1);
+
+        // Reserve title-card duration only on the first chapter.
+        let title_ms = if ci == 0 && include_title_card {
+            TITLE_CARD_TARGET_MS.min(ch_dur_ms / 4)
+        } else {
+            0
+        };
+        // Chapter intro: don't eat more than ~40 % of the chapter on a
+        // very short chapter, and never more than the target.
+        let intro_ms = CHAPTER_INTRO_TARGET_MS.min((ch_dur_ms - title_ms) * 2 / 5);
+        let body_total_ms = ch_dur_ms - title_ms - intro_ms;
+        let body_each_ms = if body_n > 0 {
+            body_total_ms / body_n as u64
+        } else {
+            body_total_ms
+        };
+
+        // Pull body sentences first from synopsis, padded with prose.
+        let synopsis_src = ch.synopsis.as_deref().unwrap_or("");
+        let body_src = ch.body_md.as_deref().unwrap_or("");
+        let mut sentences = split_into_sentences(synopsis_src, body_n + 2);
+        if sentences.len() < body_n + 2 {
+            let need = body_n + 2 - sentences.len();
+            sentences.extend(split_into_sentences(body_src, need));
+        }
+
+        // Scene 1: title card (only on the first chapter, only when we
+        // have more than one chapter).
+        if title_ms > 0 {
+            scenes.push(SceneSpec {
+                kind: Kind::TitleCard,
+                start_secs: (t_acc_ms as f64) / 1000.0,
+                duration_secs: (title_ms as f64) / 1000.0,
+                image_data_url: read_image_as_data_url(cover_path, MAX_IMAGE_INLINE_BYTES),
+                ch_num: ch.number,
+                ch_title: book.title.clone(),
+                text: String::new(),
+            });
+            t_acc_ms += title_ms;
+        }
+
+        // Scene 2: chapter intro.
+        let intro_image = chapter_images[ci]
+            .first()
+            .cloned()
+            .unwrap_or_else(|| cover_path.to_path_buf());
+        scenes.push(SceneSpec {
+            kind: Kind::ChapterIntro,
+            start_secs: (t_acc_ms as f64) / 1000.0,
+            duration_secs: (intro_ms as f64) / 1000.0,
+            image_data_url: read_image_as_data_url(&intro_image, MAX_IMAGE_INLINE_BYTES),
+            ch_num: ch.number,
+            ch_title: ch.title.clone(),
+            text: ch.synopsis.clone().unwrap_or_default(),
+        });
+        t_acc_ms += intro_ms;
+
+        // Scenes 3..: body. Cycle through chapter images, sprinkle one
+        // pull-quote roughly every 4th body scene (offset so different
+        // chapters don't all land their quote in the same slot).
+        for k in 0..body_n {
+            let this_ms = if k + 1 == body_n {
+                body_total_ms - body_each_ms * (body_n as u64 - 1)
+            } else {
+                body_each_ms
+            };
+            let kind = if body_n >= 4 && (k + 1 + ci) % 4 == 0 {
+                Kind::PullQuote
+            } else {
+                Kind::ImageCaption
+            };
+            let img_path = &chapter_images[ci][k % chapter_images[ci].len()];
+            let data_url = match &kind {
+                Kind::PullQuote => None,
+                _ => read_image_as_data_url(img_path, MAX_IMAGE_INLINE_BYTES),
+            };
+            let text = sentences
+                .get(k)
+                .map(|s| {
+                    truncate_sentence(
+                        s,
+                        match &kind {
+                            Kind::PullQuote => 220,
+                            _ => 160,
+                        },
+                    )
+                })
+                .unwrap_or_default();
+            scenes.push(SceneSpec {
+                kind,
+                start_secs: (t_acc_ms as f64) / 1000.0,
+                duration_secs: (this_ms as f64) / 1000.0,
+                image_data_url: data_url,
+                ch_num: ch.number,
+                ch_title: ch.title.clone(),
+                text,
+            });
+            t_acc_ms += this_ms;
+        }
+    }
+
+    let book_title_html = html_escape(&book.title);
+
+    let mut scene_html = String::new();
+    let mut tween_js = String::new();
+    for (i, sc) in scenes.iter().enumerate() {
+        let title_html = html_escape(&sc.ch_title);
+        let text_html = html_escape(&sc.text);
+        let ch_label = html_escape(&format!("Chapter {}", sc.ch_num));
+        let bg_css = match (&sc.kind, &sc.image_data_url) {
+            (Kind::PullQuote, _) => {
+                "background:linear-gradient(135deg,#1a2f5a 0%,#2e1a5a 50%,#5a1a3f 100%)".to_string()
+            }
+            (_, Some(url)) => {
+                let safe = url.replace('\'', "%27");
+                format!("background-image:url('{safe}')")
+            }
+            (_, None) => {
+                "background:linear-gradient(135deg,#1a2f5a 0%,#2e1a5a 50%,#5a1a3f 100%)".to_string()
+            }
+        };
+
+        let scene_body = match &sc.kind {
+            Kind::TitleCard => format!(
+                r#"<div class="img" style="{bg_css}"></div><div class="vignette"></div><div class="scrim"></div><div class="title-card-eyebrow">{book}</div><div class="title-card-main">{title}</div>"#,
+                book = html_escape("Audiobook"),
+                title = book_title_html,
+                bg_css = bg_css,
+            ),
+            Kind::ChapterIntro => format!(
+                r#"<div class="img" style="{bg_css}"></div><div class="vignette"></div><div class="scrim"></div><div class="intro-eyebrow">{ch_label}</div><div class="intro-title">{title}</div>"#,
+                ch_label = ch_label,
+                title = title_html,
+                bg_css = bg_css,
+            ),
+            Kind::ImageCaption => format!(
+                r#"<div class="img" style="{bg_css}"></div><div class="vignette"></div><div class="gradient"></div><div class="ch-num">{ch_label}</div><div class="title">{title}</div><div class="tagline">{text}</div>"#,
+                ch_label = ch_label,
+                title = title_html,
+                text = text_html,
+                bg_css = bg_css,
+            ),
+            Kind::PullQuote => format!(
+                r#"<div class="img" style="{bg_css}"></div><div class="quote-mark">&ldquo;</div><div class="quote">{text}</div><div class="quote-source">{ch_label}</div>"#,
+                ch_label = ch_label,
+                text = text_html,
+                bg_css = bg_css,
+            ),
+        };
+        scene_html.push_str(&format!(
+            r#"<div class="scene scene-{kind_class}" id="sc-{i}">{body}</div>"#,
+            kind_class = match &sc.kind {
+                Kind::TitleCard => "title",
+                Kind::ChapterIntro => "intro",
+                Kind::ImageCaption => "img",
+                Kind::PullQuote => "quote",
+            },
+            body = scene_body,
+        ));
+
+        let t_start = sc.start_secs;
+        let t_dur = sc.duration_secs.max(0.4);
+        let t_in = (t_dur * 0.20).min(0.5);
+        let t_out_at = (t_start + t_dur - t_in).max(t_start);
+        tween_js.push_str(&format!(
+            "tl.fromTo('#sc-{i}',{{opacity:0}},{{opacity:1,duration:{t_in:.3}}},{t_start:.3});\n"
+        ));
+        // Slow Ken-Burns on every scene that has an image. Pull-quote
+        // and title cards keep their gradient background still.
+        match &sc.kind {
+            Kind::TitleCard => {
+                let t_text_in = t_start + t_in.min(0.30);
+                tween_js.push_str(&format!(
+                    "tl.fromTo('#sc-{i} .img',{{scale:1.0}},{{scale:1.05,duration:{t_dur:.3},ease:'none'}},{t_start:.3});\n"
+                ));
+                tween_js.push_str(&format!(
+                    "tl.fromTo('#sc-{i} .title-card-eyebrow',{{y:24,opacity:0}},{{y:0,opacity:1,duration:0.5,ease:'power2.out'}},{t_start:.3});\n"
+                ));
+                tween_js.push_str(&format!(
+                    "tl.fromTo('#sc-{i} .title-card-main',{{y:60,opacity:0}},{{y:0,opacity:1,duration:0.9,ease:'power3.out'}},{t_text_in:.3});\n"
+                ));
+            }
+            Kind::ChapterIntro => {
+                let t_text_in = t_start + t_in.min(0.20);
+                tween_js.push_str(&format!(
+                    "tl.fromTo('#sc-{i} .img',{{scale:1.0,xPercent:0}},{{scale:1.10,xPercent:-1.5,duration:{t_dur:.3},ease:'none'}},{t_start:.3});\n"
+                ));
+                tween_js.push_str(&format!(
+                    "tl.fromTo('#sc-{i} .intro-eyebrow',{{y:30,opacity:0}},{{y:0,opacity:1,duration:0.6,ease:'power2.out'}},{t_start:.3});\n"
+                ));
+                tween_js.push_str(&format!(
+                    "tl.fromTo('#sc-{i} .intro-title',{{y:60,opacity:0}},{{y:0,opacity:1,duration:0.8,ease:'power3.out'}},{t_text_in:.3});\n"
+                ));
+            }
+            Kind::ImageCaption => {
+                let t_text_in = t_start + t_in.min(0.15);
+                let t_tag_in = t_start + t_in.min(0.30);
+                tween_js.push_str(&format!(
+                    "tl.fromTo('#sc-{i} .img',{{scale:1.0,xPercent:0}},{{scale:1.12,xPercent:-2,duration:{t_dur:.3},ease:'none'}},{t_start:.3});\n"
+                ));
+                tween_js.push_str(&format!(
+                    "tl.fromTo('#sc-{i} .title',{{y:30,opacity:0}},{{y:0,opacity:1,duration:0.6,ease:'power2.out'}},{t_text_in:.3});\n"
+                ));
+                tween_js.push_str(&format!(
+                    "tl.fromTo('#sc-{i} .tagline',{{y:24,opacity:0}},{{y:0,opacity:1,duration:0.6,ease:'power2.out'}},{t_tag_in:.3});\n"
+                ));
+            }
+            Kind::PullQuote => {
+                let t_quote_in = t_start + t_in.min(0.25);
+                tween_js.push_str(&format!(
+                    "tl.fromTo('#sc-{i} .quote-mark',{{scale:0.8,opacity:0}},{{scale:1,opacity:1,duration:0.6,ease:'back.out(1.6)'}},{t_start:.3});\n"
+                ));
+                tween_js.push_str(&format!(
+                    "tl.fromTo('#sc-{i} .quote',{{y:40,opacity:0}},{{y:0,opacity:1,duration:0.8,ease:'power3.out'}},{t_quote_in:.3});\n"
+                ));
+                tween_js.push_str(&format!(
+                    "tl.fromTo('#sc-{i} .quote-source',{{y:18,opacity:0}},{{y:0,opacity:1,duration:0.5,ease:'power2.out'}},{t_quote_in:.3});\n"
+                ));
+            }
+        }
+        tween_js.push_str(&format!(
+            "tl.to('#sc-{i}',{{opacity:0,duration:{t_in:.3},ease:'power1.in'}},{t_out_at:.3});\n"
+        ));
+    }
+
+    let total_secs_f = total_secs as f64;
+    // The Hyperframes server captures the page at 1080×1920 portrait
+    // (see project_hyperframes_api memory). The outer `#stage` keeps
+    // those dimensions; the inner `#scene-canvas` is sized 1920×1080
+    // and rotated -90° so scenes lay out in a landscape coordinate
+    // system. The mux step downstream applies `ffmpeg transpose=1`
+    // which rotates the captured MP4 by +90° to land back at upright
+    // 1920×1080 — net rotation cancels.
+    let html = format!(
+        r##"<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>{book_title_html}</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<style>
+html,body{{margin:0;padding:0;background:#000;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;color:#fff;overflow:hidden}}
+#stage{{position:relative;width:1080px;height:1920px;overflow:hidden;background:#000}}
+#scene-canvas{{position:absolute;top:50%;left:50%;width:1920px;height:1080px;transform:translate(-50%,-50%) rotate(-90deg);transform-origin:center center}}
+.scene{{position:absolute;inset:0;opacity:0;will-change:opacity}}
+.scene .img{{position:absolute;inset:-4%;background-size:cover;background-position:center;will-change:transform;transform-origin:center center}}
+.scene .vignette{{position:absolute;inset:0;background:radial-gradient(ellipse at center,transparent 35%,rgba(0,0,0,0.55) 100%);pointer-events:none}}
+.scene .gradient{{position:absolute;left:0;right:0;bottom:0;height:55%;background:linear-gradient(180deg,transparent 0%,rgba(0,0,0,0.85) 100%);pointer-events:none}}
+.scene .scrim{{position:absolute;inset:0;background:rgba(0,0,0,0.45);pointer-events:none}}
+.scene .ch-num{{position:absolute;left:80px;top:80px;font-size:30px;letter-spacing:8px;color:#9bd6ff;text-transform:uppercase;font-weight:600;text-shadow:0 2px 8px rgba(0,0,0,0.6)}}
+.scene .title{{position:absolute;left:80px;right:80px;bottom:240px;font-size:84px;font-weight:800;line-height:1.05;letter-spacing:-1px;text-shadow:0 4px 20px rgba(0,0,0,0.7)}}
+.scene .tagline{{position:absolute;left:80px;right:80px;bottom:120px;font-size:36px;font-weight:300;line-height:1.3;color:#dfe5f0;text-shadow:0 2px 12px rgba(0,0,0,0.7)}}
+.scene-title .title-card-eyebrow{{position:absolute;left:0;right:0;top:38%;text-align:center;font-size:28px;letter-spacing:14px;color:#9bd6ff;text-transform:uppercase;font-weight:600}}
+.scene-title .title-card-main{{position:absolute;left:80px;right:80px;top:50%;transform:translateY(-50%);text-align:center;font-size:140px;font-weight:800;letter-spacing:-2px;line-height:1.0;background:linear-gradient(120deg,#6ea8ff 0%,#c08bff 50%,#ffb86b 100%);-webkit-background-clip:text;background-clip:text;color:transparent}}
+.scene-intro .intro-eyebrow{{position:absolute;left:80px;top:50%;transform:translateY(-90px);font-size:34px;letter-spacing:12px;color:#9bd6ff;text-transform:uppercase;font-weight:600;text-shadow:0 2px 8px rgba(0,0,0,0.6)}}
+.scene-intro .intro-title{{position:absolute;left:80px;right:80px;top:50%;transform:translateY(-10px);font-size:120px;font-weight:800;line-height:1.04;letter-spacing:-1.5px;text-shadow:0 4px 24px rgba(0,0,0,0.8)}}
+.scene-quote .img{{filter:saturate(0.6)}}
+.scene-quote .quote-mark{{position:absolute;left:120px;top:160px;font-size:240px;line-height:1;color:rgba(155,214,255,0.6);font-family:Georgia,serif}}
+.scene-quote .quote{{position:absolute;left:160px;right:160px;top:50%;transform:translateY(-50%);font-size:72px;font-weight:300;line-height:1.25;color:#fff;font-style:italic;text-shadow:0 4px 24px rgba(0,0,0,0.6)}}
+.scene-quote .quote-source{{position:absolute;left:160px;right:160px;bottom:120px;font-size:30px;letter-spacing:10px;color:#9bd6ff;text-transform:uppercase;font-weight:600}}
+.progress-bar{{position:absolute;left:0;right:0;bottom:0;height:6px;background:rgba(255,255,255,0.12)}}
+.progress-bar > .fill{{position:absolute;left:0;top:0;bottom:0;width:0;background:linear-gradient(90deg,#6ea8ff,#c08bff,#ffb86b)}}
+</style></head><body>
+<div id="stage" data-composition-id="{composition_id}" data-start="0" data-duration="{total_secs}" data-track-index="0">
+<div id="scene-canvas">
+{scene_html}
+<div class="progress-bar"><div class="fill"></div></div>
+</div>
+</div>
+<script>
+window.__timelines = window.__timelines || {{}};
+(function(){{
+  var tl = gsap.timeline({{paused:true}});
+{tween_js}
+  tl.fromTo('.progress-bar > .fill',{{width:'0%'}},{{width:'100%',duration:{total_secs_f},ease:'none'}},0);
+  window.__timelines['{composition_id}'] = tl;
+}})();
+</script>
+</body></html>"##
+    );
+
+    Ok(html)
+}
+
+/// Largest-remainder allocation of `steps` slots across chapters, weighted
+/// by audio duration. Floors below 1 per chapter, so chapter coverage is
+/// never lost; if `steps < chapters.len()` the effective step count
+/// becomes `chapters.len()`.
+fn allocate_steps(chapters: &[DbChapter], steps: usize) -> Vec<usize> {
+    let n = chapters.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let target = steps.max(n);
+    let weights: Vec<u64> = chapters
+        .iter()
+        .map(|c| (c.duration_ms.unwrap_or(0).max(0) as u64).max(1))
+        .collect();
+    let total: u64 = weights.iter().sum();
+    let raw: Vec<f64> = weights
+        .iter()
+        .map(|w| (*w as f64) * (target as f64) / (total as f64))
+        .collect();
+    let mut alloc: Vec<usize> = raw.iter().map(|x| x.floor() as usize).collect();
+    for a in &mut alloc {
+        if *a == 0 {
+            *a = 1;
+        }
+    }
+    let mut sum: usize = alloc.iter().sum();
+    if sum >= target {
+        return alloc;
+    }
+    let mut frac: Vec<(usize, f64)> = raw
+        .iter()
+        .enumerate()
+        .map(|(i, x)| (i, x - x.floor()))
+        .collect();
+    frac.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut cursor = 0usize;
+    while sum < target && !frac.is_empty() {
+        alloc[frac[cursor % frac.len()].0] += 1;
+        sum += 1;
+        cursor += 1;
+    }
+    alloc
+}
+
+const MAX_IMAGE_INLINE_BYTES: usize = 2 * 1024 * 1024;
+
+fn read_image_as_data_url(path: &Path, max_bytes: usize) -> Option<String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let metadata = std::fs::metadata(path).ok()?;
+    if metadata.len() as usize > max_bytes {
+        tracing::warn!(
+            path = %path.display(),
+            size = metadata.len(),
+            max = max_bytes,
+            "hyperframes: image too large to inline; falling back to gradient"
+        );
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let mime = match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        _ => "image/png",
+    };
+    Some(format!("data:{mime};base64,{}", STANDARD.encode(&bytes)))
+}
+
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn split_into_sentences(s: &str, max: usize) -> Vec<String> {
+    if max == 0 || s.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut buf = String::new();
+    let chars: Vec<char> = s.chars().collect();
+    for (i, c) in chars.iter().enumerate() {
+        buf.push(*c);
+        let is_terminator = matches!(*c, '.' | '!' | '?');
+        let next_is_space = chars.get(i + 1).map(|n| n.is_whitespace()).unwrap_or(true);
+        if is_terminator && next_is_space {
+            let t = buf.trim().trim_start_matches('#').trim().to_string();
+            if !t.is_empty() {
+                out.push(t);
+            }
+            buf.clear();
+            if out.len() >= max {
+                return out;
+            }
+        }
+    }
+    let t = buf.trim().trim_start_matches('#').trim().to_string();
+    if !t.is_empty() && out.len() < max {
+        out.push(t);
+    }
+    out
+}
+
+fn truncate_sentence(s: &str, max_chars: usize) -> String {
+    let trimmed = s.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let take: String = trimmed.chars().take(max_chars).collect();
+    let cut = take.rfind(' ').unwrap_or(take.len());
+    let mut result: String = take.chars().take(cut).collect();
+    result.push('…');
+    result
+}
+
+async fn mux_hyperframes_visual_with_audio(
+    state: &AppState,
+    chapters: &[DbChapter],
+    visual_path: &Path,
+    out_path: &Path,
+    landscape: bool,
+) -> Result<()> {
+    let bin = state.config().ffmpeg_bin.trim();
+    if bin.is_empty() {
+        return Err(Error::Config("ffmpeg_bin is not configured".into()));
+    }
+    let dir = out_path
+        .parent()
+        .ok_or_else(|| Error::Other(anyhow::anyhow!("youtube output path has no parent")))?;
+    let audio_list_path = out_path.with_extension("hyperframes-audio.txt");
+    let mut list = String::new();
+    for c in chapters {
+        let wav = dir.join(format!("ch-{}.wav", c.number));
+        if !wav.exists() {
+            return Err(Error::Conflict(format!(
+                "audio missing on disk: {}",
+                wav.display()
+            )));
+        }
+        let abs = std::fs::canonicalize(&wav).map_err(|e| {
+            Error::Other(anyhow::anyhow!("canonicalize audio {}: {e}", wav.display()))
+        })?;
+        let escaped = abs.display().to_string().replace('\'', r"'\''");
+        list.push_str("file '");
+        list.push_str(&escaped);
+        list.push_str("'\n");
+    }
+    std::fs::write(&audio_list_path, list)
+        .map_err(|e| Error::Other(anyhow::anyhow!("write hyperframes audio concat list: {e}")))?;
+
+    // The Hyperframes service hard-codes its viewport to 1080×1920
+    // portrait regardless of what we ask for. For landscape output the
+    // composition HTML rotates an inner 1920×1080 canvas inside the
+    // portrait frame; we then apply `transpose=1` here to put it
+    // upright. Vertical (Shorts) output is already correct so we copy
+    // the video stream straight through, matching the original
+    // mux behaviour.
+    let mut cmd = tokio::process::Command::new(bin);
+    cmd.arg("-y")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("warning")
+        .arg("-stream_loop")
+        .arg("-1")
+        .arg("-i")
+        .arg(visual_path)
+        .arg("-f")
+        .arg("concat")
+        .arg("-safe")
+        .arg("0")
+        .arg("-i")
+        .arg(&audio_list_path)
+        .arg("-map")
+        .arg("0:v:0")
+        .arg("-map")
+        .arg("1:a:0");
+    if landscape {
+        cmd.arg("-vf")
+            .arg("transpose=1")
+            .arg("-c:v")
+            .arg("libx264")
+            .arg("-preset")
+            .arg("veryfast")
+            .arg("-profile:v")
+            .arg("high")
+            .arg("-level:v")
+            .arg("4.0")
+            .arg("-crf")
+            .arg("20")
+            .arg("-pix_fmt")
+            .arg("yuv420p");
+    } else {
+        cmd.arg("-c:v").arg("copy");
+    }
+    cmd.arg("-c:a")
+        .arg("aac")
+        .arg("-b:a")
+        .arg("192k")
+        .arg("-shortest")
+        .arg("-movflags")
+        .arg("+faststart")
+        .arg(out_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| Error::Other(anyhow::anyhow!("spawn ffmpeg (hyperframes mux): {e}")))?;
+    let _ = std::fs::remove_file(&audio_list_path);
+    if !output.status.success() {
+        let tail = String::from_utf8_lossy(&output.stderr).into_owned();
+        return Err(Error::Other(anyhow::anyhow!(
+            "ffmpeg (hyperframes mux) exited with {}: {}",
             output.status,
             tail.trim_end()
         )));
@@ -1705,11 +3242,12 @@ fn build_book_metadata(
     // description — the platform treats it as the opt-in signal for
     // vertical playback. Prefer the title so it's visible at a glance,
     // trimming the book title first to leave room.
+    let safe_title = sanitize_for_youtube(&book.title);
     let title = if is_short {
-        let head = trim_to(&book.title, 100 - " #Shorts".len());
+        let head = trim_to(&safe_title, 100 - " #Shorts".len());
         format!("{head} #Shorts")
     } else {
-        trim_to(&book.title, 100)
+        trim_to(&safe_title, 100)
     };
 
     let raw_desc = match description_override {
@@ -1719,12 +3257,14 @@ fn build_book_metadata(
     let with_footer = append_footer(&raw_desc, footer);
     // Belt-and-braces: also drop the hashtag at the end of the
     // description in case YouTube's Shorts heuristic looks there.
+    // Sanitize last so any `<…>` run from prose, footer text, or
+    // override input gets stripped before we ship to YouTube.
     let description = trim_to(
-        &if is_short {
+        &sanitize_for_youtube(&if is_short {
             format!("{}\n\n#Shorts", with_footer.trim_end())
         } else {
             with_footer
-        },
+        }),
         5000,
     );
 
@@ -1767,14 +3307,15 @@ fn build_chapter_metadata(
     footer: Option<&str>,
 ) -> upload::VideoMetadata {
     // YouTube caps titles at 100 chars; keep the chapter title prominent so
-    // the playlist scans well in the YouTube UI.
+    // the playlist scans well in the YouTube UI. Sanitize before
+    // trimming so a stripped `<…>` doesn't leave us under-budget.
     let raw_title = format!(
         "{} — Ch. {}: {}",
         book.title.trim(),
         chapter.number,
         chapter.title.trim()
     );
-    let title = trim_to(&raw_title, 100);
+    let title = trim_to(&sanitize_for_youtube(&raw_title), 100);
 
     let labels = crate::i18n::description_labels(language);
 
@@ -1789,7 +3330,7 @@ fn build_chapter_metadata(
     desc.push_str(".\n\n");
     desc.push_str(labels.generated_with);
     desc.push('\n');
-    let description = trim_to(&append_footer(&desc, footer), 5000);
+    let description = trim_to(&sanitize_for_youtube(&append_footer(&desc, footer)), 5000);
 
     let mut tags: Vec<String> = Vec::new();
     if let Some(g) = book.genre.as_deref().filter(|g| !g.trim().is_empty()) {
@@ -1900,6 +3441,37 @@ fn render_playlist_description(
 /// Appends the per-language admin footer to a description, separated by a
 /// blank line. Whitespace-only or `None` footers pass through unchanged so
 /// the helper is a no-op when the admin hasn't configured one.
+/// Strip X.ai speech tags and any other angle-bracketed runs so the
+/// resulting string is safe to send as a YouTube `snippet.title` /
+/// `snippet.description`. YouTube rejects either field with HTTP 400
+/// `invalidDescription` / `invalidTitle` whenever it contains `<` or
+/// `>` (regardless of context — there's no escaping). Songbook prose
+/// embeds X.ai tags like `<singing>line</singing>` to drive the TTS,
+/// and the description builder pulls chapter synopses verbatim, so
+/// the brackets leak through unless we strip them here.
+///
+/// Behaviour: drops the entire `<…>` run including inner content. For
+/// X.ai tags that means `<singing>foo</singing>` becomes `foo` only
+/// because the inner content sits *between* the open + close tags,
+/// outside the brackets — i.e. the run we strip is `<singing>` and
+/// `</singing>` separately. Stray `<` or `>` (no matching partner)
+/// is also removed so YouTube can never see one. We don't try to
+/// preserve content from malformed input — the worst case is an
+/// over-aggressive strip, never a leaked bracket.
+fn sanitize_for_youtube(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match (c, in_tag) {
+            ('<', _) => in_tag = true,
+            ('>', _) => in_tag = false,
+            (_, true) => {}
+            (c, false) => out.push(c),
+        }
+    }
+    out
+}
+
 fn append_footer(body: &str, footer: Option<&str>) -> String {
     let trimmed = footer.map(str::trim).filter(|s| !s.is_empty());
     let Some(f) = trimmed else {
@@ -2147,6 +3719,13 @@ struct DbAudiobook {
     /// classifies the upload correctly.
     #[serde(default)]
     is_short: Option<bool>,
+    /// Number of song snippets the audiobook was created with. The
+    /// publisher reads `<storage>/<audiobook>/snippets/snippet-<i>.wav`
+    /// for `i = 1..=snippet_count` and intercalates them between
+    /// chapters. Missing files are tolerated (publisher just skips
+    /// them); zero / absent value disables splicing entirely.
+    #[serde(default)]
+    snippet_count: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2287,7 +3866,7 @@ async fn load_audiobook(state: &AppState, id: &str) -> Result<DbAudiobook> {
         .db()
         .inner()
         .query(format!(
-            "SELECT title, topic, genre, language, is_short FROM audiobook:`{id}`"
+            "SELECT title, topic, genre, language, is_short, snippet_count FROM audiobook:`{id}`"
         ))
         .await
         .map_err(|e| Error::Database(format!("yt load book: {e}")))?
@@ -2871,4 +4450,125 @@ fn find_cover(state: &AppState, audiobook_id: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod hyperframes_tests {
+    use super::*;
+
+    fn book(title: &str) -> DbAudiobook {
+        DbAudiobook {
+            title: title.into(),
+            topic: "test".into(),
+            genre: None,
+            language: None,
+            is_short: Some(true),
+            snippet_count: None,
+        }
+    }
+
+    fn chapter(number: i64, title: &str, dur_ms: i64, synopsis: Option<&str>) -> DbChapter {
+        DbChapter {
+            number,
+            title: title.into(),
+            status: "done".into(),
+            duration_ms: Some(dur_ms),
+            synopsis: synopsis.map(str::to_string),
+            chapter_art_path: None,
+            body_md: None,
+            paragraphs: None,
+        }
+    }
+
+    #[test]
+    fn allocate_steps_distributes_proportionally() {
+        let chapters = vec![
+            chapter(1, "A", 1000, None),
+            chapter(2, "B", 5000, None),
+            chapter(3, "C", 4000, None),
+        ];
+        let alloc = allocate_steps(&chapters, 10);
+        assert_eq!(alloc.iter().sum::<usize>(), 10);
+        assert!(alloc.iter().all(|&n| n >= 1));
+        // Largest chapter gets the most slots.
+        assert_eq!(alloc.iter().copied().max().unwrap(), alloc[1]);
+    }
+
+    #[test]
+    fn allocate_steps_below_chapter_count_promotes_to_chapter_count() {
+        let chapters = vec![
+            chapter(1, "A", 1000, None),
+            chapter(2, "B", 1000, None),
+            chapter(3, "C", 1000, None),
+            chapter(4, "D", 1000, None),
+        ];
+        // User asked for 2 steps but we have 4 chapters: every chapter
+        // still gets a slot so coverage isn't lost.
+        let alloc = allocate_steps(&chapters, 2);
+        assert_eq!(alloc.len(), 4);
+        assert!(alloc.iter().all(|&n| n >= 1));
+        assert_eq!(alloc.iter().sum::<usize>(), 4);
+    }
+
+    #[test]
+    fn split_into_sentences_respects_max() {
+        let s = "First sentence. Second one! Third? Fourth here.";
+        let out = split_into_sentences(s, 2);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0], "First sentence.");
+        assert_eq!(out[1], "Second one!");
+    }
+
+    #[test]
+    fn truncate_sentence_cuts_at_word_boundary() {
+        let s = "the quick brown fox jumps over the lazy dog";
+        let t = truncate_sentence(s, 20);
+        assert!(t.ends_with('…'));
+        assert!(t.chars().count() <= 21);
+        assert!(!t.contains("fo…")); // should cut at a space
+    }
+
+    #[test]
+    fn html_escape_quotes_dangerous_chars() {
+        assert_eq!(
+            html_escape("<a href=\"x\">'&'</a>"),
+            "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;"
+        );
+    }
+
+    #[test]
+    fn build_html_emits_one_scene_per_step_and_registers_timeline() {
+        let b = book("My <Test> Book");
+        let chapters = vec![
+            chapter(1, "Opening", 4000, Some("Hello. World.")),
+            chapter(2, "Middle", 6000, Some("More content here.")),
+        ];
+        let cover = PathBuf::from("/nonexistent/cover.png");
+        let storage = PathBuf::from("/nonexistent/storage");
+        let html = build_hyperframes_short_html("comp-id", &b, &chapters, &cover, &storage, 6, 10)
+            .unwrap();
+        // Composition wiring.
+        assert!(html.contains(r#"data-composition-id="comp-id""#));
+        assert!(html.contains(r#"data-duration="10""#));
+        assert!(html.contains("window.__timelines['comp-id']"));
+        // One <div class="scene"> per allocated step.
+        assert_eq!(html.matches(r#"<div class="scene""#).count(), 6);
+        // Book title is HTML-escaped (no raw `<` survives).
+        assert!(html.contains("My &lt;Test&gt; Book"));
+        // First scene gets the opener element.
+        assert_eq!(html.matches(r#"class="opener""#).count(), 1);
+    }
+
+    #[test]
+    fn build_html_falls_back_to_gradient_when_no_images_exist() {
+        let b = book("Untitled");
+        let chapters = vec![chapter(1, "Solo", 3000, None)];
+        let cover = PathBuf::from("/nonexistent/cover.png");
+        let storage = PathBuf::from("/nonexistent/storage");
+        let html =
+            build_hyperframes_short_html("c", &b, &chapters, &cover, &storage, 2, 4).unwrap();
+        // Cover doesn't exist on disk, so every scene must fall back.
+        assert!(html.contains("linear-gradient(135deg"));
+        assert!(!html.contains("data:image/"));
+    }
 }

@@ -9,6 +9,7 @@ pub mod integrations;
 pub mod jobs;
 pub mod me;
 pub mod podcasts;
+pub mod songbook;
 pub mod stream;
 pub mod topic_templates;
 pub mod topics;

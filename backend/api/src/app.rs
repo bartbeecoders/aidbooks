@@ -175,6 +175,14 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::jobs::list_for_audiobook),
         )
         .route("/ws/audiobook/:id", get(handlers::ws::audiobook_progress))
+        .route(
+            "/songbook/preview-snippets",
+            post(handlers::songbook::preview_snippets),
+        )
+        .route(
+            "/songbook/preview/:preview_id/:idx/audio",
+            get(handlers::songbook::preview_audio),
+        )
         .route("/topics/random", post(handlers::topics::random))
         .route(
             "/topic-templates",

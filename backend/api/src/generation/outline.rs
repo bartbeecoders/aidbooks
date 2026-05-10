@@ -14,6 +14,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use crate::generation::prompts;
+use crate::generation::songbook;
 use crate::llm::{pick_llm_for_roles_lang, ChatMessage, ChatRequest};
 use crate::state::AppState;
 
@@ -58,6 +59,12 @@ const OUTLINE_MODEL_FALLBACK_HINT: &str = "outline LLM produced invalid JSON";
 /// budget so the result fits inside a 90-second YouTube Short — a single
 /// chapter capped at 225 words (~1.5 minutes of narration at 150 wpm).
 /// The `length` preset is ignored in that case.
+///
+/// `is_songbook`: when `true`, fetch lyrics + artist info via the
+/// Tinyfish CLI and run the dedicated `outline_songbook` prompt
+/// instead of `outline`. Mutually exclusive with `is_short` at the
+/// handler layer; this function trusts the caller and just branches on
+/// `is_songbook` first.
 #[allow(clippy::too_many_arguments)] // pipeline-stage entrypoint; extracting a struct just hides the params
 pub async fn run(
     state: &AppState,
@@ -68,6 +75,7 @@ pub async fn run(
     genre: &str,
     language: &str,
     is_short: bool,
+    is_songbook: bool,
 ) -> Result<()> {
     set_audiobook_status(state, audiobook_id, "outline_pending").await?;
 
@@ -95,7 +103,16 @@ pub async fn run(
     vars.insert("words_per_chapter", words_per_chapter.to_string());
     vars.insert("language", crate::i18n::label(language).to_string());
 
-    let rendered = prompts::render(state, PromptRole::Outline, &vars).await?;
+    let prompt_role = if is_songbook {
+        let info = songbook::fetch_song_info(state, topic).await;
+        vars.insert("lyrics", info.lyrics);
+        vars.insert("artist_bio", info.artist_bio);
+        vars.insert("song_meaning", info.song_meaning);
+        PromptRole::OutlineSongbook
+    } else {
+        PromptRole::Outline
+    };
+    let rendered = prompts::render(state, prompt_role, &vars).await?;
     // Honor the admin's `default_for: ["outline"]` + `priority` ranking,
     // and prefer rows whose `languages` includes the book's language. Falls
     // back to `Config.openrouter_default_model` only when no row matches.
@@ -129,7 +146,7 @@ pub async fn run(
         user,
         Some(audiobook_id),
         &picked.llm_id,
-        PromptRole::Outline,
+        prompt_role,
         &response,
         None,
     )
@@ -365,6 +382,7 @@ pub async fn log_generation_event(
         PromptRole::ParagraphVisual => "paragraph_visual",
         PromptRole::ManimCode => "manim_code",
         PromptRole::VoiceExtract => "voice_extract",
+        PromptRole::OutlineSongbook => "outline_songbook",
     };
     let sql = format!(
         r#"CREATE generation_event:`{event_id}` CONTENT {{

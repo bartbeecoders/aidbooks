@@ -177,6 +177,22 @@ const MIGRATIONS: &[Migration] = &[
         name: "0040_youtube_publication_overlay",
         sql: include_str!("../migrations/0040_youtube_publication_overlay.surql"),
     },
+    Migration {
+        name: "0041_audiobook_songbook",
+        sql: include_str!("../migrations/0041_audiobook_songbook.surql"),
+    },
+    Migration {
+        name: "0042_outline_songbook_role",
+        sql: include_str!("../migrations/0042_outline_songbook_role.surql"),
+    },
+    Migration {
+        name: "0043_audiobook_snippet_count",
+        sql: include_str!("../migrations/0043_audiobook_snippet_count.surql"),
+    },
+    Migration {
+        name: "0044_job_kind_song_snippets",
+        sql: include_str!("../migrations/0044_job_kind_song_snippets.surql"),
+    },
 ];
 
 /// Run any pending migrations. Safe to call on every startup.
