@@ -34,6 +34,12 @@ pub enum JobKind {
     /// (Revideo) sidecar with a JSON `SceneSpec`; output is
     /// `<storage>/<audiobook>/<language>/ch-<n>.video.mp4`.
     AnimateChapter,
+    /// Songbook snippet job: resolve the song to a YouTube URL via
+    /// Tinyfish, download the audio with yt-dlp, cut N evenly-spaced
+    /// ~12 s clips, and persist them under
+    /// `<storage>/<audiobook>/snippets/snippet-<i>.wav`. The publish
+    /// step intercalates them between chapters at upload time.
+    SongSnippets,
 }
 
 impl JobKind {
@@ -51,6 +57,7 @@ impl JobKind {
             JobKind::ChapterParagraphs => "chapter_paragraphs",
             JobKind::Animate => "animate",
             JobKind::AnimateChapter => "animate_chapter",
+            JobKind::SongSnippets => "song_snippets",
         }
     }
 
@@ -68,6 +75,7 @@ impl JobKind {
             "chapter_paragraphs" => JobKind::ChapterParagraphs,
             "animate" => JobKind::Animate,
             "animate_chapter" => JobKind::AnimateChapter,
+            "song_snippets" => JobKind::SongSnippets,
             _ => return None,
         })
     }

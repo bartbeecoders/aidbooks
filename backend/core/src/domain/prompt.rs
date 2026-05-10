@@ -36,6 +36,11 @@ pub enum PromptRole {
     /// `dialogue_female`). Cached on `chapter.voice_segments`. Only
     /// runs when the audiobook has `multi_voice_enabled = true`.
     VoiceExtract,
+    /// Songbook outline: explains a song's lyrics chapter-by-chapter,
+    /// using lyrics + artist bio + song meaning fetched from Tinyfish.
+    /// Same JSON output shape as `Outline`; the chapter writer reuses
+    /// `Chapter` afterwards.
+    OutlineSongbook,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

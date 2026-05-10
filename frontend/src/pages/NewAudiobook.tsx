@@ -6,12 +6,16 @@ import {
   catalog,
   coverArt,
   integrations,
+  songbook as songbookApi,
+  snippetPreviewUrl,
   topics,
   ApiError,
 } from "../api";
+import { useAuth } from "../store/auth";
 import type {
   AudiobookLength,
   AutoPipeline,
+  SongbookPreviewResponse,
   TopicTemplate,
   Voice,
 } from "../api";
@@ -92,6 +96,21 @@ export function NewAudiobook(): JSX.Element {
   // Auto-pipeline: chapters + cover + audio default ON. Publish defaults
   // OFF because it depends on the user having a YouTube channel connected.
   const [isShort, setIsShort] = useState(false);
+  // Songbook mode: topic is a song reference, lyrics + artist info are
+  // fetched server-side via Tinyfish, and the dedicated outline prompt
+  // plans chapters around verses + meaning. Mutually exclusive with
+  // `isShort` (the backend rejects the combination with a 400).
+  const [isSongbook, setIsSongbook] = useState(false);
+  // Songbook-only knob: number of audio clips of the actual song that
+  // the publish step splices between chapters. 0 = no clips. The
+  // backend caps at 12; we surface a 0..6 slider as the sensible UX
+  // range (anything higher feels relentless).
+  const [snippetCount, setSnippetCount] = useState(3);
+  // Last preview result; rendered as a stack of <audio> tags + the
+  // matching YouTube link so the user can verify the song lookup
+  // resolved to the right track before committing to a full create.
+  const [snippetPreview, setSnippetPreview] = useState<SongbookPreviewResponse | null>(null);
+  const accessToken = useAuth((s) => s.accessToken) ?? "";
   const [autoChapters, setAutoChapters] = useState(true);
   const [autoCover, setAutoCover] = useState(true);
   // Tiles per *visual* paragraph (the LLM extract pass picks visualizable
@@ -110,6 +129,12 @@ export function NewAudiobook(): JSX.Element {
   const [publishPrivacy, setPublishPrivacy] =
     useState<"private" | "unlisted" | "public">("private");
   const [publishReview, setPublishReview] = useState(true);
+  // Off by default — auto-create flows skipping the hyperframes step
+  // shouldn't pay for it. Steps null = backend auto-scale.
+  const [publishHyperframes, setPublishHyperframes] = useState(false);
+  const [publishHyperframesSteps, setPublishHyperframesSteps] = useState<
+    number | null
+  >(null);
 
   const voicesQuery = useQuery({
     queryKey: ["voices"],
@@ -165,6 +190,9 @@ export function NewAudiobook(): JSX.Element {
     if (t.length) setLength(t.length);
     if (t.language) setLanguage(t.language);
     setIsShort(t.is_short);
+    // Templates don't carry a songbook bit yet; resetting keeps the form
+    // self-consistent if the user toggles songbook after picking one.
+    if (t.is_short) setIsSongbook(false);
   };
 
   const generateCover = useMutation({
@@ -186,6 +214,18 @@ export function NewAudiobook(): JSX.Element {
       setGenre(r.genre ?? "");
       setLength(r.length);
     },
+  });
+
+  const previewSnippets = useMutation({
+    mutationFn: () =>
+      songbookApi.previewSnippets({
+        topic: topic.trim(),
+        // The backend caps internally; we send what's on the slider
+        // and clamp 0 → 1 because previewing 0 doesn't make sense.
+        count: Math.max(1, snippetCount),
+      }),
+    onSuccess: (r) => setSnippetPreview(r),
+    onError: () => setSnippetPreview(null),
   });
 
   // Highest-priority enabled LLM tagged `default_for: ["chapter"]` whose
@@ -227,6 +267,8 @@ export function NewAudiobook(): JSX.Element {
               mode: publishMode,
               privacy_status: publishPrivacy,
               review: publishReview,
+              hyperframes: publishHyperframes,
+              hyperframes_steps: publishHyperframesSteps,
             }
           : null,
       };
@@ -247,6 +289,18 @@ export function NewAudiobook(): JSX.Element {
         images_per_paragraph:
           autoCover && imagesPerParagraph > 0 ? imagesPerParagraph : 0,
         is_short: isShort,
+        is_songbook: isSongbook,
+        // Snippet count is meaningful only in songbook mode; the
+        // backend rejects > 0 otherwise, so collapse it here too.
+        snippet_count: isSongbook ? snippetCount : 0,
+        // When the user previewed and the form hasn't drifted, hand
+        // the backend that preview's id so it can adopt the exact
+        // WAVs the user heard instead of running a fresh Tinyfish
+        // search (which can land on a different YouTube video).
+        preview_id:
+          isSongbook && snippetCount > 0 && snippetPreview?.items.length
+            ? snippetPreview.preview_id
+            : undefined,
         auto_pipeline,
         // Only ship the role map when multi-voice is on: an empty map
         // with the toggle off would otherwise overwrite a future
@@ -271,6 +325,14 @@ export function NewAudiobook(): JSX.Element {
   useEffect(() => {
     setCover(null);
   }, [topic, genre, artStyle, coverLlmId, isShort]);
+
+  // Same logic for the snippet preview: a different topic or count
+  // means the cached clips no longer reflect what the create flow
+  // would adopt. Clearing here forces a re-preview before we can
+  // pass `preview_id` to the backend.
+  useEffect(() => {
+    setSnippetPreview(null);
+  }, [topic, snippetCount, isSongbook]);
 
   // Shorts always upload as a single vertical clip — playlist mode
   // doesn't apply because the whole story fits in one ≤ 90 s video.
@@ -360,7 +422,11 @@ export function NewAudiobook(): JSX.Element {
               maxLength={500}
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
-              placeholder="e.g. A short history of tea"
+              placeholder={
+                isSongbook
+                  ? "Song — Artist (e.g. Bohemian Rhapsody — Queen)"
+                  : "e.g. A short history of tea"
+              }
               className={inputClass}
             />
             <button
@@ -373,15 +439,24 @@ export function NewAudiobook(): JSX.Element {
               {surprise.isPending ? "…" : "Surprise me"}
             </button>
           </div>
+          {isSongbook && (
+            <p className="mt-1 text-[11px] text-slate-500">
+              We'll search Tinyfish for lyrics + artist info before
+              planning the chapters.
+            </p>
+          )}
         </Field>
 
         <Field label="Format">
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
             <button
               type="button"
-              onClick={() => setIsShort(false)}
+              onClick={() => {
+                setIsShort(false);
+                setIsSongbook(false);
+              }}
               className={`rounded-md border px-3 py-2 text-left text-sm ${
-                !isShort
+                !isShort && !isSongbook
                   ? "border-sky-600 bg-sky-600/10 text-sky-200"
                   : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
               }`}
@@ -393,7 +468,27 @@ export function NewAudiobook(): JSX.Element {
             </button>
             <button
               type="button"
-              onClick={() => setIsShort(true)}
+              onClick={() => {
+                setIsSongbook(true);
+                setIsShort(false);
+              }}
+              className={`rounded-md border px-3 py-2 text-left text-sm ${
+                isSongbook
+                  ? "border-fuchsia-600 bg-fuchsia-600/10 text-fuchsia-200"
+                  : "border-slate-700 bg-slate-950 text-slate-300 hover:border-slate-600"
+              }`}
+            >
+              <span className="block font-medium">🎵 Songbook</span>
+              <span className="block text-[11px] text-slate-400">
+                Explains a song; lyrics fetched via Tinyfish
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setIsShort(true);
+                setIsSongbook(false);
+              }}
               className={`rounded-md border px-3 py-2 text-left text-sm ${
                 isShort
                   ? "border-rose-600 bg-rose-600/10 text-rose-200"
@@ -407,6 +502,107 @@ export function NewAudiobook(): JSX.Element {
             </button>
           </div>
         </Field>
+
+        {isSongbook && (
+          <Field label={`Song snippets in audio (${snippetCount})`}>
+            <input
+              type="range"
+              min={0}
+              max={6}
+              step={1}
+              value={snippetCount}
+              onChange={(e) => setSnippetCount(Number(e.target.value))}
+              className="w-full accent-fuchsia-500"
+              aria-label="Number of song snippets"
+            />
+            <p className="mt-1 text-[11px] text-slate-500">
+              The publish step downloads the song from YouTube via
+              yt-dlp and splices N short clips of the original
+              recording between chapters. 0 disables the snippet
+              job. <strong className="text-amber-300/80">Heads up:</strong>{" "}
+              you're responsible for clearing copyright before
+              publishing public videos containing music you don't own.
+            </p>
+            <div className="mt-2 flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => previewSnippets.mutate()}
+                disabled={
+                  previewSnippets.isPending ||
+                  topic.trim().length < 3 ||
+                  snippetCount === 0
+                }
+                className="rounded-md border border-fuchsia-700 bg-fuchsia-700/10 px-3 py-1.5 text-xs text-fuchsia-200 hover:border-fuchsia-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {previewSnippets.isPending
+                  ? "Fetching…"
+                  : "Preview snippets"}
+              </button>
+              <span className="text-[11px] text-slate-500">
+                Runs the same Tinyfish + yt-dlp pipeline so you can
+                hear the actual clips before creating the audiobook.
+              </span>
+            </div>
+            {previewSnippets.isError && (
+              <p className="mt-2 text-[11px] text-rose-300">
+                {previewSnippets.error instanceof ApiError
+                  ? previewSnippets.error.message
+                  : "Could not preview snippets"}
+              </p>
+            )}
+            {snippetPreview && (
+              <div className="mt-3 space-y-2 rounded-md border border-slate-800 bg-slate-950/40 p-3">
+                {snippetPreview.youtube_url ? (
+                  <p className="text-[11px] text-slate-400">
+                    Source:{" "}
+                    <a
+                      href={snippetPreview.youtube_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-sky-300 hover:underline"
+                    >
+                      {snippetPreview.youtube_url}
+                    </a>
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-amber-300/80">
+                    No YouTube URL was resolved.
+                  </p>
+                )}
+                {snippetPreview.error && (
+                  <p className="text-[11px] text-rose-300">
+                    {snippetPreview.error}
+                  </p>
+                )}
+                {snippetPreview.items.length === 0 && !snippetPreview.error && (
+                  <p className="text-[11px] text-slate-500">
+                    No clips were produced.
+                  </p>
+                )}
+                {snippetPreview.items.map((item) => (
+                  <div
+                    key={item.index}
+                    className="flex items-center gap-3 text-[11px] text-slate-400"
+                  >
+                    <span className="w-12 shrink-0 tabular-nums">
+                      #{item.index} · {(item.duration_ms / 1000).toFixed(1)}s
+                    </span>
+                    <audio
+                      controls
+                      preload="none"
+                      className="h-8 flex-1"
+                      src={snippetPreviewUrl(
+                        snippetPreview.preview_id,
+                        item.index,
+                        accessToken,
+                      )}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+          </Field>
+        )}
 
         <div className="grid gap-6 md:grid-cols-2">
           <div className="space-y-4">
@@ -553,6 +749,10 @@ export function NewAudiobook(): JSX.Element {
           onPublishPrivacy={setPublishPrivacy}
           publishReview={publishReview}
           onPublishReview={setPublishReview}
+          publishHyperframes={publishHyperframes}
+          onPublishHyperframes={setPublishHyperframes}
+          publishHyperframesSteps={publishHyperframesSteps}
+          onPublishHyperframesSteps={setPublishHyperframesSteps}
           youtubeConnected={youtubeConnected}
           coverPreGenerated={cover !== null}
           isShort={isShort}
@@ -624,6 +824,10 @@ function PipelinePanel({
   onPublishPrivacy,
   publishReview,
   onPublishReview,
+  publishHyperframes,
+  onPublishHyperframes,
+  publishHyperframesSteps,
+  onPublishHyperframesSteps,
   youtubeConnected,
   coverPreGenerated,
   isShort,
@@ -644,6 +848,10 @@ function PipelinePanel({
   onPublishPrivacy: (v: "private" | "unlisted" | "public") => void;
   publishReview: boolean;
   onPublishReview: (v: boolean) => void;
+  publishHyperframes: boolean;
+  onPublishHyperframes: (v: boolean) => void;
+  publishHyperframesSteps: number | null;
+  onPublishHyperframesSteps: (v: number | null) => void;
   youtubeConnected: boolean;
   coverPreGenerated: boolean;
   isShort: boolean;
@@ -833,6 +1041,68 @@ function PipelinePanel({
               </span>
             </span>
           </label>
+          <div className="mt-3 rounded-md border border-slate-800 bg-slate-950 p-2 text-xs">
+            <label className="flex cursor-pointer items-start gap-2">
+              <input
+                type="checkbox"
+                checked={publishHyperframes}
+                onChange={(e) => onPublishHyperframes(e.target.checked)}
+                className="mt-0.5 h-3.5 w-3.5 accent-cyan-500"
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block text-slate-100">
+                  Hyperframes illustrated video
+                </span>
+                <span className="block text-slate-400">
+                  {isShort
+                    ? "9:16 composition with chapter art, animated taglines, and a title overlay."
+                    : "16:9 composition with a title card, per-chapter intro cards, image + caption scenes, and pull quotes."}
+                </span>
+              </span>
+            </label>
+            {publishHyperframes && (
+              <div className="mt-2 flex items-center gap-2 pl-6">
+                <span className="text-slate-300">Scenes</span>
+                <input
+                  type="number"
+                  min={2}
+                  max={isShort ? 12 : 120}
+                  placeholder="Auto"
+                  value={publishHyperframesSteps ?? ""}
+                  onChange={(e) => {
+                    const raw = e.target.value;
+                    if (raw === "") {
+                      onPublishHyperframesSteps(null);
+                      return;
+                    }
+                    const cap = isShort ? 12 : 120;
+                    const n = Math.min(cap, Math.max(2, Number(raw) || 0));
+                    onPublishHyperframesSteps(
+                      Number.isFinite(n) ? n : null,
+                    );
+                  }}
+                  className="w-24 rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-slate-100"
+                />
+                <button
+                  type="button"
+                  onClick={() => onPublishHyperframesSteps(null)}
+                  className={
+                    "rounded border px-2 py-0.5 text-[10px] " +
+                    (publishHyperframesSteps === null
+                      ? "border-cyan-500 bg-cyan-500/10 text-cyan-200"
+                      : "border-slate-700 bg-slate-950 text-slate-400 hover:text-slate-200")
+                  }
+                >
+                  Auto
+                </button>
+                <span className="ml-1 text-[10px] text-slate-500">
+                  {isShort
+                    ? "Auto ≈ 1 / 15 s, max 12."
+                    : "Auto ≈ 1 / 15 s, max 120."}
+                </span>
+              </div>
+            )}
+          </div>
         </div>
       )}
 

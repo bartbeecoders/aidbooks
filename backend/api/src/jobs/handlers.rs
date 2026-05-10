@@ -44,6 +44,7 @@ pub fn registry(state: AppState) -> JobHandlerRegistry {
             JobKind::AnimateChapter,
             AnimateChapterHandler::new(state.clone()),
         )
+        .register(JobKind::SongSnippets, SongSnippetsHandler(state.clone()))
         .register(JobKind::Gc, GcHandler(state))
         .build()
 }
@@ -983,6 +984,76 @@ impl JobHandler for TranslateHandler {
 }
 
 // ---------------------------------------------------------------------------
+// SongSnippets: download N evenly-spaced clips of the chosen song.
+// ---------------------------------------------------------------------------
+
+struct SongSnippetsHandler(AppState);
+
+#[async_trait]
+impl JobHandler for SongSnippetsHandler {
+    async fn run(&self, ctx: &JobContext, job: JobRow) -> Result<JobOutcome> {
+        let audiobook_id = job
+            .audiobook_id
+            .clone()
+            .ok_or_else(|| Error::Database("song_snippets job missing audiobook".into()))?;
+
+        ctx.progress(&job, "loading", 0.0).await;
+
+        #[derive(Deserialize)]
+        struct Row {
+            topic: String,
+            #[serde(default)]
+            snippet_count: Option<i64>,
+            #[serde(default)]
+            is_songbook: Option<bool>,
+        }
+        let rows: Vec<Row> = self
+            .0
+            .db()
+            .inner()
+            .query(format!(
+                "SELECT topic, snippet_count, is_songbook \
+                 FROM audiobook:`{audiobook_id}`"
+            ))
+            .await
+            .map_err(|e| Error::Database(format!("song_snippets load: {e}")))?
+            .take(0)
+            .map_err(|e| Error::Database(format!("song_snippets load (decode): {e}")))?;
+        let row = match rows.into_iter().next() {
+            Some(r) => r,
+            None => {
+                return Ok(JobOutcome::Fatal(format!(
+                    "audiobook {audiobook_id} not found"
+                )))
+            }
+        };
+        if !row.is_songbook.unwrap_or(false) {
+            // Should never happen — auto-enqueue gates on
+            // `is_songbook && snippet_count > 0` — but if a stray
+            // job lands here, drop it cleanly rather than spending
+            // the yt-dlp budget on a non-songbook.
+            return Ok(JobOutcome::Done);
+        }
+        let count = row.snippet_count.unwrap_or(0).clamp(0, 12) as u32;
+        if count == 0 {
+            return Ok(JobOutcome::Done);
+        }
+
+        ctx.progress(&job, "downloading", 0.10).await;
+
+        // `song_snippets::run` is best-effort: it converts every
+        // upstream failure (no Tinyfish key, yt-dlp missing, video
+        // unavailable, age-gated) into a `warn!` log and returns
+        // `Ok(())`. The publisher splices whatever WAVs it finds on
+        // disk; gaps are fine.
+        crate::generation::song_snippets::run(&self.0, &audiobook_id, &row.topic, count).await?;
+
+        ctx.progress(&job, "ready", 1.0).await;
+        Ok(JobOutcome::Done)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // GC: nightly orphan-audio sweep.
 // ---------------------------------------------------------------------------
 
@@ -1350,11 +1421,20 @@ async fn enqueue_auto_publish(
         return;
     }
 
+    let hyperframes = publish.hyperframes.unwrap_or(false);
+    // Only forward an explicit override; let the publisher auto-scale
+    // when the create-flow toggle is the default ("Auto").
+    let hyperframes_steps = match publish.hyperframes_steps {
+        Some(n) if n >= 2 => Some(n.min(120)),
+        _ => None,
+    };
     let payload = serde_json::json!({
         "publication_id": publication_id,
         "privacy_status": privacy,
         "mode": mode,
         "review": review,
+        "hyperframes": hyperframes,
+        "hyperframes_steps": hyperframes_steps,
     });
     let req = EnqueueRequest::new(JobKind::PublishYoutube)
         .with_user(user)

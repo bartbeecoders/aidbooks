@@ -44,3 +44,12 @@ Endpoints:
 Use an api_key to access it:
 Authorization: Bearer <HYPERFRAMES_API_KEY> header (recommended)
 The key is stored in the .env file
+
+
+The hyperframes video looks good but is fairly simple. Can we not make it more related to the content of the audiobook?
+Show more steps, interlaced with the generated images/illustrations.
+Maybe let the user set the nr of steps/animations to show.
+
+Add the hyperframes illustration capability to audiobook youtube generation (not only shorts)
+Add the option to add it to the new audiobook generation flow.
+As youtube videos are longer, we should show more steps and illustrations. Illustrations are not only text overlays, but can also be visual representations of the content.
