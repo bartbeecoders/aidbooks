@@ -6,7 +6,10 @@ pub mod prompt;
 pub mod user;
 pub mod voice;
 
-pub use audiobook::{Audiobook, AudiobookLength, AudiobookStatus, Chapter, ChapterStatus};
+pub use audiobook::{
+    Audiobook, AudiobookLength, AudiobookStatus, Chapter, ChapterStatus, NarrationIntensity,
+    NarrationStyle, VoicePreset,
+};
 pub use generation_event::GenerationEvent;
 pub use job::{Job, JobKind, JobStatus};
 pub use llm::{Llm, LlmProvider, LlmRole};

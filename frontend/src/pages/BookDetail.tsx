@@ -19,10 +19,18 @@ import type {
   ChapterSummary,
   JobSnapshot,
   Llm,
+  NarrationIntensity,
+  NarrationStyle,
   PodcastRow,
   PublicationRow,
   Voice,
+  VoicePreset,
 } from "../api";
+import {
+  NarrationStylePanel,
+  VoicePresetPicker,
+  presetRoles,
+} from "../components/NarrationStylePanel";
 import { useAuth } from "../store/auth";
 import { useProgressSocket } from "../hooks/useProgressSocket";
 import { RenameAudiobookDialog } from "../components/RenameAudiobookDialog";
@@ -522,6 +530,17 @@ export function BookDetail(): JSX.Element {
         onUpdated={() => qc.invalidateQueries({ queryKey: ["audiobook", id] })}
       />
 
+      <NarrationSettingsCard
+        audiobookId={data.id}
+        style={(data.narration_style as NarrationStyle | null) ?? null}
+        intensity={
+          (data.narration_intensity as NarrationIntensity[] | null) ?? []
+        }
+        voicePreset={(data.voice_preset as VoicePreset | null) ?? null}
+        multiVoiceEnabled={data.multi_voice_enabled ?? false}
+        onUpdated={() => qc.invalidateQueries({ queryKey: ["audiobook", id] })}
+      />
+
       <LanguageTabs
         languages={data.available_languages}
         primary={data.language}
@@ -940,6 +959,96 @@ function MultiVoicePanel({
         )}
       </div>
     </details>
+  );
+}
+
+/**
+ * Live-edit card for the narration style + intensity + voice preset.
+ * Sits below the multi-voice panel so the user can tune tone after the
+ * book is created. Each input PATCHes immediately, mirroring the
+ * MultiVoicePanel UX — local state is kept only for the optimistic
+ * pending render before the cache invalidates and re-renders from the
+ * server's truth.
+ *
+ * Re-narrating the audiobook is what actually applies a style change
+ * to existing audio; we surface a small reminder banner so users don't
+ * expect existing chapters to magically rewrite themselves.
+ */
+function NarrationSettingsCard({
+  audiobookId,
+  style,
+  intensity,
+  voicePreset,
+  multiVoiceEnabled,
+  onUpdated,
+}: {
+  audiobookId: string;
+  style: NarrationStyle | null;
+  intensity: NarrationIntensity[];
+  voicePreset: VoicePreset | null;
+  multiVoiceEnabled: boolean;
+  onUpdated: () => void;
+}): JSX.Element {
+  const setStyle = useMutation({
+    mutationFn: (next: NarrationStyle | null) =>
+      audiobooks.patch(audiobookId, { narration_style: next }),
+    onSuccess: onUpdated,
+  });
+  const setIntensity = useMutation({
+    mutationFn: (next: NarrationIntensity[]) =>
+      audiobooks.patch(audiobookId, { narration_intensity: next }),
+    onSuccess: onUpdated,
+  });
+  const setPreset = useMutation({
+    mutationFn: (payload: {
+      preset: VoicePreset | null;
+      enableMultiVoice: boolean;
+    }) =>
+      audiobooks.patch(audiobookId, {
+        voice_preset: payload.preset,
+        // Picking a multi-voice preset implies enabling multi-voice;
+        // the audio pipeline ignores `voice_roles` otherwise.
+        ...(payload.enableMultiVoice && !multiVoiceEnabled
+          ? { multi_voice_enabled: true }
+          : {}),
+      }),
+    onSuccess: onUpdated,
+  });
+
+  return (
+    <div className="mb-4 space-y-3">
+      <NarrationStylePanel
+        style={style}
+        onStyle={(next) => setStyle.mutate(next)}
+        intensity={intensity}
+        onIntensity={(next) => setIntensity.mutate(next)}
+      />
+      <VoicePresetPicker
+        value={voicePreset}
+        onChange={(next) =>
+          setPreset.mutate({
+            preset: next,
+            enableMultiVoice: !!next && presetRoles(next).length > 1,
+          })
+        }
+      />
+      {(setStyle.error || setIntensity.error || setPreset.error) && (
+        <p className="text-xs text-rose-400">
+          {(setStyle.error ?? setIntensity.error ?? setPreset.error) instanceof
+          ApiError
+            ? (
+                (setStyle.error ?? setIntensity.error ?? setPreset.error) as
+                  ApiError
+              ).message
+            : "Could not save narration settings"}
+        </p>
+      )}
+      <p className="text-[11px] text-slate-500">
+        Style + intensity drive the next chapter generation. Re-run the
+        chapter writer (or regenerate audio for existing chapters) for
+        the change to land in the audio.
+      </p>
+    </div>
   );
 }
 

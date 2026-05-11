@@ -15,10 +15,18 @@ import { useAuth } from "../store/auth";
 import type {
   AudiobookLength,
   AutoPipeline,
+  NarrationIntensity,
+  NarrationStyle,
   SongbookPreviewResponse,
   TopicTemplate,
   Voice,
+  VoicePreset,
 } from "../api";
+import {
+  NarrationStylePanel,
+  VoicePresetPicker,
+  presetRoles,
+} from "../components/NarrationStylePanel";
 import { ArtStyleSelect } from "../components/ArtStylePicker";
 import { DEFAULT_ART_STYLE } from "../lib/art-styles";
 import { imageCapableLlms } from "../lib/cover-llm";
@@ -124,6 +132,19 @@ export function NewAudiobook(): JSX.Element {
   // already configured rather than requiring an extra patch.
   const [multiVoiceEnabled, setMultiVoiceEnabled] = useState(false);
   const [voiceRoles, setVoiceRoles] = useState<Record<string, string>>({});
+  // Narrative style overlay + intensity dial. Both are no-op defaults
+  // (`null` style + empty intensity); the backend treats those as the
+  // legacy genre-driven path so existing flows are unaffected.
+  const [narrationStyle, setNarrationStyle] = useState<NarrationStyle | null>(
+    null,
+  );
+  const [narrationIntensity, setNarrationIntensity] = useState<
+    NarrationIntensity[]
+  >([]);
+  // Voice preset is purely a UX hint persisted alongside voice_roles —
+  // the backend audio pipeline reads the role map directly. Picking a
+  // preset turns multi-voice on automatically; "None" leaves it off.
+  const [voicePreset, setVoicePreset] = useState<VoicePreset | null>(null);
   const [autoPublish, setAutoPublish] = useState(false);
   const [publishMode, setPublishMode] = useState<"single" | "playlist">("single");
   const [publishPrivacy, setPublishPrivacy] =
@@ -307,6 +328,9 @@ export function NewAudiobook(): JSX.Element {
         // server-side default.
         multi_voice_enabled: multiVoiceEnabled,
         voice_roles: multiVoiceEnabled ? voiceRoles : undefined,
+        narration_style: narrationStyle,
+        narration_intensity: narrationIntensity,
+        voice_preset: voicePreset,
       });
     },
     onSuccess: (book) => {
@@ -670,6 +694,19 @@ export function NewAudiobook(): JSX.Element {
               />
             </Field>
 
+            <VoicePresetPicker
+              value={voicePreset}
+              onChange={(next) => {
+                setVoicePreset(next);
+                // Picking a multi-voice preset (anything beyond a
+                // single-voice cast) implies multi-voice mode — the
+                // backend ignores `voice_roles` otherwise.
+                if (next && presetRoles(next).length > 1) {
+                  setMultiVoiceEnabled(true);
+                }
+              }}
+            />
+
             <MultiVoicePanel
               enabled={multiVoiceEnabled}
               roles={voiceRoles}
@@ -679,6 +716,13 @@ export function NewAudiobook(): JSX.Element {
                 voicesQuery.data?.items ?? [],
                 language,
               )}
+            />
+
+            <NarrationStylePanel
+              style={narrationStyle}
+              onStyle={setNarrationStyle}
+              intensity={narrationIntensity}
+              onIntensity={setNarrationIntensity}
             />
           </div>
 

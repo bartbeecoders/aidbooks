@@ -69,7 +69,7 @@ async fn seed_prompts(db: &Db) -> Result<()> {
             "role": "outline",
             "variables": [
                 "topic", "length", "genre", "chapter_count",
-                "words_per_chapter", "language"
+                "words_per_chapter", "language", "style_overlay"
             ],
             "body": include_str!("prompts/outline_v1.md"),
         }),
@@ -88,7 +88,8 @@ async fn seed_prompts(db: &Db) -> Result<()> {
             "variables": [
                 "book_title", "chapter_number", "chapter_title",
                 "chapter_synopsis", "target_words", "genre",
-                "previous_ending", "language", "tags", "opening_rule"
+                "previous_ending", "language", "tags", "opening_rule",
+                "style_overlay"
             ],
             "body": include_str!("prompts/chapter_v1.md"),
         }),

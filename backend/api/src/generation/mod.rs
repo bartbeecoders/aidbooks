@@ -7,5 +7,6 @@ pub mod paragraphs;
 pub mod prompts;
 pub mod song_snippets;
 pub mod songbook;
+pub mod style;
 pub mod translate;
 pub mod voices;

@@ -7,12 +7,13 @@
 
 use std::collections::HashMap;
 
-use listenai_core::domain::{LlmRole, PromptRole};
+use listenai_core::domain::{LlmRole, NarrationIntensity, NarrationStyle, PromptRole};
 use listenai_core::id::UserId;
 use listenai_core::{Error, Result};
 use serde::Deserialize;
 use tracing::info;
 
+use crate::generation::style::render_style_overlay;
 use crate::generation::{outline::log_generation_event, prompts};
 use crate::llm::{pick_llm_for_roles_lang, ChatMessage, ChatRequest};
 use crate::state::AppState;
@@ -40,6 +41,15 @@ struct AudiobookMini {
     /// hook-shaped opener, long-form books keep the smooth-flow opener.
     #[serde(default)]
     is_short: Option<bool>,
+    /// Optional style overlay raw values. Parsed into typed enums in
+    /// `run_one` and turned into the prompt's `style_overlay` block via
+    /// [`render_style_overlay`]. Stored as raw strings so an unknown
+    /// future style added by a forward client doesn't poison the row
+    /// decode.
+    #[serde(default)]
+    narration_style: Option<String>,
+    #[serde(default)]
+    narration_intensity: Option<Vec<String>>,
 }
 
 /// Generate every `pending` (or failed) chapter in order. Updates each
@@ -145,6 +155,18 @@ async fn run_one(
         "opening_rule",
         opening_rule_for(book.is_short.unwrap_or(false)).to_string(),
     );
+    let style = book
+        .narration_style
+        .as_deref()
+        .and_then(NarrationStyle::parse);
+    let intensity: Vec<NarrationIntensity> = book
+        .narration_intensity
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .filter_map(|s| NarrationIntensity::parse(s))
+        .collect();
+    vars.insert("style_overlay", render_style_overlay(style, &intensity));
 
     let rendered = prompts::render(state, PromptRole::Chapter, &vars).await?;
     // Honor the admin's `default_for: ["chapter"]` + `priority` ranking and
@@ -238,7 +260,8 @@ async fn load_audiobook(state: &AppState, audiobook_id: &str) -> Result<Audioboo
         .db()
         .inner()
         .query(format!(
-            "SELECT title, genre, language, tags, is_short FROM audiobook:`{audiobook_id}`"
+            "SELECT title, genre, language, tags, is_short, narration_style, \
+             narration_intensity FROM audiobook:`{audiobook_id}`"
         ))
         .await
         .map_err(|e| Error::Database(format!("load audiobook: {e}")))?

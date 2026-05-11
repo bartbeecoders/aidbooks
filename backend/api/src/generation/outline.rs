@@ -7,7 +7,9 @@
 
 use std::collections::HashMap;
 
-use listenai_core::domain::{AudiobookLength, LlmRole, PromptRole};
+use listenai_core::domain::{
+    AudiobookLength, LlmRole, NarrationIntensity, NarrationStyle, PromptRole,
+};
 use listenai_core::id::UserId;
 use listenai_core::{Error, Result};
 use serde::Deserialize;
@@ -15,6 +17,7 @@ use tracing::{info, warn};
 
 use crate::generation::prompts;
 use crate::generation::songbook;
+use crate::generation::style::render_style_overlay;
 use crate::llm::{pick_llm_for_roles_lang, ChatMessage, ChatRequest};
 use crate::state::AppState;
 
@@ -102,6 +105,11 @@ pub async fn run(
     vars.insert("chapter_count", chapter_count.to_string());
     vars.insert("words_per_chapter", words_per_chapter.to_string());
     vars.insert("language", crate::i18n::label(language).to_string());
+    let (overlay_style, overlay_intensity) = load_style_overlay(state, audiobook_id).await;
+    vars.insert(
+        "style_overlay",
+        render_style_overlay(overlay_style, &overlay_intensity),
+    );
 
     let prompt_role = if is_songbook {
         let info = songbook::fetch_song_info(state, topic).await;
@@ -246,6 +254,56 @@ fn truncate(s: &str, n: usize) -> String {
     } else {
         format!("{}…", &s[..n])
     }
+}
+
+/// Read the audiobook's style + intensity columns. Returns
+/// `(None, [])` for legacy rows or rows that haven't been configured —
+/// the overlay renderer interprets that as the neutral / genre-driven
+/// default. Best-effort: any DB / parse failure logs and degrades.
+async fn load_style_overlay(
+    state: &AppState,
+    audiobook_id: &str,
+) -> (Option<NarrationStyle>, Vec<NarrationIntensity>) {
+    #[derive(Deserialize)]
+    struct Row {
+        #[serde(default)]
+        narration_style: Option<String>,
+        #[serde(default)]
+        narration_intensity: Option<Vec<String>>,
+    }
+    let mut response = match state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT narration_style, narration_intensity FROM audiobook:`{audiobook_id}`"
+        ))
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "load_style_overlay: query failed; degrading to neutral");
+            return (None, Vec::new());
+        }
+    };
+    let mut rows: Vec<Row> = match response.take(0) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "load_style_overlay: decode failed; degrading to neutral");
+            return (None, Vec::new());
+        }
+    };
+    let row = match rows.pop() {
+        Some(r) => r,
+        None => return (None, Vec::new()),
+    };
+    let style = row.narration_style.as_deref().and_then(NarrationStyle::parse);
+    let intensity = row
+        .narration_intensity
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|s| NarrationIntensity::parse(&s))
+        .collect();
+    (style, intensity)
 }
 
 async fn set_audiobook_status(state: &AppState, audiobook_id: &str, status: &str) -> Result<()> {

@@ -183,3 +183,12 @@ Add the possibility to add a like and subscribe button inside the youtube video.
 
 Add the multi voice narration settings to the new audiobook entry page. Now it only is visible when you start generating the audiobook.
 When doing the voice narration, show in the activity log, the voice being used for the chapter.
+
+Add an analytics page that shows graphically:
+- per day/week/month
+- nr of audiobooks, shorts, videos generated
+- total duration of audiobooks, shorts, videos generated
+- total cost of audiobooks, shorts, videos generated
+Connect to the youtube api to show the number of views, likes, comments, etc.
+Connect to the youtube api to show the number of subscribers, etc.
+Connect to the youtube api to get the analytics data for the videos.

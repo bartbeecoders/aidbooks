@@ -5,6 +5,9 @@ Genre: {{genre}}
 Language: {{language}}
 Length preset: {{length}} ({{chapter_count}} chapters of ~{{words_per_chapter}} words each)
 
+Style overlay:
+{{style_overlay}}
+
 Write the title, subtitle, and every chapter title and synopsis in {{language}}. Translate proper nouns only when there is a well-established {{language}} form.
 
 Output rules:

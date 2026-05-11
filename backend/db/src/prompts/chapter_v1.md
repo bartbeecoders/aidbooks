@@ -21,6 +21,9 @@ Writing rules:
 - No code blocks, no markdown tables, no images.
 - Avoid slurs, sexual content involving minors, or real individuals' private affairs.
 
+Style overlay:
+{{style_overlay}}
+
 Speech tags ({{tags}}):
 - Embed the listed X.ai TTS speech tags inline in the prose so the narrator delivers them. They go directly into the text the way punctuation does.
 - Inline tags ("[pause]", "[laugh]", etc.) are dropped at a single point: `Really? [laugh] That's incredible!`

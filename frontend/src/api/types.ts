@@ -96,7 +96,50 @@ type WithArtStyle = {
    * ignored by the audio pipeline.
    */
   voice_roles?: Record<string, string> | null;
+  /**
+   * Narrative style overlay applied to outline + chapter generation
+   * (`drama | humor | sketch | erotic | child_friendly | educational
+   *  | natural`). `null` keeps the genre-driven default. The chapter
+   * LLM reshapes plot + tone to match.
+   */
+  narration_style?: NarrationStyle | null;
+  /**
+   * Additive emotional intensity tags. Multiple values stack and bias
+   * both word choice and the speech-tag palette so TTS delivery picks
+   * up the change too. Empty = neutral.
+   */
+  narration_intensity?: NarrationIntensity[] | null;
+  /**
+   * Voice-cast preset the picker remembers (`single_narrator`,
+   * `single_male`, `single_female`, `duo_male`, `duo_female`,
+   * `mixed`). The audio pipeline reads `voice_roles` directly; this
+   * is purely a UX hint so the detail page redraws the same shape.
+   */
+  voice_preset?: VoicePreset | null;
 };
+
+export type NarrationStyle =
+  | "natural"
+  | "drama"
+  | "humor"
+  | "sketch"
+  | "erotic"
+  | "child_friendly"
+  | "educational";
+
+export type NarrationIntensity =
+  | "intense"
+  | "dramatic"
+  | "emotional"
+  | "expressive";
+
+export type VoicePreset =
+  | "single_narrator"
+  | "single_male"
+  | "single_female"
+  | "duo_male"
+  | "duo_female"
+  | "mixed";
 
 export interface ParagraphSummary {
   /** Stable index into the chapter's paragraph array. */
@@ -188,6 +231,12 @@ export type UpdateAudiobookRequest = S["UpdateAudiobookRequest"] &
      * mean "clear".
      */
     stem_override?: boolean | null;
+    /** Three-state narration_style: absent / null / value. */
+    narration_style?: NarrationStyle | null;
+    /** Replace the intensity list. `[]` clears it. */
+    narration_intensity?: NarrationIntensity[];
+    /** Three-state voice_preset: absent / null / value. */
+    voice_preset?: VoicePreset | null;
   };
 export type UpdateChapterRequest = S["UpdateChapterRequest"];
 

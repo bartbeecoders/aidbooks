@@ -6,7 +6,10 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
-use listenai_core::domain::{AudiobookLength, AudiobookStatus, ChapterStatus, JobKind};
+use listenai_core::domain::{
+    AudiobookLength, AudiobookStatus, ChapterStatus, JobKind, NarrationIntensity, NarrationStyle,
+    VoicePreset,
+};
 use listenai_core::id::{AudiobookId, ChapterId, UserId};
 use listenai_core::{Error, Result};
 use listenai_jobs::repo::EnqueueRequest;
@@ -110,6 +113,23 @@ pub struct CreateAudiobookRequest {
     /// canonical role names (`narrator`, `dialogue_male`,
     /// `dialogue_female`); values are voice ids (e.g. `"eve"`).
     pub voice_roles: Option<std::collections::HashMap<String, String>>,
+    /// Narrative style overlay (`drama`, `humor`, `sketch`, `erotic`,
+    /// `child_friendly`, `educational`, `natural`). When set, both the
+    /// outline and chapter prompts inject the matching guidance so plot
+    /// + tone are reshaped to fit. `None` keeps the genre-driven default.
+    pub narration_style: Option<NarrationStyle>,
+    /// Additive emotional intensity tags (`intense`, `dramatic`,
+    /// `emotional`, `expressive`). Multiple values stack — the chapter
+    /// writer leans on the speech-tag palette to deliver them. Empty =
+    /// neutral.
+    #[serde(default)]
+    pub narration_intensity: Vec<NarrationIntensity>,
+    /// Voice-cast preset for the UI picker (`single_narrator`,
+    /// `single_male`, `single_female`, `duo_male`, `duo_female`,
+    /// `mixed`). Persisted so the detail page re-renders the same
+    /// picker layout. The audio pipeline reads `voice_roles` directly,
+    /// not this field — presets exist purely as a UX shorthand.
+    pub voice_preset: Option<VoicePreset>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Validate, ToSchema, Clone)]
@@ -226,6 +246,13 @@ pub struct AudiobookSummary {
     /// configured. Always serialised so the UI can render the picker
     /// without a separate fetch.
     pub voice_roles: std::collections::HashMap<String, String>,
+    /// Narrative style overlay applied to outline + chapter generation.
+    /// `None` for legacy rows / default behaviour.
+    pub narration_style: Option<NarrationStyle>,
+    /// Additive emotional intensity tags. Empty for legacy rows.
+    pub narration_intensity: Vec<NarrationIntensity>,
+    /// UX hint for the voice picker. `None` for legacy rows.
+    pub voice_preset: Option<VoicePreset>,
     /// LLM verdict on whether the topic is STEM (math / physics /
     /// chemistry / biology / CS / engineering). Set during outline
     /// generation. `None` until the outline LLM runs (legacy rows or
@@ -369,6 +396,20 @@ pub struct UpdateAudiobookRequest {
     /// same shape on the wire.
     #[serde(default)]
     pub stem_override: Option<serde_json::Value>,
+    /// Three-state narration style — absent = don't change, JSON
+    /// `null` = clear (back to genre default), enum string = set.
+    /// `serde_json::Value` again because plain `Option<Option<_>>`
+    /// folds absent and null together on the wire.
+    #[serde(default)]
+    pub narration_style: Option<serde_json::Value>,
+    /// Replace the intensity list. `Some([])` clears it; absent =
+    /// don't touch. The full list is sent each time — easier to
+    /// reason about than a delta.
+    pub narration_intensity: Option<Vec<NarrationIntensity>>,
+    /// Three-state voice preset — absent = don't change, JSON
+    /// `null` = clear, enum string = set.
+    #[serde(default)]
+    pub voice_preset: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -420,6 +461,12 @@ struct DbAudiobook {
     multi_voice_enabled: Option<bool>,
     #[serde(default)]
     voice_roles: Option<std::collections::HashMap<String, String>>,
+    #[serde(default)]
+    narration_style: Option<String>,
+    #[serde(default)]
+    narration_intensity: Option<Vec<String>>,
+    #[serde(default)]
+    voice_preset: Option<String>,
     #[serde(default)]
     stem_detected: Option<bool>,
     #[serde(default)]
@@ -531,6 +578,18 @@ impl DbAudiobook {
                 .unwrap_or(0),
             multi_voice_enabled: self.multi_voice_enabled.unwrap_or(false),
             voice_roles: self.voice_roles.clone().unwrap_or_default(),
+            narration_style: self
+                .narration_style
+                .as_deref()
+                .and_then(NarrationStyle::parse),
+            narration_intensity: self
+                .narration_intensity
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|s| NarrationIntensity::parse(&s))
+                .collect(),
+            voice_preset: self.voice_preset.as_deref().and_then(VoicePreset::parse),
             stem_detected: self.stem_detected,
             stem_override: self.stem_override,
             // Effective STEM = override > detected > false.
@@ -750,6 +809,13 @@ pub async fn create(
         .as_ref()
         .filter(|m| !m.is_empty())
         .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
+    let narration_style: Option<String> = body.narration_style.map(|s| s.as_str().to_string());
+    let narration_intensity: Vec<String> = body
+        .narration_intensity
+        .iter()
+        .map(|i| i.as_str().to_string())
+        .collect();
+    let voice_preset: Option<String> = body.voice_preset.map(|p| p.as_str().to_string());
     let sql = format!(
         r#"CREATE audiobook:`{id}` CONTENT {{
             owner: user:`{user_id}`,
@@ -768,6 +834,9 @@ pub async fn create(
             snippet_count: $snippet_count,
             multi_voice_enabled: $multi_voice_enabled,
             voice_roles: $voice_roles,
+            narration_style: $narration_style,
+            narration_intensity: $narration_intensity,
+            voice_preset: $voice_preset,
             {voice_clause}
             status: "draft"
         }}"#,
@@ -798,6 +867,9 @@ pub async fn create(
         .bind(("snippet_count", snippet_count))
         .bind(("multi_voice_enabled", multi_voice_enabled))
         .bind(("voice_roles", voice_roles_json))
+        .bind(("narration_style", narration_style))
+        .bind(("narration_intensity", narration_intensity))
+        .bind(("voice_preset", voice_preset))
         .await
         .map_err(|e| Error::Database(format!("create audiobook: {e}")))?
         .check()
@@ -1311,6 +1383,85 @@ pub async fn patch(
             .map_err(|e| Error::Database(format!("patch stem_override: {e}")))?
             .check()
             .map_err(|e| Error::Database(format!("patch stem_override: {e}")))?;
+    }
+    // Three-state narration_style:
+    //   absent          → no-op
+    //   JSON null       → clear (back to genre-driven default)
+    //   JSON string     → parse + set; unknown values 400.
+    if let Some(raw) = body.narration_style {
+        let new_value: Option<String> = match raw {
+            serde_json::Value::Null => None,
+            serde_json::Value::String(s) => match NarrationStyle::parse(&s) {
+                Some(parsed) => Some(parsed.as_str().to_string()),
+                None => {
+                    return Err(Error::Validation(format!(
+                        "narration_style: unknown value `{s}`"
+                    ))
+                    .into())
+                }
+            },
+            other => {
+                return Err(Error::Validation(format!(
+                    "narration_style must be a string or null, got {other:?}"
+                ))
+                .into())
+            }
+        };
+        state
+            .db()
+            .inner()
+            .query(format!(
+                "UPDATE audiobook:`{id}` SET narration_style = $v"
+            ))
+            .bind(("v", new_value))
+            .await
+            .map_err(|e| Error::Database(format!("patch narration_style: {e}")))?
+            .check()
+            .map_err(|e| Error::Database(format!("patch narration_style: {e}")))?;
+    }
+    if let Some(intensity) = body.narration_intensity {
+        // Empty list clears; otherwise replace wholesale.
+        let value: Vec<String> = intensity.iter().map(|i| i.as_str().to_string()).collect();
+        state
+            .db()
+            .inner()
+            .query(format!(
+                "UPDATE audiobook:`{id}` SET narration_intensity = $v"
+            ))
+            .bind(("v", value))
+            .await
+            .map_err(|e| Error::Database(format!("patch narration_intensity: {e}")))?
+            .check()
+            .map_err(|e| Error::Database(format!("patch narration_intensity: {e}")))?;
+    }
+    if let Some(raw) = body.voice_preset {
+        let new_value: Option<String> = match raw {
+            serde_json::Value::Null => None,
+            serde_json::Value::String(s) => match VoicePreset::parse(&s) {
+                Some(parsed) => Some(parsed.as_str().to_string()),
+                None => {
+                    return Err(Error::Validation(format!(
+                        "voice_preset: unknown value `{s}`"
+                    ))
+                    .into())
+                }
+            },
+            other => {
+                return Err(Error::Validation(format!(
+                    "voice_preset must be a string or null, got {other:?}"
+                ))
+                .into())
+            }
+        };
+        state
+            .db()
+            .inner()
+            .query(format!("UPDATE audiobook:`{id}` SET voice_preset = $v"))
+            .bind(("v", new_value))
+            .await
+            .map_err(|e| Error::Database(format!("patch voice_preset: {e}")))?
+            .check()
+            .map_err(|e| Error::Database(format!("patch voice_preset: {e}")))?;
     }
     if let Some(podcast_id) = body.podcast_id {
         let trimmed = podcast_id.trim();
