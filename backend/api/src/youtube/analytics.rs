@@ -67,8 +67,12 @@ struct ChannelSnippet {
 }
 /// YouTube returns these counts as JSON strings, not numbers — match
 /// the wire type and parse in Rust to avoid round-tripping through
-/// `serde_json::Value`.
+/// `serde_json::Value`. Field names on the wire are camelCase
+/// (`viewCount`, `subscriberCount`, `videoCount`); without the
+/// rename serde silently zeros every field and the dashboard reads
+/// blanks across the board.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ChannelStatistics {
     #[serde(default)]
     view_count: Option<String>,
@@ -142,7 +146,10 @@ struct VideosItem {
     #[serde(default)]
     statistics: Option<VideoStatistics>,
 }
+/// Wire field names are camelCase (`viewCount`, `likeCount`,
+/// `commentCount`). `rename_all` keeps the Rust names readable.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct VideoStatistics {
     #[serde(default)]
     view_count: Option<String>,
@@ -226,8 +233,11 @@ pub struct DailyReportRow {
 /// The Analytics API returns a columnar payload: a `columnHeaders`
 /// array describing the order, plus a `rows` array of mixed-type
 /// values. We slice columns by name so a future re-ordering on
-/// Google's side doesn't silently swap views for likes.
+/// Google's side doesn't silently swap views for likes. The wire
+/// field is `columnHeaders` — `rename_all = "camelCase"` keeps the
+/// Rust name readable.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AnalyticsResp {
     #[serde(default)]
     rows: Vec<Vec<serde_json::Value>>,
@@ -334,4 +344,74 @@ pub async fn fetch_analytics_report(
 
 fn parse_u64(s: Option<&str>) -> u64 {
     s.and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: YouTube's statistics fields are camelCase
+    /// (`viewCount`, not `view_count`). Without the rename serde
+    /// silently dropped every count to `None` and the dashboard
+    /// rendered zeros across the board.
+    #[test]
+    fn parses_camelcase_channel_statistics() {
+        let json = serde_json::json!({
+            "items": [{
+                "id": "UC123",
+                "snippet": { "title": "My Channel" },
+                "statistics": {
+                    "viewCount": "12345",
+                    "subscriberCount": "678",
+                    "videoCount": "9"
+                }
+            }]
+        });
+        let resp: ChannelsResp = serde_json::from_value(json).unwrap();
+        let stats = resp.items[0].statistics.as_ref().unwrap();
+        assert_eq!(stats.view_count.as_deref(), Some("12345"));
+        assert_eq!(stats.subscriber_count.as_deref(), Some("678"));
+        assert_eq!(stats.video_count.as_deref(), Some("9"));
+    }
+
+    #[test]
+    fn parses_camelcase_video_statistics() {
+        let json = serde_json::json!({
+            "items": [{
+                "id": "vid1",
+                "statistics": {
+                    "viewCount": "100",
+                    "likeCount": "10",
+                    "commentCount": "3"
+                }
+            }]
+        });
+        let resp: VideosResp = serde_json::from_value(json).unwrap();
+        let stats = resp.items[0].statistics.as_ref().unwrap();
+        assert_eq!(parse_u64(stats.view_count.as_deref()), 100);
+        assert_eq!(parse_u64(stats.like_count.as_deref()), 10);
+        assert_eq!(parse_u64(stats.comment_count.as_deref()), 3);
+    }
+
+    #[test]
+    fn parses_camelcase_analytics_response() {
+        let json = serde_json::json!({
+            "columnHeaders": [
+                { "name": "day" },
+                { "name": "views" },
+                { "name": "likes" },
+                { "name": "comments" },
+                { "name": "estimatedMinutesWatched" }
+            ],
+            "rows": [
+                ["2026-05-01", 12.0, 1.0, 0.0, 5.0],
+                ["2026-05-02", 7.0, 0.0, 0.0, 3.0]
+            ]
+        });
+        let resp: AnalyticsResp = serde_json::from_value(json).unwrap();
+        assert_eq!(resp.column_headers.len(), 5);
+        assert_eq!(resp.rows.len(), 2);
+        assert_eq!(resp.column_headers[0].name, "day");
+        assert_eq!(resp.column_headers[4].name, "estimatedMinutesWatched");
+    }
 }
