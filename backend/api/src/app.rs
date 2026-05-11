@@ -334,6 +334,23 @@ pub fn build_router(state: AppState) -> Router {
             "/audiobook/:id/publications/:pid/preview",
             get(handlers::integrations::preview_publication),
         )
+        // --- Analytics dashboard ---
+        .route(
+            "/analytics/generation",
+            get(handlers::analytics::generation),
+        )
+        .route(
+            "/analytics/youtube/channel",
+            get(handlers::analytics::youtube_channel),
+        )
+        .route(
+            "/analytics/youtube/videos",
+            get(handlers::analytics::youtube_videos),
+        )
+        .route(
+            "/analytics/youtube/reports",
+            get(handlers::analytics::youtube_reports),
+        )
         .fallback(not_found)
         .with_state(state)
         .layer(middleware)

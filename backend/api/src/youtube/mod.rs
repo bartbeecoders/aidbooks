@@ -8,6 +8,7 @@
 //!   * [`upload`]  — resumable-upload protocol against `/upload/youtube/v3`.
 
 pub mod account;
+pub mod analytics;
 pub mod encrypt;
 pub mod oauth;
 pub mod playlist;

@@ -20,6 +20,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use listenai_core::config::{Config, LogFormat};
+use utoipa::OpenApi;
 use listenai_core::domain::JobKind;
 use listenai_jobs::{
     repo::EnqueueRequest, runtime, JobContext, JobRepo, ProgressHub, WorkerConfig,
@@ -34,6 +35,24 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 const GC_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 fn main() -> ExitCode {
+    // `--dump-openapi` short-circuits the whole boot dance and prints
+    // the OpenAPI spec to stdout. Used by `scripts/dump-openapi.sh` so
+    // the frontend's typegen can run without a live DB or any of the
+    // upstream API keys configured.
+    if std::env::args().any(|a| a == "--dump-openapi") {
+        let doc = openapi::ApiDoc::openapi();
+        match serde_json::to_string_pretty(&doc) {
+            Ok(s) => {
+                println!("{s}");
+                return ExitCode::SUCCESS;
+            }
+            Err(e) => {
+                eprintln!("openapi dump error: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     // Load config before we init tracing so log level/format are respected.
     let config = match Config::load() {
         Ok(c) => c,

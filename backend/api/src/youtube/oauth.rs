@@ -22,7 +22,7 @@ const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const REVOKE_URL: &str = "https://oauth2.googleapis.com/revoke";
 const CHANNELS_URL: &str = "https://www.googleapis.com/youtube/v3/channels";
 
-// Three scopes cover the full publish surface:
+// Five scopes cover the full publish + analytics surface:
 //   * `youtube.upload`   — video uploads (resumable upload session).
 //   * `youtube`          — playlist + podcast writes (`/playlists`,
 //     `/playlistItems`, including `status.podcastStatus`). Marking a
@@ -30,12 +30,25 @@ const CHANNELS_URL: &str = "https://www.googleapis.com/youtube/v3/channels";
 //     `youtube.upload` alone is not enough.
 //   * `youtube.force-ssl`— captions writes (`/captions`); Google requires
 //     this exact scope for the captions endpoint.
-// `youtube.upload` stays listed explicitly so the consent screen names the
-// upload action plainly.
+//   * `youtube.readonly` — channel + video statistics reads for the
+//     analytics dashboard (`channels.list?part=statistics`,
+//     `videos.list?part=statistics`). The broader `youtube` scope already
+//     covers reads in practice, but `youtube.readonly` is what Google
+//     names on the consent screen for the analytics surface.
+//   * `yt-analytics.readonly` — the YouTube Analytics API
+//     (`youtubeanalytics.googleapis.com/v2/reports`) that powers the
+//     watch-time + engagement time series.
+//
+// Existing users who connected before these read scopes were added will
+// trip a 401/403 on the new endpoints; the handler responds by deleting
+// the local `youtube_account` row so the next request re-prompts with
+// the broader consent screen.
 pub const SCOPES: &[&str] = &[
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube",
     "https://www.googleapis.com/auth/youtube.force-ssl",
+    "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
 ];
 
 /// Result of swapping a `code` for tokens. `refresh_token` is `None` when

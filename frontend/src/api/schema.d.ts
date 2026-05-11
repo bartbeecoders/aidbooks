@@ -4,6 +4,38 @@
  */
 
 export interface paths {
+    "/admin/audiobook-categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_audiobook_categories"];
+        put?: never;
+        post: operations["create_audiobook_category"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/audiobook-categories/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_audiobook_category"];
+        options?: never;
+        head?: never;
+        patch: operations["update_audiobook_category"];
+        trace?: never;
+    };
     "/admin/jobs": {
         parameters: {
             query?: never;
@@ -14,6 +46,49 @@ export interface paths {
         get: operations["list_jobs"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/jobs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Permanently delete a job row. Also deletes any direct children
+         *     (`parent = job:<id>`) so a parent fan-out doesn't leave orphans.
+         */
+        delete: operations["delete_job"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/jobs/{id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel a job that hasn't reached a terminal state yet. Flips the row to
+         *     `dead` so the worker pool stops considering it; for in-flight jobs the
+         *     worker keeps running until its current chunk finishes, but its terminal
+         *     write becomes a no-op (gated on `status = running` in the repo) so the
+         *     cancel sticks. Already-terminal jobs return 409 — use delete instead.
+         */
+        post: operations["cancel_job"];
         delete?: never;
         options?: never;
         head?: never;
@@ -45,7 +120,7 @@ export interface paths {
         };
         get: operations["list_llms"];
         put?: never;
-        post?: never;
+        post: operations["create_llm"];
         delete?: never;
         options?: never;
         head?: never;
@@ -62,10 +137,26 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        delete?: never;
+        delete: operations["delete_llm"];
         options?: never;
         head?: never;
         patch: operations["patch_llm"];
+        trace?: never;
+    };
+    "/admin/openrouter/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_openrouter_models"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/admin/system": {
@@ -82,6 +173,70 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/admin/test/llm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["test_llm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/test/voice": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["test_voice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/topic-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_admin"];
+        put?: never;
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/topic-templates/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete"];
+        options?: never;
+        head?: never;
+        patch: operations["patch"];
         trace?: never;
     };
     "/admin/users": {
@@ -164,6 +319,150 @@ export interface paths {
         patch: operations["patch_voice"];
         trace?: never;
     };
+    "/admin/xai/image-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_xai_image_models"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/xai/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_xai_models"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/youtube-publish-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_youtube_publish_settings"];
+        put: operations["put_youtube_publish_settings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/youtube-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_youtube_footers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/youtube-settings/{language}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["upsert_youtube_footer"];
+        post?: never;
+        delete: operations["delete_youtube_footer"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/analytics/generation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["generation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/analytics/youtube/channel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["youtube_channel"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/analytics/youtube/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["youtube_reports"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/analytics/youtube/videos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["youtube_videos"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/audiobook": {
         parameters: {
             query?: never;
@@ -174,6 +473,22 @@ export interface paths {
         get: operations["list"];
         put?: never;
         post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook-categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_audiobook_categories"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -196,6 +511,55 @@ export interface paths {
         patch: operations["patch"];
         trace?: never;
     };
+    "/audiobook/{id}/animate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Kick off the animation pipeline for one language: a parent
+         *     `Animate` job that fans out one `AnimateChapter` per chapter.
+         *     Output lands at `<storage>/<audiobook>/<language>/ch-<n>.video.mp4`,
+         *     ready for the YouTube publisher to mux in (Phase D).
+         * @description Phase A: gated on `audio_ready` so we never animate against a
+         *     missing WAV.
+         */
+        post: operations["animate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/cancel-pipeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel every non-terminal job for this audiobook and clear the
+         *     auto-pipeline column so chained handlers don't fan out further steps.
+         * @description In-flight jobs keep running to the end of their current chunk — the
+         *     repo's terminal writes (`mark_completed` / `mark_failed`) are gated on
+         *     `status = "running"`, so flipping the row to `dead` first makes those
+         *     writes no-ops and the cancel sticks. Queued and throttled rows stop
+         *     being eligible for pickup as soon as the UPDATE lands.
+         */
+        post: operations["cancel_pipeline"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/audiobook/{id}/chapter/{n}": {
         parameters: {
             query?: never;
@@ -212,6 +576,51 @@ export interface paths {
         patch: operations["patch_chapter"];
         trace?: never;
     };
+    "/audiobook/{id}/chapter/{n}/animate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-render a single chapter's animated MP4. Mirrors
+         *     `POST /audiobook/:id/animate` but skips the parent fan-out: a
+         *     single `AnimateChapter` job runs end-to-end against the supplied
+         *     chapter number, with the same theme + language validation as the
+         *     full-book endpoint.
+         * @description Importantly, this **invalidates the F.1e spec-hash cache** for the
+         *     chapter — without that, the cache hit would short-circuit the
+         *     render and the user wouldn't see any change. We delete both the
+         *     `<mp4>.hash` sidecar and the `<mp4>` itself so the frontend's
+         *     inline `<video>` 404s mid-rerender (signalling "regenerating")
+         *     instead of showing a stale frame.
+         */
+        post: operations["animate_chapter"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/chapter/{n}/art": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["chapter_art"];
+        put?: never;
+        post: operations["regenerate_chapter_art"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/audiobook/{id}/chapter/{n}/audio": {
         parameters: {
             query?: never;
@@ -220,6 +629,53 @@ export interface paths {
             cookie?: never;
         };
         get: operations["chapter_audio"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/chapter/{n}/classify-visuals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-run the per-paragraph visual classifier (Phase G.2's
+         *     `paragraphs::extract_visual_kinds`) against an existing chapter's
+         *     paragraphs without rewriting the chapter body.
+         * @description Why this exists: STEM detection runs at outline time and the
+         *     classifier fires from `chapter_paragraphs` only when the book is
+         *     STEM at that moment. Books generated before STEM was toggled on
+         *     (or before Phase G shipped) have empty `visual_kind` columns,
+         *     which makes `segments::has_diagram_scenes(spec)` return false and
+         *     the publisher routes around Manim. This endpoint backfills the
+         *     labels so the next animate render can pick them up.
+         *
+         *     Operates on the primary language's chapter only — translations
+         *     share the primary's paragraph metadata.
+         */
+        post: operations["classify_chapter_visuals"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/chapter/{n}/paragraph/{p}/image/{i}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["paragraph_image"];
         put?: never;
         post?: never;
         delete?: never;
@@ -260,6 +716,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/audiobook/{id}/chapter/{n}/regenerate-manim-code": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-run the bespoke Manim code-gen LLM on every paragraph in this
+         *     chapter that's currently labelled `custom_manim`. Used both as a
+         *     backfill (books generated before Phase H landed) and a
+         *     "regenerate this chapter's diagrams with a different model" knob
+         *     after the user changes the `LlmRole::ManimCode` assignment in the
+         *     admin UI.
+         * @description Returns 400 when the chapter has no `custom_manim` paragraphs to
+         *     regenerate (the response would otherwise silently no-op, which is
+         *     confusing UX). The frontend hides the button in that case.
+         */
+        post: operations["regenerate_chapter_manim_code"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/chapter/{n}/test-manim-llm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["test_chapter_manim_llm"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/chapter/{n}/test-manim-render": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["render_test_manim"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/chapter/{n}/video": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * GET the per-chapter animated companion video. Returns 404 until
+         *     `POST /audiobook/:id/animate` has produced `ch-N.video.mp4` for the
+         *     requested language. Same auth/ownership rules as `chapter_audio`.
+         */
+        get: operations["chapter_video"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/audiobook/{id}/chapter/{n}/waveform": {
         parameters: {
             query?: never;
@@ -270,6 +806,38 @@ export interface paths {
         get: operations["chapter_waveform"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/costs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["costs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/cover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["cover"];
+        put?: never;
+        post: operations["regenerate_cover"];
         delete?: never;
         options?: never;
         head?: never;
@@ -318,6 +886,136 @@ export interface paths {
         get: operations["list_for_audiobook"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/publications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_publications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/publications/{pid}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve a previewed publication: clear the review flag and enqueue the
+         *     real publish job (which now skips the encode step because the MP4(s)
+         *     already exist on disk).
+         */
+        post: operations["approve_publication"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/publications/{pid}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Discard a previewed publication: delete intermediate MP4 files on disk
+         *     and reset the publication's review state so the next publish runs fresh.
+         *     The publication row itself is kept (for any prior video/playlist links).
+         */
+        post: operations["cancel_publication"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/publications/{pid}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["preview_publication"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/publish/youtube": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["publish_youtube"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/test-manim/{test_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream a throwaway Manim render produced by
+         *     `POST /audiobook/:id/chapter/:n/test-manim-render`. The `test_id`
+         *     is the UUID returned by that endpoint; the file lives at
+         *     `<storage>/<id>/test-manim/<test_id>.mp4`. Same auth + query-token
+         *     dance as the chapter-video stream so a `<video src=…>` tag can
+         *     load it without an Authorization header.
+         */
+        get: operations["test_manim_video"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audiobook/{id}/translate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["translate"];
         delete?: never;
         options?: never;
         head?: never;
@@ -388,6 +1086,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cover-art/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["preview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health": {
         parameters: {
             query?: never;
@@ -397,6 +1111,102 @@ export interface paths {
         };
         /** Liveness probe. Cheap, no I/O. */
         get: operations["health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ideas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ideas/suggest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["suggest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ideas/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete"];
+        options?: never;
+        head?: never;
+        patch: operations["patch"];
+        trace?: never;
+    };
+    "/integrations/youtube/account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["youtube_account_status"];
+        put?: never;
+        post?: never;
+        delete: operations["youtube_account_disconnect"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/youtube/oauth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["youtube_oauth_callback"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/integrations/youtube/oauth/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["youtube_oauth_start"];
         put?: never;
         post?: never;
         delete?: never;
@@ -437,6 +1247,86 @@ export interface paths {
         patch: operations["patch_me"];
         trace?: never;
     };
+    "/podcasts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post: operations["create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/podcasts/preview-image": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["preview_image"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/podcasts/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_one"];
+        put?: never;
+        post?: never;
+        delete: operations["delete"];
+        options?: never;
+        head?: never;
+        patch: operations["patch"];
+        trace?: never;
+    };
+    "/podcasts/{id}/image": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["image"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/podcasts/{id}/sync-youtube": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["sync_youtube"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ready": {
         parameters: {
             query?: never;
@@ -446,6 +1336,22 @@ export interface paths {
         };
         /** Readiness probe. Verifies the DB connection answers a trivial query. */
         get: operations["ready"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/topic-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_public"];
         put?: never;
         post?: never;
         delete?: never;
@@ -478,6 +1384,22 @@ export interface paths {
             cookie?: never;
         };
         get: operations["list_voices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/voices/{id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["preview_voice"];
         put?: never;
         post?: never;
         delete?: never;
@@ -524,13 +1446,27 @@ export interface components {
             context_window: number;
             /** Format: double */
             cost_completion_per_1k: number;
+            /**
+             * Format: double
+             * @description Per-megapixel price for image generation models. `0` for text models.
+             */
+            cost_per_megapixel?: number;
             /** Format: double */
             cost_prompt_per_1k: number;
             default_for: string[];
             enabled: boolean;
+            /** @description What kind of model this is (`text`, `image`, …). `None` ⇒ unspecified. */
+            function?: string | null;
             id: components["schemas"]["LlmId"];
+            /** @description BCP-47 codes this model handles well. Empty = any language. */
+            languages: string[];
             model_id: string;
             name: string;
+            /**
+             * Format: int32
+             * @description Picker tiebreaker; lower wins.
+             */
+            priority: number;
             provider: string;
         };
         AdminUserList: {
@@ -569,6 +1505,55 @@ export interface components {
             provider_voice_id: string;
             sample_url?: string | null;
         };
+        ApprovePublicationResponse: {
+            /** @description New job id that will perform the actual upload. */
+            job_id: string;
+            publication_id: string;
+        };
+        AudiobookCategoryList: {
+            items: components["schemas"]["AudiobookCategoryRow"][];
+        };
+        /**
+         * @description Public listing of audiobook categories — used by the New Audiobook
+         *     form and the per-book category picker. Admin endpoints (`/admin/...`)
+         *     also expose this list with usage counts.
+         */
+        AudiobookCategoryName: {
+            name: string;
+        };
+        AudiobookCategoryNameList: {
+            items: components["schemas"]["AudiobookCategoryName"][];
+        };
+        AudiobookCategoryRow: {
+            /** Format: date-time */
+            created_at: string;
+            id: string;
+            name: string;
+            /** Format: date-time */
+            updated_at: string;
+            /**
+             * Format: int32
+             * @description Number of audiobooks currently using this category.
+             */
+            usage_count: number;
+        };
+        AudiobookCostSummary: {
+            audiobook_id: string;
+            /**
+             * @description Per-role rollup. Now also keyed by LLM, so a role that used two
+             *     different models (e.g. an admin swapped the chapter LLM mid-way)
+             *     produces two entries with the same `role`.
+             */
+            by_role: components["schemas"]["CostByRole"][];
+            /** Format: int32 */
+            event_count: number;
+            /** Format: int64 */
+            total_completion_tokens: number;
+            /** Format: double */
+            total_cost_usd: number;
+            /** Format: int64 */
+            total_prompt_tokens: number;
+        };
         AudiobookDetail: components["schemas"]["AudiobookSummary"] & {
             chapters: components["schemas"]["ChapterSummary"][];
         };
@@ -586,23 +1571,137 @@ export interface components {
         /** @enum {string} */
         AudiobookStatus: "draft" | "outline_pending" | "outline_ready" | "chapters_running" | "text_ready" | "audio_ready" | "failed";
         AudiobookSummary: {
+            /**
+             * @description Visual style applied to cover + chapter artwork. `None` falls back to
+             *     the generator default (currently "cinematic").
+             */
+            art_style?: string | null;
+            /**
+             * @description Every language this audiobook has chapters in (always includes the
+             *     primary language). Drives the language switcher on the detail/player
+             *     pages.
+             */
             available_languages: string[];
+            /**
+             * @description Free-text user grouping (e.g. "Bedtime stories"). `None` means the
+             *     book is in the implicit "Uncategorized" bucket.
+             */
+            category?: string | null;
+            /**
+             * @description LLM pinned for cover + chapter art generation. `None` falls back to
+             *     the picker (whichever model is default-for `cover_art`).
+             */
+            cover_llm_id?: string | null;
             /** Format: date-time */
             created_at: string;
+            /**
+             * Format: int64
+             * @description Total narration runtime for the primary-language chapters, in
+             *     milliseconds. `None` until at least one chapter has finished
+             *     narration. Library views use this to display + filter on length.
+             */
+            duration_ms?: number | null;
             genre?: string | null;
-            /** @description `true` when a cover image has been generated and is available at `GET /audiobook/:id/cover`. */
+            /**
+             * @description `true` when a cover image has been generated and is available at
+             *     `GET /audiobook/:id/cover`.
+             */
             has_cover: boolean;
             id: components["schemas"]["AudiobookId"];
-            /** @description BCP-47 code for the primary language. */
+            /**
+             * Format: int32
+             * @description Tiles per visual paragraph (extracted by the LLM scene pass). `0`
+             *     = no paragraph art, only chapter cover tiles.
+             */
+            images_per_paragraph: number;
+            /**
+             * @description `true` when the book is rendered as a YouTube Short (≤ 90 s of
+             *     narration, vertical 9:16 artwork, single-video upload).
+             */
+            is_short: boolean;
+            /**
+             * @description `true` when the book was generated by the songbook pipeline
+             *     (lyrics + artist info fetched via Tinyfish, dedicated outline
+             *     prompt). Drives the 🎵 Songbook badge in the library + detail
+             *     pages.
+             */
+            is_songbook: boolean;
+            /**
+             * @description Effective STEM flag the renderer actually uses:
+             *     `stem_override.unwrap_or(stem_detected.unwrap_or(false))`.
+             *     Pre-computed here so the frontend doesn't have to repeat the
+             *     fallback logic.
+             */
+            is_stem: boolean;
+            /**
+             * @description BCP-47 code for the audiobook's *primary* (originally generated)
+             *     language. Stays stable; `available_languages` grows as translations
+             *     are added.
+             */
             language: string;
             length: components["schemas"]["AudiobookLength"];
+            /**
+             * @description `true` when this audiobook narrates with per-role voices
+             *     (narrator + dialogue_male + dialogue_female). The role-to-voice
+             *     map lives in `voice_roles`.
+             */
+            multi_voice_enabled: boolean;
+            /** @description Additive emotional intensity tags. Empty for legacy rows. */
+            narration_intensity: components["schemas"]["NarrationIntensity"][];
+            narration_style?: null | components["schemas"]["NarrationStyle"];
+            /**
+             * @description Podcast id (`podcast:<id>`) the book has been assigned to. `None`
+             *     when the book is unassigned. The podcast row owns the title +
+             *     description + cover art used by the future YouTube playlist.
+             */
+            podcast_id?: string | null;
+            /**
+             * Format: int32
+             * @description Number of song snippets requested at create time. Stays
+             *     constant for the life of the audiobook; the job that downloads
+             *     + cuts the clips runs once. `0` for non-songbook rows.
+             */
+            snippet_count: number;
             status: components["schemas"]["AudiobookStatus"];
+            /**
+             * @description LLM verdict on whether the topic is STEM (math / physics /
+             *     chemistry / biology / CS / engineering). Set during outline
+             *     generation. `None` until the outline LLM runs (legacy rows or
+             *     fresh drafts).
+             */
+            stem_detected?: boolean | null;
+            /**
+             * @description Explicit user override that wins over `stem_detected`. `None`
+             *     means "trust the LLM verdict". Settable through
+             *     `PATCH /audiobook/:id` with three states: absent (don't
+             *     touch), null (clear), or bool (force).
+             */
+            stem_override?: boolean | null;
+            /**
+             * @description X.ai TTS speech-tag palette suggested by the outline LLM. The
+             *     chapter writer embeds these inline in `body_md` (e.g. `[pause]`,
+             *     `<whisper>...</whisper>`); the X.ai TTS endpoint consumes them
+             *     directly from the text. Empty = plain narration.
+             */
+            tags: string[];
             title: string;
             topic: string;
-            /** @description Voice picked for narration (`null` when the server default is used). */
-            voice_id?: string | null;
             /** Format: date-time */
             updated_at: string;
+            /**
+             * @description Voice picked for narration (`None` when the server default is used).
+             *     Frontend resolves the human-readable name via `/voices`.
+             */
+            voice_id?: string | null;
+            voice_preset?: null | components["schemas"]["VoicePreset"];
+            /**
+             * @description `{role: voice_id}` map. Empty when multi-voice isn't
+             *     configured. Always serialised so the UI can render the picker
+             *     without a separate fetch.
+             */
+            voice_roles: {
+                [key: string]: string;
+            };
         };
         AuthResponse: {
             access_token: string;
@@ -611,43 +1710,318 @@ export interface components {
             refresh_token: string;
             user: components["schemas"]["User"];
         };
+        AutoPipelineRequest: {
+            /**
+             * @description After chapters finish, enqueue narration. Ignored when `chapters`
+             *     is false (no chapters → nothing to narrate).
+             */
+            audio?: boolean;
+            /** @description Enqueue the chapter-writing job immediately after outline lands. */
+            chapters?: boolean;
+            /**
+             * @description Enqueue a cover-art job alongside chapter writing. Also drives
+             *     per-chapter art: when this is true and chapters is true, one
+             *     chapter-art job fans out per chapter after the prose lands.
+             *     Ignored when the caller already supplied `cover_image_base64`
+             *     (for the main cover only — chapter art still runs).
+             */
+            cover?: boolean;
+            publish?: null | components["schemas"]["AutoPublishRequest"];
+        };
+        AutoPublishRequest: {
+            /**
+             * @description When true, render the video via the Hyperframes service instead
+             *     of the cover-loop slideshow. Mutually exclusive with `animate`
+             *     in the manual-publish flow; the auto-pipeline never enqueues an
+             *     animation job, so this is the only opt-in for richer visuals
+             *     from the create flow.
+             */
+            hyperframes?: boolean | null;
+            /**
+             * Format: int32
+             * @description Optional per-composition step count override. `None` / `0` =
+             *     auto-scale by narration duration. Otherwise clamped to
+             *     `2..=120`. In playlist mode the value is per chapter.
+             */
+            hyperframes_steps?: number | null;
+            /** @description `single` (one concatenated video, default) or `playlist`. */
+            mode?: string | null;
+            /** @description `private`, `unlisted`, `public`. Defaults to `private`. */
+            privacy_status?: string | null;
+            /**
+             * @description When true, the publish stops after encoding so the user can
+             *     preview before approving.
+             */
+            review?: boolean;
+        };
         /** @description Identifier for a chapter record. */
         ChapterId: string;
         /** @enum {string} */
         ChapterStatus: "pending" | "running" | "text_ready" | "audio_ready" | "failed";
         ChapterSummary: {
             body_md?: string | null;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description WAV duration in milliseconds, populated once the chapter has been
+             *     narrated. The player uses this to render a whole-book progress bar.
+             */
             duration_ms?: number | null;
             has_art: boolean;
             id: components["schemas"]["ChapterId"];
+            /** @description Which language version this chapter belongs to. */
             language: string;
             /** Format: int32 */
             number: number;
+            /**
+             * @description Paragraph illustration metadata. One entry per paragraph the
+             *     splitter produced (in body order); `image_count` reflects how many
+             *     tiles have been generated so far at
+             *     `GET /audiobook/:id/chapter/:n/paragraph/:p/image/:i` (1-based).
+             *     Empty when paragraph illustration wasn't requested for this book.
+             */
+            paragraphs: components["schemas"]["ParagraphSummary"][];
             status: components["schemas"]["ChapterStatus"];
             synopsis?: string | null;
             /** Format: int32 */
             target_words?: number | null;
             title: string;
         };
-        CreateAudiobookRequest: {
-            /** @description Optional pre-generated cover artwork (raw base64, no `data:` prefix). */
-            cover_image_base64?: string | null;
-            genre?: string | null;
-            /** @description BCP-47 language code, e.g. `"en"`, `"nl"`. Defaults to `"en"`. */
-            language?: string | null;
-            length: components["schemas"]["AudiobookLength"];
-            topic: string;
-            /** @description Optional voice id from `/voices`. If omitted, the TTS layer falls back to the configured `xai_default_voice`. */
-            voice_id?: string | null;
+        CostByRole: {
+            /** Format: int64 */
+            completion_tokens: number;
+            /** Format: double */
+            cost_usd: number;
+            /** Format: int32 */
+            count: number;
+            /**
+             * @description LLM record id (`llm:<id>`'s key portion). `None` for events whose
+             *     FK couldn't be resolved (notably the `_default_` fallback path).
+             */
+            llm_id?: string | null;
+            /**
+             * @description LLM display name (e.g. "Claude Sonnet 4.6"). For TTS rows, this
+             *     holds the voice id parsed from the event's note instead — the
+             *     stored `llm` link is a placeholder, not the actual narrator.
+             */
+            llm_name?: string | null;
+            /**
+             * @description Upstream model slug (e.g. "anthropic/claude-sonnet-4.6"). Empty
+             *     for TTS rows for the same reason as `llm_name`.
+             */
+            model_id?: string | null;
+            /** Format: int64 */
+            prompt_tokens: number;
+            role: string;
         };
         CoverPreviewRequest: {
+            /**
+             * @description Visual style hint, e.g. `"watercolor"`, `"cartoon"`. The frontend
+             *     offers a curated dropdown but free-text is accepted. When omitted,
+             *     the generator falls back to its built-in default.
+             */
+            art_style?: string | null;
             genre?: string | null;
+            /**
+             * @description When `true`, render a vertical 9:16 cover suitable for a YouTube
+             *     Short instead of the default square thumbnail.
+             */
+            is_short?: boolean | null;
+            /**
+             * @description Optional explicit LLM id to use instead of the picker's default.
+             *     Surfaced on the New Audiobook page as a dropdown when more than one
+             *     image-capable model is configured. Server validates the id against
+             *     the `llm` table.
+             */
+            llm_id?: string | null;
             topic: string;
         };
         CoverPreviewResponse: {
+            /**
+             * @description Raw base64 (no `data:` prefix). MIME is reported separately so the UI
+             *     can build the data URL itself.
+             */
             image_base64: string;
             mime_type: string;
+        };
+        CreateAudiobookCategoryRequest: {
+            name: string;
+        };
+        CreateAudiobookRequest: {
+            /**
+             * @description Visual style for cover + chapter artwork (e.g. `"watercolor"`,
+             *     `"cartoon"`, `"realistic"`). Stored on the audiobook so subsequent
+             *     regenerations stay consistent. Free-text; the frontend offers a
+             *     curated list.
+             */
+            art_style?: string | null;
+            auto_pipeline?: null | components["schemas"]["AutoPipelineRequest"];
+            /**
+             * @description Optional user-supplied bucket for the library view (e.g. "Bedtime
+             *     stories"). Free-text, max 60 chars. Distinct from `genre`, which
+             *     is the AI-content type.
+             */
+            category?: string | null;
+            /**
+             * @description Optional pre-generated cover artwork. Raw base64 (no `data:` prefix);
+             *     produced by `POST /cover-art/preview`. Persisted to disk and served
+             *     later via `GET /audiobook/:id/cover`.
+             */
+            cover_image_base64?: string | null;
+            /**
+             * @description Pin a specific LLM (`llm:<id>`) for cover + chapter art generation.
+             *     `None` falls back to whichever model is marked default-for cover_art.
+             */
+            cover_llm_id?: string | null;
+            genre?: string | null;
+            /**
+             * Format: int32
+             * @description Tiles to generate per *visualizable* paragraph (after the LLM
+             *     extract pass picks paragraphs that have visual content). `None` /
+             *     `0` = no paragraph-level art (only chapter cover tiles). Capped
+             *     at 3. Auto-pipeline must include `cover: true` for these to run.
+             */
+            images_per_paragraph?: number | null;
+            /**
+             * @description When `true`, generate the book as a YouTube Short: a single
+             *     chapter ≤ 90 s of narration with a vertical 9:16 cover. The
+             *     publish step renders a vertical 1080×1920 video and forces
+             *     `mode = single`.
+             */
+            is_short?: boolean | null;
+            /**
+             * @description When `true`, run the songbook outline pipeline: the topic is
+             *     treated as a song reference (e.g. `"Bohemian Rhapsody — Queen"`),
+             *     the server fetches lyrics + artist info via Tinyfish, and the
+             *     dedicated `outline_songbook` prompt drives chapter planning.
+             *     Mutually exclusive with `is_short` — songbooks need at least a
+             *     few chapters to walk the listener through verses.
+             */
+            is_songbook?: boolean | null;
+            /**
+             * @description BCP-47 language code, e.g. `"en"`, `"nl"`, `"de"`. Drives both LLM
+             *     content generation and TTS narration. Defaults to `"en"`.
+             */
+            language?: string | null;
+            length: components["schemas"]["AudiobookLength"];
+            /**
+             * @description Optional multi-voice narration toggle. When `true`, the
+             *     per-chapter narration job runs an extra LLM extract pass to
+             *     split prose into role-tagged segments and renders each
+             *     segment with its mapped voice from `voice_roles`. Defaults to
+             *     `false`.
+             */
+            multi_voice_enabled?: boolean | null;
+            /**
+             * @description Additive emotional intensity tags (`intense`, `dramatic`,
+             *     `emotional`, `expressive`). Multiple values stack — the chapter
+             *     writer leans on the speech-tag palette to deliver them. Empty =
+             *     neutral.
+             */
+            narration_intensity?: components["schemas"]["NarrationIntensity"][];
+            narration_style?: null | components["schemas"]["NarrationStyle"];
+            /**
+             * @description Adopt snippets the user already heard via
+             *     `POST /songbook/preview-snippets`. When set, the create flow
+             *     moves `<storage>/_preview/<preview_id>/snippet-i.wav` into
+             *     the new audiobook's snippet dir and skips enqueuing the
+             *     `SongSnippets` job — guaranteeing the published video uses
+             *     the *exact* clips the user heard, not a fresh Tinyfish search
+             *     that may resolve to a different YouTube video.
+             */
+            preview_id?: string | null;
+            /**
+             * Format: int32
+             * @description Number of song snippets to splice into the published audio.
+             *     `0` (default) skips the snippet job entirely. When `> 0`, a
+             *     `SongSnippets` job runs in the background: it resolves the
+             *     song to a YouTube URL via Tinyfish, downloads the audio with
+             *     yt-dlp, cuts N evenly-spaced ~12 s clips, and persists them
+             *     under `<storage>/<audiobook>/snippets/`. The publish step
+             *     intercalates them between chapter narration. Capped at 12;
+             *     only valid when `is_songbook = true`.
+             */
+            snippet_count?: number | null;
+            topic: string;
+            /**
+             * @description Optional voice id from `/voices`. If omitted, the TTS layer falls
+             *     back to the configured `xai_default_voice`.
+             */
+            voice_id?: string | null;
+            voice_preset?: null | components["schemas"]["VoicePreset"];
+            /**
+             * @description Voice mapping per role for multi-voice narration. Keys are
+             *     canonical role names (`narrator`, `dialogue_male`,
+             *     `dialogue_female`); values are voice ids (e.g. `"eve"`).
+             */
+            voice_roles?: {
+                [key: string]: string;
+            } | null;
+        };
+        CreateIdeaRequest: {
+            audiobook_prompt?: string | null;
+            /**
+             * @description Defaults to `"manual"`. The suggestion endpoint passes
+             *     `"trend"` when the user keeps an LLM-suggested row.
+             */
+            source?: string | null;
+            title: string;
+        };
+        CreateLlmRequest: {
+            /** Format: int32 */
+            context_window: number;
+            /** Format: double */
+            cost_completion_per_1k: number;
+            /**
+             * Format: double
+             * @description Per-megapixel price for image models. Defaults to 0 if omitted.
+             */
+            cost_per_megapixel?: number | null;
+            /** Format: double */
+            cost_prompt_per_1k: number;
+            default_for?: string[] | null;
+            enabled?: boolean | null;
+            function?: string | null;
+            /**
+             * @description Snake-case identifier used as the SurrealDB record id (e.g.
+             *     `gemini_flash_image`). Restricted to `[a-z0-9_]` so it can be
+             *     embedded safely in `llm:`<id>``; validated separately in the handler.
+             */
+            id: string;
+            languages?: string[] | null;
+            /** @description Upstream model id, e.g. `google/gemini-2.5-flash-image`. */
+            model_id: string;
+            name: string;
+            /** Format: int32 */
+            priority?: number | null;
+            /**
+             * @description Wire identifier for the upstream provider (`open_router` | `xai`).
+             *     Defaults to `open_router` when omitted, matching legacy clients.
+             */
+            provider?: string | null;
+        };
+        CreatePodcastRequest: {
+            description?: string | null;
+            /**
+             * @description Pre-generated cover image (raw base64, no `data:` prefix), produced
+             *     by `POST /podcasts/preview-image`. Persisted to disk on create.
+             */
+            image_base64?: string | null;
+            title: string;
+        };
+        CreateTopicTemplateRequest: {
+            enabled?: boolean | null;
+            genre?: string | null;
+            /**
+             * @description Default the New Audiobook form's "YouTube Short" toggle to this
+             *     value when the user picks the template. Defaults to `false`.
+             */
+            is_short?: boolean | null;
+            language?: string | null;
+            length?: null | components["schemas"]["AudiobookLength"];
+            /** Format: int32 */
+            sort_order?: number | null;
+            title: string;
+            topic: string;
         };
         DbReadiness: {
             path: string;
@@ -662,15 +2036,89 @@ export interface components {
             message: string;
             request_id?: string | null;
         };
+        GenerationPoint: {
+            /**
+             * Format: double
+             * @description Sum of `generation_event.cost_usd` charged for events whose
+             *     audiobook is non-short and was created in this bucket.
+             */
+            audiobooks_cost_usd: number;
+            /**
+             * Format: int32
+             * @description Non-short audiobooks created in this bucket.
+             */
+            audiobooks_count: number;
+            /**
+             * Format: int64
+             * @description Sum of `audiobook.duration_ms` for those rows. `0` when the
+             *     books in the bucket haven't been narrated yet.
+             */
+            audiobooks_duration_ms: number;
+            /** @description Bucket key — `YYYY-MM-DD`, `YYYY-Www`, or `YYYY-MM`. */
+            date: string;
+            /** Format: double */
+            shorts_cost_usd: number;
+            /**
+             * Format: int32
+             * @description Short-form audiobooks (`is_short = true`) created in this bucket.
+             */
+            shorts_count: number;
+            /** Format: int64 */
+            shorts_duration_ms: number;
+            /**
+             * Format: int32
+             * @description YouTube publications that successfully published in this
+             *     bucket (`published_at` set).
+             */
+            videos_count: number;
+            /**
+             * Format: int64
+             * @description Sum of `audiobook.duration_ms` for the audiobooks behind those
+             *     videos. The video itself shares the audiobook's runtime.
+             */
+            videos_duration_ms: number;
+        };
+        GenerationSeries: {
+            /**
+             * @description Echo back the actual bucket used so the frontend doesn't have
+             *     to re-parse its own query string.
+             */
+            bucket: string;
+            points: components["schemas"]["GenerationPoint"][];
+            /** Format: int32 */
+            range_days: number;
+        };
         Health: {
             service: string;
             status: string;
             version: string;
         };
+        IdeaList: {
+            items: components["schemas"]["IdeaRow"][];
+        };
+        IdeaRow: {
+            audiobook_prompt: string;
+            /** Format: date-time */
+            completed_at?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            id: string;
+            /**
+             * @description `"manual"` for user-entered rows, `"trend"` for ideas created
+             *     from the LLM suggestion endpoint.
+             */
+            source: string;
+            status: components["schemas"]["IdeaStatus"];
+            title: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @enum {string} */
+        IdeaStatus: "pending" | "in_progress" | "completed";
         /** @description Identifier for a job record. */
         JobId: string;
         /** @enum {string} */
-        JobKind: "outline" | "chapters" | "tts" | "tts_chapter" | "post_process" | "cover" | "gc" | "translate";
+        JobKind: "outline" | "chapters" | "tts" | "tts_chapter" | "post_process" | "cover" | "gc" | "translate" | "publish_youtube" | "chapter_paragraphs" | "animate" | "animate_chapter" | "song_snippets";
         JobSnapshot: {
             /** Format: int32 */
             attempts: number;
@@ -690,14 +2138,32 @@ export interface components {
             context_window: number;
             /** Format: double */
             cost_completion_per_1k: number;
+            /**
+             * Format: double
+             * @description Per-megapixel price for image-generation models. Always `0.0` for
+             *     text models — they're priced by `cost_*_per_1k`.
+             */
+            cost_per_megapixel?: number;
             /** Format: double */
             cost_prompt_per_1k: number;
             default_for: components["schemas"]["LlmRole"][];
             enabled: boolean;
+            /**
+             * @description What this model is for (`text`, `image`, future: `audio`, …).
+             *     `None` means unspecified — treated as `"text"` by the picker.
+             */
+            function?: string | null;
             id: components["schemas"]["LlmId"];
+            /** @description BCP-47 codes the model handles well. Empty = any language. */
+            languages?: string[];
             /** @description Upstream model identifier (e.g. `anthropic/claude-sonnet-4.6`). */
             model_id: string;
             name: string;
+            /**
+             * Format: int32
+             * @description Picker tiebreaker; lower wins. Default 100.
+             */
+            priority?: number;
             provider: components["schemas"]["LlmProvider"];
         };
         /** @description Identifier for an LLM configuration record. */
@@ -706,12 +2172,12 @@ export interface components {
             items: components["schemas"]["Llm"][];
         };
         /** @enum {string} */
-        LlmProvider: "open_router";
+        LlmProvider: "open_router" | "xai";
         /**
          * @description Where this LLM is allowed to be used by default.
          * @enum {string}
          */
-        LlmRole: "outline" | "chapter" | "title" | "random_topic" | "moderation" | "cover_art";
+        LlmRole: "outline" | "chapter" | "title" | "random_topic" | "moderation" | "cover_art" | "translate" | "manim_code" | "voice_extract";
         LoginRequest: {
             email: string;
             password: string;
@@ -721,6 +2187,140 @@ export interface components {
         };
         MeResponse: {
             user: components["schemas"]["User"];
+        };
+        /**
+         * @description Additive emotional intensity dial. Multiple tags combine —
+         *     `[Intense, Dramatic]` is a stronger thriller than `[Intense]` alone.
+         *     Empty list = neutral delivery (the chapter writer's own default).
+         * @enum {string}
+         */
+        NarrationIntensity: "intense" | "dramatic" | "emotional" | "expressive";
+        /**
+         * @description Narrative style overlay applied to outline + chapter generation.
+         *     Reshapes plot beats, vocabulary and pacing so the same topic can be
+         *     realised as a thriller drama, a child-friendly read-along, an
+         *     educational explainer, etc. `Natural` (or `None` on the audiobook)
+         *     keeps whatever the genre alone would produce.
+         * @enum {string}
+         */
+        NarrationStyle: "natural" | "drama" | "humor" | "sketch" | "erotic" | "child_friendly" | "educational";
+        OauthStartResponse: {
+            /**
+             * @description URL to navigate the user to (with `window.location = ...`). We don't
+             *     302 from this endpoint because the browser drops `Authorization`
+             *     headers across same-origin redirects.
+             */
+            url: string;
+        };
+        OpenRouterModelList: {
+            items: components["schemas"]["OpenRouterModelRow"][];
+        };
+        OpenRouterModelRow: {
+            /** Format: int32 */
+            context_length?: number | null;
+            /**
+             * Format: double
+             * @description USD per 1k completion tokens.
+             */
+            cost_completion_per_1k: number;
+            /**
+             * Format: double
+             * @description USD per generated image (only set on image-output models). Most
+             *     providers price one ~1MP frame, so the admin UI uses this directly
+             *     as the `$ / megapixel` default.
+             */
+            cost_per_image: number;
+            /**
+             * Format: double
+             * @description USD per 1k prompt tokens (converted from OpenRouter's per-token).
+             */
+            cost_prompt_per_1k: number;
+            /** @description Optional one-line description; trimmed to 200 chars on the frontend. */
+            description?: string | null;
+            id: string;
+            input_modalities: string[];
+            name: string;
+            output_modalities: string[];
+        };
+        ParagraphSummary: {
+            /**
+             * Format: int32
+             * @description Character count of the paragraph body. Used by the player to
+             *     time-slot the slideshow proportionally to chapter duration.
+             */
+            char_count: number;
+            /**
+             * Format: int32
+             * @description Tiles persisted so far for this paragraph (range `1..=image_count`
+             *     addressable on the stream endpoint).
+             */
+            image_count: number;
+            /**
+             * Format: int32
+             * @description Index into the chapter's paragraph array (stable across regenerations).
+             */
+            index: number;
+            /**
+             * @description `true` when the LLM extract pass identified visual content here
+             *     (i.e. `scene_description` is set). Non-visual paragraphs are
+             *     preserved in the array so indices stay stable, but they never
+             *     get tile jobs enqueued.
+             */
+            is_visual: boolean;
+            /**
+             * @description Phase G — diagram template id chosen by the per-paragraph
+             *     visual classifier (`function_plot`, `free_body`, …). `None`
+             *     for prose paragraphs and for non-STEM books that never ran the
+             *     classifier. Frontend uses this to badge chapters with diagram
+             *     counts and to drive the future Manim render path.
+             */
+            visual_kind?: string | null;
+        };
+        PodcastList: {
+            items: components["schemas"]["PodcastRow"][];
+        };
+        PodcastRow: {
+            /**
+             * Format: int32
+             * @description Number of audiobooks currently assigned to this podcast.
+             */
+            audiobook_count: number;
+            /** Format: date-time */
+            created_at: string;
+            description: string;
+            /**
+             * @description `true` when a cover image has been generated and is available at
+             *     `GET /podcasts/:id/image`.
+             */
+            has_image: boolean;
+            id: string;
+            title: string;
+            /** Format: date-time */
+            updated_at: string;
+            /**
+             * @description YouTube playlist id mirrored from this podcast. `None` when YouTube
+             *     isn't connected, or when the user hasn't synced yet.
+             */
+            youtube_playlist_id?: string | null;
+            /** @description Convenience link, derived from `youtube_playlist_id`. */
+            youtube_playlist_url?: string | null;
+        };
+        PreviewPodcastImageRequest: {
+            description?: string | null;
+            /**
+             * @description Optional explicit image LLM id to use instead of the picker default.
+             *     Same shape as the audiobook cover preview.
+             */
+            llm_id?: string | null;
+            title: string;
+        };
+        PreviewPodcastImageResponse: {
+            /**
+             * @description Raw base64 (no `data:` prefix). MIME is reported separately so the
+             *     UI can build the data URL itself.
+             */
+            image_base64: string;
+            mime_type: string;
         };
         /**
          * @description Wire event streamed to clients over the WebSocket.
@@ -768,7 +2368,119 @@ export interface components {
             /** @enum {string} */
             type: "failed";
         };
+        PublicationList: {
+            items: components["schemas"]["PublicationRow"][];
+        };
+        PublicationRow: {
+            /** Format: date-time */
+            created_at: string;
+            id: string;
+            language: string;
+            last_error?: string | null;
+            /**
+             * @description Per-publication override for the "Like & Subscribe!" overlay.
+             *     `null` means the publication inherits the global setting; `true`
+             *     or `false` is an explicit override.
+             */
+            like_subscribe_overlay?: boolean | null;
+            /** @description `"single"` or `"playlist"` (defaults to `"single"` for legacy rows). */
+            mode: string;
+            /** @description Set when `mode = "playlist"` and the playlist has been created. */
+            playlist_id?: string | null;
+            playlist_url?: string | null;
+            /**
+             * Format: date-time
+             * @description Timestamp at which encoding completed and the MP4 is streamable
+             *     from `/audiobook/:id/publications/:pid/preview`. Cleared on approve.
+             */
+            preview_ready_at?: string | null;
+            privacy_status: string;
+            /** Format: date-time */
+            published_at?: string | null;
+            /**
+             * @description True while the publication is awaiting an explicit `approve` call
+             *     before uploading. Always paired with `preview_ready_at` once the
+             *     encoder finishes.
+             */
+            review: boolean;
+            /** Format: date-time */
+            updated_at: string;
+            video_id?: string | null;
+            video_url?: string | null;
+            /** @description Per-chapter videos for playlist mode. Empty for `single` mode. */
+            videos?: components["schemas"]["PublicationVideoRow"][];
+        };
+        PublicationVideoRow: {
+            /** Format: int64 */
+            chapter_number: number;
+            last_error?: string | null;
+            /** Format: date-time */
+            published_at?: string | null;
+            title: string;
+            video_id?: string | null;
+            video_url?: string | null;
+        };
+        PublishYoutubeRequest: {
+            /**
+             * @description When true, use the per-chapter animated companion videos
+             *     (`<storage>/<book>/<lang>/ch-<n>.video.mp4`, produced by the
+             *     `animate` job) as the visual track instead of the static cover
+             *     loop. Defaults to false.
+             */
+            animate?: boolean | null;
+            /**
+             * @description Optional override for the YouTube video description; falls back to a
+             *     generated one (topic + chapter list with timestamps).
+             */
+            description?: string | null;
+            /**
+             * @description When true, render the visual track via the Hyperframes service:
+             *     content-aware scenes (title card, per-chapter intro, image +
+             *     caption, occasional pull-quote) with animated transitions.
+             *     Mutually exclusive with `animate`. Works for both Shorts (9:16)
+             *     and long-form (16:9) — in single + playlist mode for the latter.
+             */
+            hyperframes?: boolean | null;
+            /**
+             * Format: int32
+             * @description Number of scene "steps" the Hyperframes composition should
+             *     allocate. `None`, `0`, or `1` = auto-scale by narration duration
+             *     (≈ 1 step per 15 s, capped at 120). Otherwise clamped to
+             *     `2..=120`. In playlist mode the value is per chapter.
+             */
+            hyperframes_steps?: number | null;
+            /** @description Audiobook language version to publish. Must already be `audio_ready`. */
+            language: string;
+            /**
+             * @description Per-video override for the "Like & Subscribe!" overlay.
+             *       `None`  → inherit the global setting (admin → YouTube settings).
+             *       `Some(true)` / `Some(false)` → force on/off for this publication.
+             */
+            like_subscribe_overlay?: boolean | null;
+            /**
+             * @description `single` (one concatenated video, the default) or `playlist` (one
+             *     video per chapter, all added to a new YouTube playlist).
+             */
+            mode?: string | null;
+            /** @description `private`, `unlisted`, or `public`. Defaults to `private` when absent. */
+            privacy_status?: string | null;
+            /**
+             * @description When true, encode the MP4(s) but pause before uploading so the user
+             *     can preview locally and explicitly approve. Defaults to false.
+             */
+            review?: boolean | null;
+        };
+        PublishYoutubeResponse: {
+            job_id: string;
+            publication_id: string;
+        };
         RandomTopicRequest: {
+            /**
+             * @description BCP-47 language code (`"en"`, `"nl"`, …). The model writes the
+             *     returned `topic` in this language, and the picker prefers an LLM
+             *     whose `languages` list includes it. Defaults to English.
+             */
+            language?: string | null;
             /** @description Optional seed or theme hint, e.g. "sci-fi", "history of Korea". */
             seed?: string | null;
         };
@@ -789,9 +2501,73 @@ export interface components {
             email: string;
             password: string;
         };
+        RenderTestManimRequest: {
+            /**
+             * @description Raw Python source for one `class Scene(TemplateScene): …`. Same
+             *     shape the production `manim_code` path persists; the sidecar
+             *     AST-screens before exec'ing.
+             */
+            code: string;
+            /**
+             * Format: int64
+             * @description Target run length. Defaults to 8 s — matches the placeholder
+             *     the test-manim-llm prompt uses, and is well within the
+             *     MIN_RUN_SECONDS floor the sidecar enforces.
+             */
+            duration_ms?: number | null;
+        };
+        RenderTestManimResponse: {
+            /**
+             * Format: int64
+             * @description Wall-clock time the Manim sidecar took (spawn → MP4 done).
+             */
+            elapsed_ms: number;
+            /**
+             * @description Opaque id (UUID) the frontend uses with the matching `GET
+             *     /audiobook/:id/test-manim/:test_id` stream endpoint to fetch
+             *     the rendered MP4.
+             */
+            test_id: string;
+        };
         RevokeSessionsResponse: {
             /** Format: int32 */
             revoked: number;
+        };
+        SuggestIdeasRequest: {
+            /**
+             * Format: int32
+             * @description How many suggestions to return. Clamped to 1..=12.
+             */
+            count?: number | null;
+            /**
+             * @description BCP-47 code (`"en"`, `"nl"`, …) for the suggestion language.
+             *     Defaults to English.
+             */
+            language?: string | null;
+            /**
+             * @description Optional theme / topic hint. Free-form — the model uses it as
+             *     inspiration. Empty seeds → "broadly trending".
+             */
+            seed?: string | null;
+        };
+        SuggestIdeasResponse: {
+            items: components["schemas"]["SuggestedIdea"][];
+        };
+        SuggestedIdea: {
+            /** @description Full prompt the user could feed into the create flow as a topic. */
+            audiobook_prompt: string;
+            /** @description Short human label (the table's "Idea" column). */
+            title: string;
+        };
+        SyncPodcastResponse: {
+            /**
+             * @description `"created"` when a new playlist was minted, `"updated"` when an
+             *     existing one was refreshed, `"unchanged"` when title/description
+             *     hadn't drifted.
+             */
+            action: string;
+            youtube_playlist_id?: string | null;
+            youtube_playlist_url?: string | null;
         };
         SystemOverview: {
             /** Format: int32 */
@@ -815,51 +2591,329 @@ export interface components {
             /** Format: int32 */
             users_total: number;
         };
-        UpdateAudiobookRequest: {
+        TestChapterManimLlmRequest: {
+            /**
+             * @description LLM record id (e.g. `claude_sonnet_4_6`). Backend resolves it
+             *     to find provider + upstream model slug. Doesn't have to be
+             *     tagged `default_for: ["manim_code"]` — the whole point is to
+             *     audition models the user hasn't committed to yet.
+             */
+            llm_id: string;
+            /**
+             * Format: int32
+             * @description Optional paragraph index to test against. Defaults to the
+             *     first `custom_manim` paragraph if any, otherwise paragraph 0.
+             */
+            paragraph_index?: number | null;
+            /**
+             * @description Theme name passed to the prompt. Defaults to `library` to
+             *     match the production code-gen path.
+             */
+            theme?: string | null;
+        };
+        TestChapterManimLlmResponse: {
+            /** Format: int32 */
+            completion_tokens: number;
+            /**
+             * Format: double
+             * @description USD cost. Mirrors the `generation_event` cost rule: `usage.cost`
+             *     when the upstream populated it, else token-pricing × usage.
+             *     Always `0.0` for mocked calls.
+             */
+            cost_usd: number;
+            /**
+             * Format: int64
+             * @description Wall-clock time the `chat()` call took (request → response
+             *     fully decoded).
+             */
+            elapsed_ms: number;
+            /** @description Display name of the LLM that ran (e.g. "Claude Sonnet 4.6"). */
+            llm_name: string;
+            /**
+             * @description True when the provider for this LLM has no API key configured;
+             *     the response is fabricated locally.
+             */
+            mocked: boolean;
+            /** @description Upstream model slug (e.g. "anthropic/claude-sonnet-4.6"). */
+            model_id: string;
+            /**
+             * Format: int32
+             * @description Index of the paragraph the test ran against.
+             */
+            paragraph_index: number;
+            /**
+             * @description First 200 chars of the paragraph text. Saves the UI a second
+             *     round-trip just to label the dialog.
+             */
+            paragraph_preview: string;
+            /**
+             * @description Rendered prompt body sent to the LLM, with all `{{markers}}`
+             *     already substituted. Useful for spotting prompt bugs without
+             *     digging into the template editor.
+             */
+            prompt: string;
+            /** Format: int32 */
+            prompt_tokens: number;
+            /**
+             * @description Raw response string from the LLM. The production path expects
+             *     `{"summary":"…","code":"…"}`; surface whatever came back so the
+             *     user can see when a model emits non-JSON or refuses.
+             */
+            response: string;
+        };
+        TestLlmRequest: {
+            /**
+             * @description Admin LLM row id (e.g. `claude_haiku_4_5`). Required; the backend
+             *     resolves the row to find the provider `model_id` to call.
+             */
+            llm_id: string;
+            /** Format: int32 */
+            max_tokens?: number | null;
+            prompt: string;
+            system?: string | null;
+            /** Format: float */
+            temperature?: number | null;
+        };
+        TestLlmResponse: {
+            /** Format: int32 */
+            completion_tokens: number;
+            content: string;
+            mocked: boolean;
+            /** Format: int32 */
+            prompt_tokens: number;
+        };
+        TestVoiceRequest: {
+            text: string;
+            /**
+             * @description Admin voice row id. The backend resolves it to `provider_voice_id`
+             *     before calling the TTS provider.
+             */
+            voice_id: string;
+        };
+        TestVoiceResponse: {
+            /**
+             * @description WAV file (mono, 16-bit PCM) encoded as standard base64. Playable
+             *     directly via `<audio src="data:audio/wav;base64,…">`.
+             */
+            audio_wav_base64: string;
+            /** Format: int64 */
+            duration_ms: number;
+            mocked: boolean;
+            /** Format: int32 */
+            sample_rate_hz: number;
+        };
+        TopicTemplate: {
+            /** Format: date-time */
+            created_at: string;
+            enabled: boolean;
             genre?: string | null;
-            title?: string | null;
-            voice_id?: string | null;
+            id: string;
+            /**
+             * @description When `true`, books created from this template default to YouTube
+             *     Short mode: a single ≤ 90 s chapter rendered as a vertical 9:16
+             *     video.
+             */
+            is_short: boolean;
+            language?: string | null;
+            length?: null | components["schemas"]["AudiobookLength"];
+            /** Format: int32 */
+            sort_order: number;
+            title: string;
+            topic: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        TopicTemplateList: {
+            items: components["schemas"]["TopicTemplate"][];
         };
         TranslateRequest: {
-            target_language: string;
+            /**
+             * @description Optional source language to translate from (defaults to the
+             *     audiobook's primary language).
+             */
             source_language?: string | null;
+            /** @description Target language code (e.g. `"nl"`). */
+            target_language: string;
         };
         TranslateResponse: {
+            /**
+             * @description Id of the background job. Watch its status via the WebSocket or
+             *     `GET /audiobook/:id/jobs`. Chapter rows in the target language land
+             *     one at a time as the job progresses.
+             */
             job_id: string;
-            target_language: string;
             source_language: string;
+            target_language: string;
+        };
+        UpdateAudiobookCategoryRequest: {
+            name: string;
+        };
+        UpdateAudiobookRequest: {
+            /**
+             * @description Pass `Some("watercolor")` to change the artwork style; pass an empty
+             *     string to clear the override (falls back to the server default on the
+             *     next regeneration).
+             */
+            art_style?: string | null;
+            /**
+             * @description Pass `Some("Bedtime stories")` to set or change; pass an empty
+             *     string to clear (book moves to "Uncategorized").
+             */
+            category?: string | null;
+            /**
+             * @description Pass `Some("gemini_flash_image")` to pin a specific image model for
+             *     cover + chapter art; pass an empty string to fall back to the picker.
+             */
+            cover_llm_id?: string | null;
+            genre?: string | null;
+            /**
+             * Format: int32
+             * @description New target count of tiles per visual paragraph (0..=3). `0`
+             *     clears the override. Existing on-disk paragraph images stay on
+             *     disk but only the first N per paragraph are surfaced in the
+             *     chapter summary.
+             */
+            images_per_paragraph?: number | null;
+            /**
+             * @description Toggle YouTube Short mode. Existing chapters / cover art are
+             *     not auto-regenerated — flip this before regenerating outline +
+             *     cover to take effect.
+             */
+            is_short?: boolean | null;
+            /**
+             * @description Toggle songbook mode. Existing chapters are not regenerated —
+             *     flip and regenerate the outline to take effect.
+             */
+            is_songbook?: boolean | null;
+            /**
+             * @description Toggle multi-voice narration. When `true`, the next narration
+             *     of any chapter runs the LLM extract pass to split prose into
+             *     role-tagged segments and renders each segment with the role's
+             *     mapped voice from `voice_roles`. Switching this on/off doesn't
+             *     re-render existing audio — call `regenerate-audio` per chapter
+             *     or use the audiobook-level audio job to apply the change.
+             */
+            multi_voice_enabled?: boolean | null;
+            /**
+             * @description Replace the intensity list. `Some([])` clears it; absent =
+             *     don't touch. The full list is sent each time — easier to
+             *     reason about than a delta.
+             */
+            narration_intensity?: components["schemas"]["NarrationIntensity"][] | null;
+            /**
+             * @description Three-state narration style — absent = don't change, JSON
+             *     `null` = clear (back to genre default), enum string = set.
+             *     `serde_json::Value` again because plain `Option<Option<_>>`
+             *     folds absent and null together on the wire.
+             */
+            narration_style?: unknown;
+            /**
+             * @description Podcast id to assign this audiobook to. Pass an empty string to
+             *     clear (book is unassigned). The id must reference a podcast owned
+             *     by the same user.
+             */
+            podcast_id?: string | null;
+            /**
+             * Format: int32
+             * @description Update the snippet count. Existing snippets stay on disk;
+             *     re-run the snippet job (via `POST /audiobook/:id/snippets` —
+             *     future) to materialise the new count. Capped at 12.
+             */
+            snippet_count?: number | null;
+            /**
+             * @description User override of the LLM-detected STEM flag. Three-state:
+             *     absent (field not in body) = don't change; JSON `null` =
+             *     clear the override (use LLM verdict); `true` / `false` =
+             *     force the value. We use `serde_json::Value` because plain
+             *     `Option<Option<bool>>` collapses absent and null into the
+             *     same shape on the wire.
+             */
+            stem_override?: unknown;
+            title?: string | null;
+            /**
+             * @description Pass `Some("eve")` to change the narrator. Re-narrate the audiobook
+             *     after changing this for the new voice to take effect on existing
+             *     audio files.
+             */
+            voice_id?: string | null;
+            /**
+             * @description Three-state voice preset — absent = don't change, JSON
+             *     `null` = clear, enum string = set.
+             */
+            voice_preset?: unknown;
+            /**
+             * @description Voice mapping per role. Keys are canonical role names
+             *     (`narrator`, `dialogue_male`, `dialogue_female`); values are
+             *     voice ids (e.g. `"eve"`). Roles missing from the map fall back
+             *     to the narrator (or the primary voice if narrator isn't
+             *     mapped). Pass an empty object to clear.
+             */
+            voice_roles?: {
+                [key: string]: string;
+            } | null;
         };
         UpdateChapterRequest: {
             body_md?: string | null;
             synopsis?: string | null;
             title?: string | null;
         };
+        UpdateIdeaRequest: {
+            audiobook_prompt?: string | null;
+            status?: null | components["schemas"]["IdeaStatus"];
+            title?: string | null;
+        };
         UpdateLlmRequest: {
+            /** Format: int32 */
+            context_window?: number | null;
             /** Format: double */
             cost_completion_per_1k?: number | null;
+            /**
+             * Format: double
+             * @description Per-megapixel price for image models.
+             */
+            cost_per_megapixel?: number | null;
             /** Format: double */
             cost_prompt_per_1k?: number | null;
             default_for?: string[] | null;
             enabled?: boolean | null;
+            /** @description `Some("")` clears the function; omitted leaves it unchanged. */
+            function?: string | null;
+            /** @description Replaces the language list wholesale. Pass `[]` to mean "any". */
+            languages?: string[] | null;
+            /**
+             * @description Upstream model id. Allow renaming (e.g. tracking a vendor's slug
+             *     changes) without delete-and-recreate.
+             */
+            model_id?: string | null;
             name?: string | null;
-        };
-        CreateLlmRequest: {
-            /** @description Snake-case identifier; `[a-z0-9_]+`. */
-            id: string;
-            name: string;
-            /** @description Upstream model id, e.g. `google/gemini-2.5-flash-image`. */
-            model_id: string;
             /** Format: int32 */
-            context_window: number;
-            /** Format: double */
-            cost_prompt_per_1k: number;
-            /** Format: double */
-            cost_completion_per_1k: number;
-            enabled?: boolean | null;
-            default_for?: string[] | null;
+            priority?: number | null;
         };
         UpdateMeRequest: {
             display_name?: string | null;
+        };
+        UpdatePodcastRequest: {
+            description?: string | null;
+            /**
+             * @description Pass a fresh base64 to replace the cover, or `None` to leave the
+             *     existing image in place. There's no "clear cover" path — every
+             *     podcast keeps an image once one has been generated.
+             */
+            image_base64?: string | null;
+            title?: string | null;
+        };
+        UpdateTopicTemplateRequest: {
+            enabled?: boolean | null;
+            /** @description Pass an empty string to clear the genre. */
+            genre?: string | null;
+            is_short?: boolean | null;
+            /** @description Pass an empty string to clear the language default. */
+            language?: string | null;
+            length?: null | components["schemas"]["AudiobookLength"];
+            /** Format: int32 */
+            sort_order?: number | null;
+            title?: string | null;
+            topic?: string | null;
         };
         UpdateUserRequest: {
             role?: null | components["schemas"]["UserRole"];
@@ -871,6 +2925,15 @@ export interface components {
             name?: string | null;
             premium_only?: boolean | null;
             sample_url?: string | null;
+        };
+        UpsertYoutubeFooterRequest: {
+            /**
+             * @description Body of the footer. Appended verbatim after a blank line at the
+             *     end of every YouTube description for this language. Capped at
+             *     4000 chars so it never crowds out the auto-generated chapters
+             *     list inside YouTube's 5000-char description ceiling.
+             */
+            text: string;
         };
         User: {
             /** Format: date-time */
@@ -910,6 +2973,184 @@ export interface components {
         VoiceList: {
             items: components["schemas"]["Voice"][];
         };
+        /**
+         * @description Voice-cast preset the UI uses to seed `voice_roles` and to remember
+         *     the picker layout the user chose. The audio pipeline still keys off
+         *     the canonical `voice_roles` map (narrator + dialogue_male +
+         *     dialogue_female); presets never extend the role set on their own.
+         * @enum {string}
+         */
+        VoicePreset: "single_narrator" | "single_male" | "single_female" | "duo_male" | "duo_female" | "mixed";
+        VoicePreviewResponse: {
+            /**
+             * @description WAV file (mono, 16-bit PCM) encoded as standard base64. Playable
+             *     directly via `<audio src="data:audio/wav;base64,…">`.
+             */
+            audio_wav_base64: string;
+            /** Format: int64 */
+            duration_ms: number;
+            mocked: boolean;
+            /** Format: int32 */
+            sample_rate_hz: number;
+        };
+        XaiImageModelList: {
+            items: components["schemas"]["XaiImageModelRow"][];
+        };
+        XaiImageModelRow: {
+            aliases: string[];
+            /** Format: int32 */
+            context_length?: number | null;
+            /**
+             * Format: double
+             * @description USD per generated image — converted from xAI's microdollars-per-image
+             *     encoding. The image admin form uses this as the `$ / megapixel`
+             *     pre-fill; xAI image models bill per image, not per pixel.
+             */
+            cost_per_image: number;
+            id: string;
+            input_modalities: string[];
+            output_modalities: string[];
+        };
+        XaiModelList: {
+            items: components["schemas"]["XaiModelRow"][];
+        };
+        XaiModelRow: {
+            aliases: string[];
+            /**
+             * Format: int32
+             * @description Max prompt window in tokens, when reported by xAI.
+             */
+            context_length?: number | null;
+            /** Format: double */
+            cost_completion_per_1k: number;
+            /**
+             * Format: double
+             * @description USD per 1k prompt tokens — converted from xAI's
+             *     microdollars-per-million-tokens encoding.
+             */
+            cost_prompt_per_1k: number;
+            /** @description Upstream model id (e.g. `grok-4`). */
+            id: string;
+            input_modalities: string[];
+            output_modalities: string[];
+        };
+        YoutubeAccountStatus: {
+            /** @description Channel name to display in the UI; `None` when not connected. */
+            channel_title?: string | null;
+            connected: boolean;
+            /**
+             * Format: date-time
+             * @description `connected_at` ISO timestamp, for "connected since X" copy.
+             */
+            connected_at?: string | null;
+        };
+        YoutubeChannelSummary: {
+            channel_id: string;
+            channel_title: string;
+            /**
+             * Format: int64
+             * @description Lifetime subscriber count. YouTube rounds publicly; the API
+             *     returns the same rounded value unless the channel hides
+             *     subscriber count, in which case this is `0`.
+             */
+            subscriber_count: number;
+            /**
+             * Format: int64
+             * @description Number of public videos on the channel.
+             */
+            video_count: number;
+            /**
+             * Format: int64
+             * @description Lifetime public-video view count across the channel.
+             */
+            view_count: number;
+        };
+        YoutubeFooterList: {
+            items: components["schemas"]["YoutubeFooterRow"][];
+        };
+        YoutubeFooterRow: {
+            /**
+             * @description BCP-47 language code (`en`, `nl`, `fr`, …). Doubles as the record
+             *     id in the `youtube_description_footer` table.
+             */
+            language: string;
+            text: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        YoutubePublishSettings: {
+            /**
+             * @description When true, the publisher appends a "Models used:" block to every
+             *     YouTube description it builds, reflecting the LLMs/voices that
+             *     actually contributed to that audiobook (read from
+             *     `generation_event`). Off by default — opt-in flag.
+             */
+            include_credits: boolean;
+            /**
+             * @description When true, the encoder burns a "👍 Like & Subscribe!" overlay
+             *     into every newly-encoded YouTube video for two short windows
+             *     (a few seconds in and again before the end). Off by default —
+             *     opt-in flag.
+             */
+            like_subscribe_overlay?: boolean;
+        };
+        YoutubeReport: {
+            bucket: string;
+            points: components["schemas"]["YoutubeReportPoint"][];
+            /** Format: int32 */
+            range_days: number;
+        };
+        YoutubeReportPoint: {
+            /** Format: int64 */
+            comments: number;
+            date: string;
+            /**
+             * Format: int64
+             * @description `estimatedMinutesWatched` summed across the bucket. Useful as
+             *     a watch-time proxy alongside raw views.
+             */
+            estimated_minutes_watched: number;
+            /** Format: int64 */
+            likes: number;
+            /** Format: int64 */
+            views: number;
+        };
+        YoutubeVideoList: {
+            items: components["schemas"]["YoutubeVideoRow"][];
+            /** Format: int64 */
+            total_comments: number;
+            /** Format: int64 */
+            total_likes: number;
+            /**
+             * Format: int64
+             * @description Total across the visible list — handy for the dashboard tile
+             *     without making the frontend re-sum.
+             */
+            total_views: number;
+        };
+        YoutubeVideoRow: {
+            /**
+             * @description Audiobook this video was published from. Always present
+             *     because we only walk publication rows owned by this user.
+             */
+            audiobook_id: string;
+            audiobook_title: string;
+            /**
+             * Format: int64
+             * @description 1-based chapter number for playlist-mode publications.
+             *     `None` for single-mode videos.
+             */
+            chapter_number?: number | null;
+            /** Format: int64 */
+            comment_count: number;
+            /** Format: int64 */
+            like_count: number;
+            /** Format: date-time */
+            published_at?: string | null;
+            video_id: string;
+            /** Format: int64 */
+            view_count: number;
+        };
     };
     responses: never;
     parameters: never;
@@ -919,6 +3160,158 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_audiobook_categories: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AudiobookCategoryList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create_audiobook_category: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateAudiobookCategoryRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AudiobookCategoryRow"];
+                };
+            };
+            /** @description Validation failed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Name already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_audiobook_category: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    update_audiobook_category: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateAudiobookCategoryRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AudiobookCategoryRow"];
+                };
+            };
+            /** @description Validation failed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Name already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list_jobs: {
         parameters: {
             query?: never;
@@ -937,6 +3330,77 @@ export interface operations {
                 };
             };
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_job: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancel_job: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cancelled */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Job is already in a terminal state */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1012,6 +3476,83 @@ export interface operations {
             };
         };
     };
+    create_llm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateLlmRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminLlmRow"];
+                };
+            };
+            /** @description Validation failed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An LLM with this id already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_llm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     patch_llm: {
         parameters: {
             query?: never;
@@ -1049,6 +3590,41 @@ export interface operations {
             };
         };
     };
+    list_openrouter_models: {
+        parameters: {
+            query?: {
+                /** @description Filter forwarded to OpenRouter (e.g. 'image'). */
+                output_modalities?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OpenRouterModelList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description OpenRouter unreachable */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     system_overview: {
         parameters: {
             query?: never;
@@ -1067,6 +3643,246 @@ export interface operations {
                 };
             };
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    test_llm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestLlmRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestLlmResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    test_voice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestVoiceRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestVoiceResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_admin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description All topic templates */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopicTemplateList"];
+                };
+            };
+            /** @description Not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTopicTemplateRequest"];
+            };
+        };
+        responses: {
+            /** @description Created template */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopicTemplate"];
+                };
+            };
+            /** @description Validation failed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateTopicTemplateRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated template */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopicTemplate"];
+                };
+            };
+            /** @description Validation failed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1232,6 +4048,373 @@ export interface operations {
             };
         };
     };
+    list_xai_image_models: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["XaiImageModelList"];
+                };
+            };
+            /** @description xai_api_key not configured */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description xAI unreachable */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_xai_models: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["XaiModelList"];
+                };
+            };
+            /** @description xai_api_key not configured */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description xAI unreachable */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_youtube_publish_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["YoutubePublishSettings"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    put_youtube_publish_settings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["YoutubePublishSettings"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["YoutubePublishSettings"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_youtube_footers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["YoutubeFooterList"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    upsert_youtube_footer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description BCP-47 language code */
+                language: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpsertYoutubeFooterRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["YoutubeFooterRow"];
+                };
+            };
+            /** @description Validation failed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete_youtube_footer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                language: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    generation: {
+        parameters: {
+            query?: {
+                /** @description day | week | month (default: day) */
+                bucket?: string;
+                /** @description Lookback window in days; auto-extends for week/month if absent */
+                range_days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Time-series counts/durations/costs */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GenerationSeries"];
+                };
+            };
+            /** @description Bad bucket value */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    youtube_channel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Connected channel's lifetime stats */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["YoutubeChannelSummary"];
+                };
+            };
+            /** @description Unauthenticated, or YouTube grant was revoked at Google */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description User has not connected a YouTube channel */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    youtube_reports: {
+        parameters: {
+            query?: {
+                /** @description day | week | month (default: day) */
+                bucket?: string;
+                /** @description Lookback window in days; auto-extends for week/month if absent */
+                range_days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Time-series channel report via the YouTube Analytics API */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["YoutubeReport"];
+                };
+            };
+            /** @description Unauthenticated, or YouTube grant was revoked at Google */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description User has not connected a YouTube channel */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    youtube_videos: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-video YouTube stats joined with the source audiobook */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["YoutubeVideoList"];
+                };
+            };
+            /** @description Unauthenticated, or YouTube grant was revoked at Google */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description User has not connected a YouTube channel */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     list: {
         parameters: {
             query?: never;
@@ -1304,9 +4487,37 @@ export interface operations {
             };
         };
     };
-    get_one: {
+    list_audiobook_categories: {
         parameters: {
             query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AudiobookCategoryNameList"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_one: {
+        parameters: {
+            query?: {
+                /** @description Language filter (default: audiobook primary) */
+                language?: string;
+            };
             header?: never;
             path: {
                 /** @description Audiobook id */
@@ -1401,6 +4612,67 @@ export interface operations {
             };
         };
     };
+    animate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted, animation queued in background */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Audio not ready or animation already in flight */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancel_pipeline: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description All in-flight jobs cancelled */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     patch_chapter: {
         parameters: {
             query?: never;
@@ -1442,6 +4714,115 @@ export interface operations {
             };
         };
     };
+    animate_chapter: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Accepted, chapter re-render queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unsupported language or theme */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Audiobook or chapter not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Audio not ready or chapter render already in flight */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    chapter_art: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Chapter artwork bytes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": unknown;
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    regenerate_chapter_art: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Generated chapter artwork */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChapterSummary"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Upstream image-gen error */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     chapter_audio: {
         parameters: {
             query?: never;
@@ -1461,6 +4842,84 @@ export interface operations {
                 };
                 content: {
                     "audio/wav": unknown;
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    classify_chapter_visuals: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Classifier ran; chapter summary returned with updated paragraph badges */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChapterSummary"];
+                };
+            };
+            /** @description Book is not STEM (effective is_stem=false); refused */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Audiobook or chapter not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Upstream LLM error */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    paragraph_image: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                n: number;
+                /** @description Paragraph index (matches chapter.paragraphs[].index) */
+                p: number;
+                /** @description 1-based tile ordinal */
+                i: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paragraph illustration bytes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": unknown;
                 };
             };
             /** @description Not found */
@@ -1546,6 +5005,176 @@ export interface operations {
             };
         };
     };
+    regenerate_chapter_manim_code: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Code-gen ran; chapter summary returned */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChapterSummary"];
+                };
+            };
+            /** @description Chapter has no custom_manim paragraphs */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Audiobook or chapter not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Upstream LLM error */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    test_chapter_manim_llm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TestChapterManimLlmRequest"];
+            };
+        };
+        responses: {
+            /** @description LLM ran; prompt/response/metrics returned */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TestChapterManimLlmResponse"];
+                };
+            };
+            /** @description No paragraphs to test against, or unknown llm_id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Audiobook or chapter not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Upstream LLM error */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    render_test_manim: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenderTestManimRequest"];
+            };
+        };
+        responses: {
+            /** @description Rendered MP4 ready; fetch via test-manim/:test_id */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderTestManimResponse"];
+                };
+            };
+            /** @description Manim sidecar not configured or code rejected */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Audiobook not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Render failed */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    chapter_video: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Animated companion MP4 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "video/mp4": unknown;
+                };
+            };
+            /** @description Not generated yet */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     chapter_waveform: {
         parameters: {
             query?: never;
@@ -1567,6 +5196,100 @@ export interface operations {
             };
             /** @description Not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    costs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cost rollup for the audiobook */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AudiobookCostSummary"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cover: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cover image bytes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": unknown;
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    regenerate_cover: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cover regenerated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AudiobookDetail"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Upstream image-gen error */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1665,6 +5388,281 @@ export interface operations {
             };
             /** @description Not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_publications: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Audiobook id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every publication ever queued for this audiobook */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationList"];
+                };
+            };
+            /** @description Audiobook not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    approve_publication: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Audiobook id */
+                id: string;
+                /** @description Publication id */
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Upload queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovePublicationResponse"];
+                };
+            };
+            /** @description Publication not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Publication is not in preview state, or YouTube not connected */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancel_publication: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Audiobook id */
+                id: string;
+                /** @description Publication id */
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Preview discarded */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Publication not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Publication is not in preview state */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_publication: {
+        parameters: {
+            query?: {
+                /** @description Chapter number (playlist mode) */
+                chapter?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Audiobook id */
+                id: string;
+                /** @description Publication id */
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description MP4 bytes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "video/mp4": unknown;
+                };
+            };
+            /** @description Partial MP4 (range request) */
+            206: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "video/mp4": unknown;
+                };
+            };
+            /** @description Preview not available */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    publish_youtube: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Audiobook id */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublishYoutubeRequest"];
+            };
+        };
+        responses: {
+            /** @description Publish queued; poll /audiobook/:id/publications */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishYoutubeResponse"];
+                };
+            };
+            /** @description Validation failed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Audiobook not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Language not narrated yet, or YouTube not connected */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    test_manim_video: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                test_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Test render MP4 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "video/mp4": unknown;
+                };
+            };
+            /** @description Test id not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    translate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TranslateRequest"];
+            };
+        };
+        responses: {
+            /** @description Translation queued; poll /audiobook/:id/jobs */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranslateResponse"];
+                };
+            };
+            /** @description Validation failed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A translation to this language is already running */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1794,6 +5792,51 @@ export interface operations {
             };
         };
     };
+    preview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CoverPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description Generated cover */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoverPreviewResponse"];
+                };
+            };
+            /** @description Validation failed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Upstream image-gen error */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     health: {
         parameters: {
             query?: never;
@@ -1811,6 +5854,287 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["Health"];
                 };
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every idea owned by the authed user */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdeaList"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateIdeaRequest"];
+            };
+        };
+        responses: {
+            /** @description Newly created idea */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdeaRow"];
+                };
+            };
+            /** @description Validation failed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    suggest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SuggestIdeasRequest"];
+            };
+        };
+        responses: {
+            /** @description LLM-generated idea suggestions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SuggestIdeasResponse"];
+                };
+            };
+            /** @description Validation failed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description LLM error */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateIdeaRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated idea */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdeaRow"];
+                };
+            };
+            /** @description Validation failed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    youtube_account_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Whether the calling user has YouTube connected */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["YoutubeAccountStatus"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    youtube_account_disconnect: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Disconnected (revocation is best-effort) */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    youtube_oauth_callback: {
+        parameters: {
+            query?: {
+                /** @description Auth code from Google */
+                code?: string;
+                /** @description Anti-CSRF state token issued by /start */
+                state?: string;
+                /** @description Set when the user denied consent */
+                error?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redirects back to the SPA settings page */
+            302: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    youtube_oauth_start: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Consent URL to navigate to */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OauthStartResponse"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description YouTube integration is not configured */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -1906,6 +6230,284 @@ export interface operations {
             };
         };
     };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every podcast owned by the authed user */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PodcastList"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatePodcastRequest"];
+            };
+        };
+        responses: {
+            /** @description Newly created podcast */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PodcastRow"];
+                };
+            };
+            /** @description Validation failed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_image: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PreviewPodcastImageRequest"];
+            };
+        };
+        responses: {
+            /** @description Generated cover */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PreviewPodcastImageResponse"];
+                };
+            };
+            /** @description Validation failed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Upstream image-gen error */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    get_one: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Podcast */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PodcastRow"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdatePodcastRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated podcast */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PodcastRow"];
+                };
+            };
+            /** @description Validation failed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    image: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cover bytes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": unknown;
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    sync_youtube: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Playlist created or refreshed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncPodcastResponse"];
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description YouTube is not connected for this user */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Upstream YouTube error */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     ready: {
         parameters: {
             query?: never;
@@ -1923,6 +6525,33 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ReadinessReport"];
                 };
+            };
+        };
+    };
+    list_public: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Enabled topic templates */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TopicTemplateList"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -1977,6 +6606,50 @@ export interface operations {
             };
             /** @description Unauthenticated */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preview_voice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Voice id from /voices */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Synthesised preview clip */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VoicePreviewResponse"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown voice id */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description TTS upstream error */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };
