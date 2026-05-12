@@ -144,6 +144,7 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         crate::handlers::queue::advance,
         crate::handlers::queue::clear,
         crate::handlers::queue::cancel_item,
+        crate::handlers::queue::retry_item,
         // --- Analytics dashboard ---
         crate::handlers::analytics::generation,
         crate::handlers::analytics::youtube_channel,

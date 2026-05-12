@@ -48,6 +48,10 @@ export function Queue(): JSX.Element {
     mutationFn: (id: string) => queue.cancel(id),
     onSuccess: invalidate,
   });
+  const retry = useMutation({
+    mutationFn: (id: string) => queue.retry(id),
+    onSuccess: invalidate,
+  });
 
   const data = q.data;
   const items = data?.items ?? [];
@@ -128,7 +132,12 @@ export function Queue(): JSX.Element {
 
       {!q.isLoading && running && (
         <QueueSection title="Now generating">
-          <QueueRow item={running} onCancel={() => cancel.mutate(running.id)} />
+          <QueueRow
+            item={running}
+            onCancel={() => cancel.mutate(running.id)}
+            onRetry={null}
+            retrying={false}
+          />
         </QueueSection>
       )}
 
@@ -139,6 +148,8 @@ export function Queue(): JSX.Element {
               key={it.id}
               item={it}
               onCancel={() => cancel.mutate(it.id)}
+              onRetry={null}
+              retrying={false}
             />
           ))}
         </QueueSection>
@@ -147,7 +158,17 @@ export function Queue(): JSX.Element {
       {!q.isLoading && history.length > 0 && (
         <QueueSection title="Recent">
           {history.slice(0, 12).map((it) => (
-            <QueueRow key={it.id} item={it} onCancel={null} />
+            <QueueRow
+              key={it.id}
+              item={it}
+              onCancel={null}
+              onRetry={
+                it.state === "failed" || it.state === "cancelled"
+                  ? () => retry.mutate(it.id)
+                  : null
+              }
+              retrying={retry.isPending && retry.variables === it.id}
+            />
           ))}
         </QueueSection>
       )}
@@ -190,9 +211,13 @@ function QueueSection({
 function QueueRow({
   item,
   onCancel,
+  onRetry,
+  retrying,
 }: {
   item: QueueItem;
   onCancel: (() => void) | null;
+  onRetry: (() => void) | null;
+  retrying: boolean;
 }): JSX.Element {
   const isLive = item.state === "queued" || item.state === "running";
   const formatTitle = item.title?.trim() || item.topic || "(untitled)";
@@ -230,6 +255,16 @@ function QueueRow({
           >
             Logs
           </Link>
+          {onRetry && (
+            <button
+              onClick={onRetry}
+              disabled={retrying}
+              className="rounded-md border border-emerald-700 bg-emerald-700/10 px-2.5 py-1 text-xs font-medium text-emerald-200 hover:border-emerald-500 disabled:opacity-50"
+              title="Re-queue this audiobook. The runner resumes from the last successful step, so a TTS failure won't re-run outline + chapters."
+            >
+              {retrying ? "Retrying…" : "Retry"}
+            </button>
+          )}
           {onCancel && isLive && (
             <button
               onClick={() => {

@@ -357,6 +357,78 @@ pub async fn cancel_item(
 
 #[utoipa::path(
     post,
+    path = "/queue/{item_id}/retry",
+    tag = "queue",
+    params(("item_id" = String, Path)),
+    responses(
+        (status = 204, description = "Retry queued"),
+        (status = 404, description = "Item not found"),
+        (status = 409, description = "Item is not in a retryable state")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn retry_item(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path(item_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let item = load_item(&state, &item_id).await?;
+    if item.owner.id.to_raw() != user.id.0 {
+        return Err(Error::NotFound {
+            resource: format!("audiobook_queue:{item_id}"),
+        }
+        .into());
+    }
+    // Retry semantics: bring a settled item back into the queue. We
+    // allow `failed` (the common case) plus `cancelled` (user
+    // changed their mind) and `completed` (re-run for whatever
+    // reason). `running` would race the live activation task, so we
+    // 409 that one explicitly.
+    match QueueItemState::parse(&item.state) {
+        Some(QueueItemState::Failed)
+        | Some(QueueItemState::Cancelled)
+        | Some(QueueItemState::Completed) => {}
+        Some(QueueItemState::Running) => {
+            return Err(Error::Conflict(
+                "item is already running — cancel it first if you want to restart".into(),
+            )
+            .into())
+        }
+        _ => {
+            return Err(Error::Conflict(format!(
+                "item is in state `{}` — only failed/cancelled/completed can be retried",
+                item.state
+            ))
+            .into())
+        }
+    }
+    // Re-position at the tail so an in-flight item keeps priority.
+    let next_pos = next_position(&state, &user.id).await?;
+    let sql = format!(
+        "UPDATE audiobook_queue:`{item_id}` SET \
+            state = 'queued', \
+            error = NONE, \
+            started_at = NONE, \
+            finished_at = NONE, \
+            position = $position"
+    );
+    state
+        .db()
+        .inner()
+        .query(sql)
+        .bind(("position", next_pos))
+        .await
+        .map_err(|e| Error::Database(format!("queue retry: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("queue retry: {e}")))?;
+    // Poke the runner so the user sees movement immediately rather
+    // than waiting up to RUNNER_TICK seconds for the next loop iter.
+    advance_user(&state, &user.id).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
     path = "/queue/advance",
     tag = "queue",
     responses(

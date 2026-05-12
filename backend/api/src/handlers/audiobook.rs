@@ -3931,19 +3931,28 @@ pub(crate) async fn kick_off_pipeline(
     let language = book.language.clone().unwrap_or_else(|| "en".to_string());
     let is_short = book.is_short.unwrap_or(false);
     let is_songbook = book.is_songbook.unwrap_or(false);
+    let status = parse_status(&book.status)?;
 
-    outline_gen::run(
-        state,
-        user_id,
-        audiobook_id,
-        &book.topic,
-        length,
-        if genre.is_empty() { "any" } else { &genre },
-        &language,
-        is_short,
-        is_songbook,
-    )
-    .await?;
+    // Resume from the furthest-completed step so retries don't burn
+    // LLM calls re-doing work that already succeeded. Status mapping:
+    //   draft / failed  → re-run outline + every downstream job
+    //   outline_ready   → skip outline; (re-)enqueue chapters + cover
+    //   text_ready      → skip outline + chapters; (re-)enqueue tts
+    //   audio_ready     → nothing to do; runner will settle the item
+    if matches!(status, AudiobookStatus::Draft | AudiobookStatus::Failed) {
+        outline_gen::run(
+            state,
+            user_id,
+            audiobook_id,
+            &book.topic,
+            length,
+            if genre.is_empty() { "any" } else { &genre },
+            &language,
+            is_short,
+            is_songbook,
+        )
+        .await?;
+    }
 
     // Songbook snippets — fire if requested and no snippets job is
     // already in flight (re-activation shouldn't double-enqueue).
@@ -3984,7 +3993,20 @@ pub(crate) async fn kick_off_pipeline(
         .map_err(|e| Error::Database(format!("kick_off load auto_pipeline (decode): {e}")))?;
     let pipeline = rows.into_iter().next().and_then(|r| r.auto_pipeline);
     if let Some(pipeline) = pipeline {
-        if pipeline.chapters {
+        // Chapters: re-enqueue only when the book hasn't already
+        // produced chapter text. text_ready / audio_ready means the
+        // Chapters job succeeded once — running it again would
+        // overwrite valid prose.
+        let needs_chapters = matches!(
+            status,
+            AudiobookStatus::Draft
+                | AudiobookStatus::Failed
+                | AudiobookStatus::OutlineReady
+        );
+        if pipeline.chapters
+            && needs_chapters
+            && !has_live_job(state, audiobook_id, JobKind::Chapters).await?
+        {
             let req = EnqueueRequest::new(JobKind::Chapters)
                 .with_user(user_id.clone())
                 .with_audiobook(AudiobookId(audiobook_id.to_string()));
@@ -3996,9 +4018,32 @@ pub(crate) async fn kick_off_pipeline(
                 );
             }
         }
+        // Audio: only kicked from kick_off_pipeline when chapters are
+        // already done (text_ready). For the from-scratch path the
+        // Chapters handler chains TTS itself, so we don't double
+        // enqueue. has_live_job keeps retries idempotent.
+        if pipeline.audio
+            && matches!(status, AudiobookStatus::TextReady)
+            && !has_live_job(state, audiobook_id, JobKind::Tts).await?
+        {
+            let req = EnqueueRequest::new(JobKind::Tts)
+                .with_user(user_id.clone())
+                .with_audiobook(AudiobookId(audiobook_id.to_string()))
+                .with_language(language.clone());
+            if let Err(e) = state.jobs().enqueue(req).await {
+                warn!(
+                    error = %e,
+                    audiobook_id,
+                    "queue activate: enqueue tts failed"
+                );
+            }
+        }
         // Skip cover when a saved cover already exists on disk — the
         // user uploaded one at create time.
-        if pipeline.cover && book.cover_path.is_none() {
+        if pipeline.cover
+            && book.cover_path.is_none()
+            && !has_live_job(state, audiobook_id, JobKind::Cover).await?
+        {
             let req = EnqueueRequest::new(JobKind::Cover)
                 .with_user(user_id.clone())
                 .with_audiobook(AudiobookId(audiobook_id.to_string()))

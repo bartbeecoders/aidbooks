@@ -346,6 +346,10 @@ pub fn build_router(state: AppState) -> Router {
             "/queue/:item_id/cancel",
             post(handlers::queue::cancel_item),
         )
+        .route(
+            "/queue/:item_id/retry",
+            post(handlers::queue::retry_item),
+        )
         // --- Analytics dashboard ---
         .route(
             "/analytics/generation",

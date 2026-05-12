@@ -4027,6 +4027,40 @@
         ]
       }
     },
+    "/queue/{item_id}/retry": {
+      "post": {
+        "tags": [
+          "queue"
+        ],
+        "operationId": "retry_item",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Retry queued"
+          },
+          "404": {
+            "description": "Item not found"
+          },
+          "409": {
+            "description": "Item is not in a retryable state"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/ready": {
       "get": {
         "tags": [

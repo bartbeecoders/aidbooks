@@ -474,6 +474,13 @@ export const queue = {
     apiFetch<void>(`/queue/${encodeURIComponent(itemId)}/cancel`, {
       method: "POST",
     }),
+  /** Re-queue a failed (or cancelled / completed) item. The runner
+   * resumes from the furthest step the audiobook reached, so a TTS
+   * failure isn't paid for by re-running outline + chapters. */
+  retry: (itemId: string) =>
+    apiFetch<void>(`/queue/${encodeURIComponent(itemId)}/retry`, {
+      method: "POST",
+    }),
   /** Drop every queued item (the running one is left alone). */
   clear: () => apiFetch<void>("/queue", { method: "DELETE" }),
   /** Kick the runner — useful right after the user removes a stuck item. */
