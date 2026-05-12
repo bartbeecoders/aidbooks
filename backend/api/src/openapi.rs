@@ -9,6 +9,10 @@ use utoipa::{
     Modify, OpenApi,
 };
 
+use crate::handlers::analytics::{
+    GenerationPoint, GenerationSeries, YoutubeChannelSummary, YoutubeReport, YoutubeReportPoint,
+    YoutubeVideoList, YoutubeVideoRow,
+};
 use crate::handlers::admin::{
     AdminJobList, AdminJobRow, AdminLlmList, AdminLlmRow, AdminUserList, AdminUserRow,
     AdminVoiceList, AdminVoiceRow, AudiobookCategoryList, AudiobookCategoryRow,
@@ -130,6 +134,11 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         crate::handlers::admin::update_audiobook_category,
         crate::handlers::admin::delete_audiobook_category,
         crate::handlers::catalog::list_audiobook_categories,
+        // --- Analytics dashboard ---
+        crate::handlers::analytics::generation,
+        crate::handlers::analytics::youtube_channel,
+        crate::handlers::analytics::youtube_videos,
+        crate::handlers::analytics::youtube_reports,
         // --- Phase 8: integrations (YouTube) ---
         crate::handlers::integrations::youtube_oauth_start,
         crate::handlers::integrations::youtube_oauth_callback,
@@ -256,6 +265,14 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         UpdateAudiobookCategoryRequest,
         AudiobookCategoryName,
         AudiobookCategoryNameList,
+        // analytics dashboard
+        GenerationPoint,
+        GenerationSeries,
+        YoutubeChannelSummary,
+        YoutubeVideoRow,
+        YoutubeVideoList,
+        YoutubeReportPoint,
+        YoutubeReport,
         // integrations (YouTube)
         OauthStartResponse,
         YoutubeAccountStatus,
@@ -299,6 +316,7 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         (name = "jobs", description = "Durable job inspection (WebSocket at /ws/audiobook/:id)."),
         (name = "admin", description = "Admin-only: runtime-editable LLMs, voices, users, jobs."),
         (name = "integrations", description = "Third-party integrations (YouTube publishing)."),
+        (name = "analytics", description = "Owner-scoped dashboard: generation + YouTube performance."),
         (name = "podcasts", description = "Podcasts: owner-scoped audiobook groupings with AI cover art."),
         (name = "ideas", description = "Audiobook idea backlog + LLM trend suggestions."),
     ),

@@ -14,6 +14,7 @@ import { AdminTopicTemplates } from "./pages/admin/AdminTopicTemplates";
 import { AdminUsers } from "./pages/admin/AdminUsers";
 import { AdminVoices } from "./pages/admin/AdminVoices";
 import { AdminYoutubeSettings } from "./pages/admin/AdminYoutubeSettings";
+import { Analytics } from "./pages/Analytics";
 import { Ideas } from "./pages/Ideas";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
@@ -34,6 +35,7 @@ export const router = createBrowserRouter([
     ),
     children: [
       { path: "/app", element: <Library /> },
+      { path: "/app/analytics", element: <Analytics /> },
       { path: "/app/ideas", element: <Ideas /> },
       { path: "/app/new", element: <NewAudiobook /> },
       // Library renders in both routes — `:id` selects which book is

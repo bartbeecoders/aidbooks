@@ -814,3 +814,65 @@ export interface SuggestedIdea {
 export interface SuggestIdeasResponse {
   items: SuggestedIdea[];
 }
+
+// --- analytics dashboard ------------------------------------------------
+
+export type AnalyticsBucket = "day" | "week" | "month";
+
+export interface GenerationPoint {
+  date: string;
+  audiobooks_count: number;
+  audiobooks_duration_ms: number;
+  audiobooks_cost_usd: number;
+  shorts_count: number;
+  shorts_duration_ms: number;
+  shorts_cost_usd: number;
+  videos_count: number;
+  videos_duration_ms: number;
+}
+
+export interface GenerationSeries {
+  bucket: AnalyticsBucket;
+  range_days: number;
+  points: GenerationPoint[];
+}
+
+export interface YoutubeChannelSummary {
+  channel_id: string;
+  channel_title: string;
+  subscriber_count: number;
+  view_count: number;
+  video_count: number;
+}
+
+export interface YoutubeVideoRow {
+  video_id: string;
+  audiobook_id: string;
+  audiobook_title: string;
+  chapter_number: number | null;
+  published_at: string | null;
+  view_count: number;
+  like_count: number;
+  comment_count: number;
+}
+
+export interface YoutubeVideoList {
+  items: YoutubeVideoRow[];
+  total_views: number;
+  total_likes: number;
+  total_comments: number;
+}
+
+export interface YoutubeReportPoint {
+  date: string;
+  views: number;
+  likes: number;
+  comments: number;
+  estimated_minutes_watched: number;
+}
+
+export interface YoutubeReport {
+  bucket: AnalyticsBucket;
+  range_days: number;
+  points: YoutubeReportPoint[];
+}

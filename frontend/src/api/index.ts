@@ -78,6 +78,11 @@ import type {
   VoiceList,
   VoicePreviewResponse,
   YoutubeAccountStatus,
+  AnalyticsBucket,
+  GenerationSeries,
+  YoutubeChannelSummary,
+  YoutubeVideoList,
+  YoutubeReport,
 } from "./types";
 
 export { ApiError } from "./client";
@@ -449,6 +454,39 @@ export const integrations = {
         { method: "POST" },
       ),
   },
+};
+
+// --- analytics ---------------------------------------------------------
+
+/** Build the `?bucket=&range_days=` suffix shared by the analytics
+ * endpoints. Omitted params let the backend pick its own defaults. */
+function analyticsQs(opts?: {
+  bucket?: AnalyticsBucket;
+  rangeDays?: number;
+}): string {
+  const qs = new URLSearchParams();
+  if (opts?.bucket) qs.set("bucket", opts.bucket);
+  if (opts?.rangeDays) qs.set("range_days", String(opts.rangeDays));
+  const s = qs.toString();
+  return s ? `?${s}` : "";
+}
+
+export const analytics = {
+  /** Time-bucketed local-DB rollup: audiobook/short/video counts,
+   * narration duration, and cumulative LLM/TTS cost. */
+  generation: (opts?: { bucket?: AnalyticsBucket; rangeDays?: number }) =>
+    apiFetch<GenerationSeries>(`/analytics/generation${analyticsQs(opts)}`),
+  /** Connected channel's lifetime stats (subscribers/views/videos). */
+  youtubeChannel: () =>
+    apiFetch<YoutubeChannelSummary>("/analytics/youtube/channel"),
+  /** Per-video views/likes/comments for every video this user has
+   * published through the app. */
+  youtubeVideos: () =>
+    apiFetch<YoutubeVideoList>("/analytics/youtube/videos"),
+  /** Day-bucketed YouTube Analytics report (views/likes/comments/
+   * watch-time), re-bucketed server-side for week/month. */
+  youtubeReports: (opts?: { bucket?: AnalyticsBucket; rangeDays?: number }) =>
+    apiFetch<YoutubeReport>(`/analytics/youtube/reports${analyticsQs(opts)}`),
 };
 
 /** Streaming URL for the encoded MP4 preview. Pass to a `<video>` tag. */

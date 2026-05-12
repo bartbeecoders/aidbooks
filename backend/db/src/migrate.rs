@@ -193,6 +193,14 @@ const MIGRATIONS: &[Migration] = &[
         name: "0044_job_kind_song_snippets",
         sql: include_str!("../migrations/0044_job_kind_song_snippets.surql"),
     },
+    Migration {
+        name: "0045_audiobook_narration_style",
+        sql: include_str!("../migrations/0045_audiobook_narration_style.surql"),
+    },
+    Migration {
+        name: "0046_audiobook_short_backfill",
+        sql: include_str!("../migrations/0046_audiobook_short_backfill.surql"),
+    },
 ];
 
 /// Run any pending migrations. Safe to call on every startup.

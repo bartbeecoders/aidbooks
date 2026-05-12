@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod analytics;
 pub mod audiobook;
 pub mod auth;
 pub mod catalog;
