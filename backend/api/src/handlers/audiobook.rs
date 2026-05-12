@@ -24,7 +24,34 @@ use crate::error::ApiResult;
 use crate::generation::{audio as audio_gen, chapter as chapter_gen, outline as outline_gen};
 use crate::idempotency::{self, IdempotencyKey};
 use crate::state::AppState;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use tokio::sync::Mutex as TokioMutex;
 use tracing::warn;
+
+/// Per-chapter async lock map for `persist_paragraph_image`. Concurrent
+/// tile jobs for the same chapter would otherwise race on the
+/// SELECT→mutate→UPDATE round-trip and clobber each other's
+/// `image_paths` slots — for Shorts (one paragraph, N parallel
+/// ordinals) the race reliably loses all but one tile. We hold the
+/// lock only for the duration of one round-trip, so cross-chapter
+/// contention is non-existent and same-chapter contention is bounded
+/// by `images_per_paragraph` (≤ 3).
+static PARAGRAPH_PERSIST_LOCKS: OnceLock<StdMutex<HashMap<String, Arc<TokioMutex<()>>>>> =
+    OnceLock::new();
+
+async fn acquire_paragraph_lock(chapter_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    let map = PARAGRAPH_PERSIST_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
+    let mutex = {
+        let mut m = map
+            .lock()
+            .expect("paragraph persist locks map poisoned");
+        m.entry(chapter_id.to_string())
+            .or_insert_with(|| Arc::new(TokioMutex::new(())))
+            .clone()
+    };
+    mutex.lock_owned().await
+}
 
 // -------------------------------------------------------------------------
 // DTOs
@@ -3636,6 +3663,11 @@ pub(crate) async fn persist_paragraph_image(
     let path = dir.join(&filename);
     std::fs::write(&path, bytes)
         .map_err(|e| Error::Other(anyhow::anyhow!("write paragraph image {path:?}: {e}")))?;
+
+    // Serialize concurrent tile writes for this chapter — the
+    // SELECT→mutate→UPDATE below is not atomic, and parallel ordinals
+    // for the same paragraph would otherwise lose each other's slots.
+    let _persist_guard = acquire_paragraph_lock(chapter_id).await;
 
     // Load → mutate → write back. The whole `paragraphs` array is
     // FLEXIBLE so we round-trip arbitrary inner keys; we only mutate
