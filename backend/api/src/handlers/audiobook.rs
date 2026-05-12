@@ -43,9 +43,12 @@ static PARAGRAPH_PERSIST_LOCKS: OnceLock<StdMutex<HashMap<String, Arc<TokioMutex
 async fn acquire_paragraph_lock(chapter_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
     let map = PARAGRAPH_PERSIST_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
     let mutex = {
-        let mut m = map
-            .lock()
-            .expect("paragraph persist locks map poisoned");
+        // Recover the inner map on poison — this lock only guards a
+        // HashMap of Arc<TokioMutex<()>> handles, so a panicked
+        // borrower can't leave it in a half-mutated state we care
+        // about. Bailing on poison would mean every subsequent paragraph
+        // write panics; recovery is strictly better.
+        let mut m = map.lock().unwrap_or_else(|p| p.into_inner());
         m.entry(chapter_id.to_string())
             .or_insert_with(|| Arc::new(TokioMutex::new(())))
             .clone()
@@ -157,6 +160,12 @@ pub struct CreateAudiobookRequest {
     /// picker layout. The audio pipeline reads `voice_roles` directly,
     /// not this field — presets exist purely as a UX shorthand.
     pub voice_preset: Option<VoicePreset>,
+    /// When `true`, the audiobook is created in `draft` state and
+    /// appended to the user's generation queue instead of running the
+    /// outline + cascade inline. The queue runner activates the row
+    /// later, one book at a time. See `handlers::queue`.
+    #[serde(default)]
+    pub enqueue: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Validate, ToSchema, Clone)]
@@ -908,6 +917,15 @@ pub async fn create(
         if let Err(e) = persist_cover(&state, &id, b64).await {
             warn!(error = %e, audiobook_id = id, "create: cover persist failed");
         }
+    }
+
+    // Queue mode: stop here and let the queue runner activate the
+    // audiobook later. The row exists in `draft` state with its
+    // `auto_pipeline` already persisted, so kick_off_pipeline has
+    // everything it needs when its turn comes.
+    if body.enqueue.unwrap_or(false) {
+        crate::handlers::queue::enqueue_audiobook(&state, &user.id, &id).await?;
+        return Ok(Json(load_detail(&state, &id, &user.id, None).await?));
     }
 
     outline_gen::run(
@@ -3885,6 +3903,116 @@ async fn adopt_preview_snippets(
     // for a future GC sweep.
     let _ = tokio::fs::remove_dir(&preview_dir).await;
     Ok(adopted)
+}
+
+/// Run the outline + post-outline cascade against an already-created
+/// audiobook row. Mirrors the inline logic in `create` but reads the
+/// row's persisted fields instead of the request body, so the queue
+/// runner can activate a draft audiobook long after the original
+/// `POST /audiobook` returned.
+///
+/// Unlike the inline create path, this never adopts preview-snippet
+/// WAVs (the preview dir is likely GC'd by activation time). The
+/// `SongSnippets` job is enqueued instead when the row asks for
+/// snippets — yt-dlp re-runs from scratch.
+pub(crate) async fn kick_off_pipeline(
+    state: &AppState,
+    user_id: &UserId,
+    audiobook_id: &str,
+) -> Result<()> {
+    let book = load_audiobook(state, audiobook_id).await?;
+    if book.owner_id() != *user_id {
+        return Err(Error::NotFound {
+            resource: format!("audiobook:{audiobook_id}"),
+        });
+    }
+    let length = parse_length(&book.length)?;
+    let genre = book.genre.clone().unwrap_or_default();
+    let language = book.language.clone().unwrap_or_else(|| "en".to_string());
+    let is_short = book.is_short.unwrap_or(false);
+    let is_songbook = book.is_songbook.unwrap_or(false);
+
+    outline_gen::run(
+        state,
+        user_id,
+        audiobook_id,
+        &book.topic,
+        length,
+        if genre.is_empty() { "any" } else { &genre },
+        &language,
+        is_short,
+        is_songbook,
+    )
+    .await?;
+
+    // Songbook snippets — fire if requested and no snippets job is
+    // already in flight (re-activation shouldn't double-enqueue).
+    let snippet_count = book.snippet_count.unwrap_or(0);
+    if is_songbook
+        && snippet_count > 0
+        && !has_live_job(state, audiobook_id, JobKind::SongSnippets).await?
+    {
+        let req = EnqueueRequest::new(JobKind::SongSnippets)
+            .with_user(user_id.clone())
+            .with_audiobook(AudiobookId(audiobook_id.to_string()));
+        if let Err(e) = state.jobs().enqueue(req).await {
+            warn!(
+                error = %e,
+                audiobook_id,
+                "queue activate: enqueue song_snippets failed"
+            );
+        }
+    }
+
+    // Auto-pipeline cascade — same shape as the inline path. We read
+    // the row's `auto_pipeline` rather than the request body because
+    // the body is long gone by activation time.
+    #[derive(Deserialize)]
+    struct PipelineRow {
+        #[serde(default)]
+        auto_pipeline: Option<AutoPipelineRequest>,
+    }
+    let rows: Vec<PipelineRow> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT auto_pipeline FROM audiobook:`{audiobook_id}`"
+        ))
+        .await
+        .map_err(|e| Error::Database(format!("kick_off load auto_pipeline: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("kick_off load auto_pipeline (decode): {e}")))?;
+    let pipeline = rows.into_iter().next().and_then(|r| r.auto_pipeline);
+    if let Some(pipeline) = pipeline {
+        if pipeline.chapters {
+            let req = EnqueueRequest::new(JobKind::Chapters)
+                .with_user(user_id.clone())
+                .with_audiobook(AudiobookId(audiobook_id.to_string()));
+            if let Err(e) = state.jobs().enqueue(req).await {
+                warn!(
+                    error = %e,
+                    audiobook_id,
+                    "queue activate: enqueue chapters failed"
+                );
+            }
+        }
+        // Skip cover when a saved cover already exists on disk — the
+        // user uploaded one at create time.
+        if pipeline.cover && book.cover_path.is_none() {
+            let req = EnqueueRequest::new(JobKind::Cover)
+                .with_user(user_id.clone())
+                .with_audiobook(AudiobookId(audiobook_id.to_string()))
+                .with_max_attempts(5);
+            if let Err(e) = state.jobs().enqueue(req).await {
+                warn!(
+                    error = %e,
+                    audiobook_id,
+                    "queue activate: enqueue cover failed"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn load_chapter_by_number(state: &AppState, audiobook_id: &str, n: i64) -> Result<DbChapter> {

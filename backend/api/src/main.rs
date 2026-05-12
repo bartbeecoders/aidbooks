@@ -136,6 +136,7 @@ async fn run(config: Config) -> anyhow::Result<()> {
         WorkerConfig::default().with_animate_concurrency(config.animate_concurrency as usize);
     let worker_handle = runtime::spawn(worker_ctx, registry, worker_cfg).await;
     let gc_scheduler = spawn_gc_scheduler(job_repo.clone());
+    let queue_runner = handlers::queue::spawn_queue_runner(app_state.clone());
 
     let router = app::build_router(app_state);
 
@@ -153,6 +154,7 @@ async fn run(config: Config) -> anyhow::Result<()> {
 
     tracing::info!("draining jobs...");
     gc_scheduler.abort();
+    queue_runner.abort();
     worker_handle.shutdown().await;
     Ok(())
 }

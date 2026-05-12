@@ -3886,6 +3886,147 @@
         ]
       }
     },
+    "/queue": {
+      "get": {
+        "tags": [
+          "queue"
+        ],
+        "operationId": "list",
+        "responses": {
+          "200": {
+            "description": "Caller's queue",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthenticated"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "queue"
+        ],
+        "operationId": "clear",
+        "responses": {
+          "204": {
+            "description": "Pending items cleared"
+          },
+          "401": {
+            "description": "Unauthenticated"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/queue/advance": {
+      "post": {
+        "tags": [
+          "queue"
+        ],
+        "operationId": "advance",
+        "responses": {
+          "204": {
+            "description": "Runner tick triggered"
+          },
+          "401": {
+            "description": "Unauthenticated"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/queue/pause": {
+      "post": {
+        "tags": [
+          "queue"
+        ],
+        "operationId": "pause",
+        "responses": {
+          "204": {
+            "description": "Queue paused"
+          },
+          "401": {
+            "description": "Unauthenticated"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/queue/resume": {
+      "post": {
+        "tags": [
+          "queue"
+        ],
+        "operationId": "resume",
+        "responses": {
+          "204": {
+            "description": "Queue resumed"
+          },
+          "401": {
+            "description": "Unauthenticated"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
+    "/queue/{item_id}/cancel": {
+      "post": {
+        "tags": [
+          "queue"
+        ],
+        "operationId": "cancel_item",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Item cancelled"
+          },
+          "404": {
+            "description": "Item not found"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/ready": {
       "get": {
         "tags": [
@@ -5120,6 +5261,13 @@
             ],
             "description": "Pin a specific LLM (`llm:<id>`) for cover + chapter art generation.\n`None` falls back to whichever model is marked default-for cover_art."
           },
+          "enqueue": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "When `true`, the audiobook is created in `draft` state and\nappended to the user's generation queue instead of running the\noutline + cascade inline. The queue runner activates the row\nlater, one book at a time. See `handlers::queue`."
+          },
           "genre": {
             "type": [
               "string",
@@ -5442,6 +5590,18 @@
           },
           "reachable": {
             "type": "boolean"
+          }
+        }
+      },
+      "EnqueueAudiobookRequest": {
+        "type": "object",
+        "description": "Body shape for `POST /audiobook { enqueue: true }` — the audiobook\nis created in `draft` and appended to the queue, instead of running\nthe inline outline + cascade. Kept here so the OpenAPI surface for\nthe queue feature is self-contained even though no current endpoint\nreceives this exact body.",
+        "required": [
+          "audiobook_id"
+        ],
+        "properties": {
+          "audiobook_id": {
+            "type": "string"
           }
         }
       },
@@ -6534,6 +6694,127 @@
           },
           "publication_id": {
             "type": "string"
+          }
+        }
+      },
+      "QueueItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "position",
+          "state",
+          "audiobook_id",
+          "title",
+          "topic",
+          "is_short",
+          "is_songbook",
+          "audiobook_status",
+          "step",
+          "progress_pct",
+          "cost_usd",
+          "queued_at"
+        ],
+        "properties": {
+          "audiobook_id": {
+            "type": "string"
+          },
+          "audiobook_status": {
+            "type": "string"
+          },
+          "cost_usd": {
+            "type": "number",
+            "format": "double"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_short": {
+            "type": "boolean"
+          },
+          "is_songbook": {
+            "type": "boolean"
+          },
+          "language": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "progress_pct": {
+            "type": "number",
+            "format": "float",
+            "description": "0..100 — newest live job's progress when one is in flight,\nelse an estimate based on the audiobook's status."
+          },
+          "queued_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "state": {
+            "$ref": "#/components/schemas/QueueItemState"
+          },
+          "step": {
+            "type": "string",
+            "description": "Human-readable label for the current pipeline step (e.g.\n\"outline\", \"writing chapters\", \"narrating\", \"done\", \"draft\")."
+          },
+          "title": {
+            "type": "string"
+          },
+          "topic": {
+            "type": "string"
+          }
+        }
+      },
+      "QueueItemState": {
+        "type": "string",
+        "enum": [
+          "queued",
+          "running",
+          "paused",
+          "completed",
+          "failed",
+          "cancelled"
+        ]
+      },
+      "QueueResponse": {
+        "type": "object",
+        "required": [
+          "paused",
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueueItem"
+            }
+          },
+          "paused": {
+            "type": "boolean"
           }
         }
       },
@@ -8202,6 +8483,10 @@
     {
       "name": "podcasts",
       "description": "Podcasts: owner-scoped audiobook groupings with AI cover art."
+    },
+    {
+      "name": "queue",
+      "description": "Sequential multi-audiobook generation queue (one book at a time per user)."
     },
     {
       "name": "ideas",

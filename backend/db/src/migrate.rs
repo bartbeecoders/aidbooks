@@ -201,6 +201,10 @@ const MIGRATIONS: &[Migration] = &[
         name: "0046_audiobook_short_backfill",
         sql: include_str!("../migrations/0046_audiobook_short_backfill.surql"),
     },
+    Migration {
+        name: "0047_audiobook_queue",
+        sql: include_str!("../migrations/0047_audiobook_queue.surql"),
+    },
 ];
 
 /// Run any pending migrations. Safe to call on every startup.

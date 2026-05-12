@@ -43,6 +43,9 @@ use crate::handlers::integrations::{
     PublicationVideoRow, PublishYoutubeRequest, PublishYoutubeResponse, YoutubeAccountStatus,
 };
 use crate::handlers::jobs::AudiobookJobList;
+use crate::handlers::queue::{
+    EnqueueAudiobookRequest, QueueItem, QueueItemState, QueueResponse,
+};
 use crate::handlers::me::{MeResponse, UpdateMeRequest};
 use crate::handlers::podcasts::{
     CreatePodcastRequest, PodcastList, PodcastRow, PreviewPodcastImageRequest,
@@ -134,6 +137,13 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         crate::handlers::admin::update_audiobook_category,
         crate::handlers::admin::delete_audiobook_category,
         crate::handlers::catalog::list_audiobook_categories,
+        // --- Multi-audiobook queue ---
+        crate::handlers::queue::list,
+        crate::handlers::queue::pause,
+        crate::handlers::queue::resume,
+        crate::handlers::queue::advance,
+        crate::handlers::queue::clear,
+        crate::handlers::queue::cancel_item,
         // --- Analytics dashboard ---
         crate::handlers::analytics::generation,
         crate::handlers::analytics::youtube_channel,
@@ -265,6 +275,11 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         UpdateAudiobookCategoryRequest,
         AudiobookCategoryName,
         AudiobookCategoryNameList,
+        // queue
+        EnqueueAudiobookRequest,
+        QueueItem,
+        QueueItemState,
+        QueueResponse,
         // analytics dashboard
         GenerationPoint,
         GenerationSeries,
@@ -318,6 +333,7 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         (name = "integrations", description = "Third-party integrations (YouTube publishing)."),
         (name = "analytics", description = "Owner-scoped dashboard: generation + YouTube performance."),
         (name = "podcasts", description = "Podcasts: owner-scoped audiobook groupings with AI cover art."),
+        (name = "queue", description = "Sequential multi-audiobook generation queue (one book at a time per user)."),
         (name = "ideas", description = "Audiobook idea backlog + LLM trend suggestions."),
     ),
 )]

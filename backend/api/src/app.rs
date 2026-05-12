@@ -334,6 +334,18 @@ pub fn build_router(state: AppState) -> Router {
             "/audiobook/:id/publications/:pid/preview",
             get(handlers::integrations::preview_publication),
         )
+        // --- Multi-audiobook queue ---
+        .route(
+            "/queue",
+            get(handlers::queue::list).delete(handlers::queue::clear),
+        )
+        .route("/queue/pause", post(handlers::queue::pause))
+        .route("/queue/resume", post(handlers::queue::resume))
+        .route("/queue/advance", post(handlers::queue::advance))
+        .route(
+            "/queue/:item_id/cancel",
+            post(handlers::queue::cancel_item),
+        )
         // --- Analytics dashboard ---
         .route(
             "/analytics/generation",
