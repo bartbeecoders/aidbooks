@@ -219,6 +219,13 @@ export interface AutoPipeline {
 export type CreateAudiobookRequest = S["CreateAudiobookRequest"] &
   WithArtStyle & {
     auto_pipeline?: AutoPipeline | null;
+    /**
+     * When true, the audiobook is created in `draft` state and added
+     * to the user's generation queue instead of running the outline +
+     * cascade inline. The queue runner activates the row later, one
+     * book at a time.
+     */
+    enqueue?: boolean | null;
   };
 export type UpdateAudiobookRequest = S["UpdateAudiobookRequest"] &
   WithArtStyle & {
@@ -813,6 +820,44 @@ export interface SuggestedIdea {
 
 export interface SuggestIdeasResponse {
   items: SuggestedIdea[];
+}
+
+// --- audiobook generation queue -----------------------------------------
+// Hand-written; mirrors `backend/api/src/handlers/queue.rs`.
+
+export type QueueItemState =
+  | "queued"
+  | "running"
+  | "paused"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface QueueItem {
+  id: string;
+  position: number;
+  state: QueueItemState;
+  audiobook_id: string;
+  title: string;
+  topic: string;
+  language: string | null;
+  is_short: boolean;
+  is_songbook: boolean;
+  /** Underlying audiobook status (e.g. `draft`, `audio_ready`). */
+  audiobook_status: string;
+  /** Friendly label for the current pipeline step. */
+  step: string;
+  progress_pct: number;
+  cost_usd: number;
+  error: string | null;
+  queued_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface QueueResponse {
+  paused: boolean;
+  items: QueueItem[];
 }
 
 // --- analytics dashboard ------------------------------------------------

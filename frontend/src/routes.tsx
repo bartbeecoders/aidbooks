@@ -20,6 +20,7 @@ import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
 import { NewAudiobook } from "./pages/NewAudiobook";
 import { Player } from "./pages/Player";
+import { Queue } from "./pages/Queue";
 import { Settings } from "./pages/Settings";
 import { Signup } from "./pages/Signup";
 
@@ -38,6 +39,7 @@ export const router = createBrowserRouter([
       { path: "/app/analytics", element: <Analytics /> },
       { path: "/app/ideas", element: <Ideas /> },
       { path: "/app/new", element: <NewAudiobook /> },
+      { path: "/app/queue", element: <Queue /> },
       // Library renders in both routes — `:id` selects which book is
       // shown in the right pane. Keeping the URL shape preserves
       // bookmarks and direct-link sharing.

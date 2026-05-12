@@ -272,73 +272,90 @@ export function NewAudiobook(): JSX.Element {
     return candidates[0] ?? null;
   })();
 
+  const buildCreateBody = (enqueue: boolean) => {
+    // Effective publish step is gated on the audio step + a connected
+    // YouTube channel — UI mirrors the backend's `normalise_auto_pipeline`.
+    const effectiveAudio = autoChapters && autoAudio;
+    const effectivePublish =
+      effectiveAudio && autoPublish && youtubeConnected;
+    const auto_pipeline: AutoPipeline = {
+      chapters: autoChapters,
+      cover: autoCover,
+      audio: effectiveAudio,
+      publish: effectivePublish
+        ? {
+            mode: publishMode,
+            privacy_status: publishPrivacy,
+            review: publishReview,
+            hyperframes: publishHyperframes,
+            hyperframes_steps: publishHyperframesSteps,
+          }
+        : null,
+    };
+    return {
+      topic: topic.trim(),
+      length,
+      genre: genre.trim() || undefined,
+      category: category.trim() || undefined,
+      language,
+      voice_id: voiceId ?? undefined,
+      cover_image_base64: cover?.base64,
+      art_style: artStyle || undefined,
+      cover_llm_id: coverLlmId || undefined,
+      // Paragraph slideshow tiles, both for regular books and Shorts —
+      // the publisher composites each tile onto its target aspect
+      // ratio (9:16 for Shorts, 16:9 otherwise) so the same tile
+      // count works either way.
+      images_per_paragraph:
+        autoCover && imagesPerParagraph > 0 ? imagesPerParagraph : 0,
+      is_short: isShort,
+      is_songbook: isSongbook,
+      // Snippet count is meaningful only in songbook mode; the
+      // backend rejects > 0 otherwise, so collapse it here too.
+      snippet_count: isSongbook ? snippetCount : 0,
+      // Preview adoption only fires on the inline create path — when
+      // enqueueing, outline runs much later and the preview dir may
+      // be GC'd by then, so we let the SongSnippets job re-fetch.
+      preview_id:
+        !enqueue &&
+        isSongbook &&
+        snippetCount > 0 &&
+        snippetPreview?.items.length
+          ? snippetPreview.preview_id
+          : undefined,
+      auto_pipeline,
+      // Only ship the role map when multi-voice is on: an empty map
+      // with the toggle off would otherwise overwrite a future
+      // server-side default.
+      multi_voice_enabled: multiVoiceEnabled,
+      voice_roles: multiVoiceEnabled ? voiceRoles : undefined,
+      narration_style: narrationStyle,
+      narration_intensity: narrationIntensity,
+      voice_preset: voicePreset,
+      enqueue,
+    };
+  };
+
   const create = useMutation({
-    mutationFn: () => {
-      // Effective publish step is gated on the audio step + a connected
-      // YouTube channel — UI mirrors the backend's `normalise_auto_pipeline`.
-      const effectiveAudio = autoChapters && autoAudio;
-      const effectivePublish =
-        effectiveAudio && autoPublish && youtubeConnected;
-      const auto_pipeline: AutoPipeline = {
-        chapters: autoChapters,
-        cover: autoCover,
-        audio: effectiveAudio,
-        publish: effectivePublish
-          ? {
-              mode: publishMode,
-              privacy_status: publishPrivacy,
-              review: publishReview,
-              hyperframes: publishHyperframes,
-              hyperframes_steps: publishHyperframesSteps,
-            }
-          : null,
-      };
-      return audiobooks.create({
-        topic: topic.trim(),
-        length,
-        genre: genre.trim() || undefined,
-        category: category.trim() || undefined,
-        language,
-        voice_id: voiceId ?? undefined,
-        cover_image_base64: cover?.base64,
-        art_style: artStyle || undefined,
-        cover_llm_id: coverLlmId || undefined,
-        // Paragraph slideshow tiles, both for regular books and Shorts —
-        // the publisher composites each tile onto its target aspect
-        // ratio (9:16 for Shorts, 16:9 otherwise) so the same tile
-        // count works either way.
-        images_per_paragraph:
-          autoCover && imagesPerParagraph > 0 ? imagesPerParagraph : 0,
-        is_short: isShort,
-        is_songbook: isSongbook,
-        // Snippet count is meaningful only in songbook mode; the
-        // backend rejects > 0 otherwise, so collapse it here too.
-        snippet_count: isSongbook ? snippetCount : 0,
-        // When the user previewed and the form hasn't drifted, hand
-        // the backend that preview's id so it can adopt the exact
-        // WAVs the user heard instead of running a fresh Tinyfish
-        // search (which can land on a different YouTube video).
-        preview_id:
-          isSongbook && snippetCount > 0 && snippetPreview?.items.length
-            ? snippetPreview.preview_id
-            : undefined,
-        auto_pipeline,
-        // Only ship the role map when multi-voice is on: an empty map
-        // with the toggle off would otherwise overwrite a future
-        // server-side default.
-        multi_voice_enabled: multiVoiceEnabled,
-        voice_roles: multiVoiceEnabled ? voiceRoles : undefined,
-        narration_style: narrationStyle,
-        narration_intensity: narrationIntensity,
-        voice_preset: voicePreset,
-      });
-    },
+    mutationFn: () => audiobooks.create(buildCreateBody(false)),
     onSuccess: (book) => {
       qc.invalidateQueries({ queryKey: ["audiobooks"] });
       navigate(`/app/book/${book.id}`);
     },
     onError: (err) => {
       setError(err instanceof ApiError ? err.message : "Could not create audiobook");
+    },
+  });
+
+  const enqueue = useMutation({
+    mutationFn: () => audiobooks.create(buildCreateBody(true)),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["audiobooks"] });
+      qc.invalidateQueries({ queryKey: ["queue"] });
+      navigate(`/app/queue`);
+    },
+    onError: (err) => {
+      setError(err instanceof ApiError ? err.message : "Could not add to queue");
     },
   });
 
@@ -803,9 +820,37 @@ export function NewAudiobook(): JSX.Element {
         />
 
         {error && <p className="text-sm text-rose-400">{error}</p>}
-        <button type="submit" disabled={create.isPending} className={primaryBtn}>
-          {submitLabel}
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="submit"
+            disabled={create.isPending || enqueue.isPending}
+            className={primaryBtn}
+          >
+            {submitLabel}
+          </button>
+          <button
+            type="button"
+            disabled={
+              create.isPending || enqueue.isPending || topic.trim().length < 3
+            }
+            onClick={() => {
+              setError(null);
+              enqueue.mutate();
+            }}
+            className="rounded-md border border-amber-700 bg-amber-700/10 px-4 py-2 text-sm font-medium text-amber-100 hover:border-amber-500 hover:bg-amber-700/20 disabled:cursor-not-allowed disabled:opacity-50"
+            title="Create the audiobook in draft state and queue it. The queue runs one book at a time."
+          >
+            {enqueue.isPending ? "Queueing…" : "Add to queue"}
+          </button>
+          <p className="text-[11px] text-slate-500">
+            Queueing skips the inline outline and saves the request for
+            later. View the queue under{" "}
+            <Link to="/app/queue" className="underline hover:text-slate-300">
+              Queue
+            </Link>
+            .
+          </p>
+        </div>
       </form>
     </section>
   );

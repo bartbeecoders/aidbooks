@@ -83,6 +83,7 @@ import type {
   YoutubeChannelSummary,
   YoutubeVideoList,
   YoutubeReport,
+  QueueResponse,
 } from "./types";
 
 export { ApiError } from "./client";
@@ -454,6 +455,29 @@ export const integrations = {
         { method: "POST" },
       ),
   },
+};
+
+// --- generation queue ---------------------------------------------------
+
+export const queue = {
+  /** Pull the current queue (per-user, sequential). */
+  list: () => apiFetch<QueueResponse>("/queue"),
+  /** Stop activating new items. The running item keeps going. */
+  pause: () => apiFetch<void>("/queue/pause", { method: "POST" }),
+  /** Re-enable activation; the runner also gets poked immediately. */
+  resume: () =>
+    apiFetch<void>("/queue/resume", { method: "POST" }).then(() =>
+      apiFetch<void>("/queue/advance", { method: "POST" }),
+    ),
+  /** Cancel one item — drops it if queued, kills its live jobs if running. */
+  cancel: (itemId: string) =>
+    apiFetch<void>(`/queue/${encodeURIComponent(itemId)}/cancel`, {
+      method: "POST",
+    }),
+  /** Drop every queued item (the running one is left alone). */
+  clear: () => apiFetch<void>("/queue", { method: "DELETE" }),
+  /** Kick the runner — useful right after the user removes a stuck item. */
+  advance: () => apiFetch<void>("/queue/advance", { method: "POST" }),
 };
 
 // --- analytics ---------------------------------------------------------

@@ -1327,6 +1327,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list"];
+        put?: never;
+        post?: never;
+        delete: operations["clear"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/queue/advance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["advance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/queue/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["pause"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/queue/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["resume"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/queue/{item_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["cancel_item"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ready": {
         parameters: {
             query?: never;
@@ -1872,6 +1952,13 @@ export interface components {
              *     `None` falls back to whichever model is marked default-for cover_art.
              */
             cover_llm_id?: string | null;
+            /**
+             * @description When `true`, the audiobook is created in `draft` state and
+             *     appended to the user's generation queue instead of running the
+             *     outline + cascade inline. The queue runner activates the row
+             *     later, one book at a time. See `handlers::queue`.
+             */
+            enqueue?: boolean | null;
             genre?: string | null;
             /**
              * Format: int32
@@ -2026,6 +2113,16 @@ export interface components {
         DbReadiness: {
             path: string;
             reachable: boolean;
+        };
+        /**
+         * @description Body shape for `POST /audiobook { enqueue: true }` — the audiobook
+         *     is created in `draft` and appended to the queue, instead of running
+         *     the inline outline + cascade. Kept here so the OpenAPI surface for
+         *     the queue feature is self-contained even though no current endpoint
+         *     receives this exact body.
+         */
+        EnqueueAudiobookRequest: {
+            audiobook_id: string;
         };
         /**
          * @description Wire-format error body. Returned by the API layer for every non-2xx
@@ -2473,6 +2570,45 @@ export interface components {
         PublishYoutubeResponse: {
             job_id: string;
             publication_id: string;
+        };
+        QueueItem: {
+            audiobook_id: string;
+            audiobook_status: string;
+            /** Format: double */
+            cost_usd: number;
+            error?: string | null;
+            /** Format: date-time */
+            finished_at?: string | null;
+            id: string;
+            is_short: boolean;
+            is_songbook: boolean;
+            language?: string | null;
+            /** Format: int32 */
+            position: number;
+            /**
+             * Format: float
+             * @description 0..100 — newest live job's progress when one is in flight,
+             *     else an estimate based on the audiobook's status.
+             */
+            progress_pct: number;
+            /** Format: date-time */
+            queued_at: string;
+            /** Format: date-time */
+            started_at?: string | null;
+            state: components["schemas"]["QueueItemState"];
+            /**
+             * @description Human-readable label for the current pipeline step (e.g.
+             *     "outline", "writing chapters", "narrating", "done", "draft").
+             */
+            step: string;
+            title: string;
+            topic: string;
+        };
+        /** @enum {string} */
+        QueueItemState: "queued" | "running" | "paused" | "completed" | "failed" | "cancelled";
+        QueueResponse: {
+            items: components["schemas"]["QueueItem"][];
+            paused: boolean;
         };
         RandomTopicRequest: {
             /**
@@ -6501,6 +6637,160 @@ export interface operations {
             };
             /** @description Upstream YouTube error */
             502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Caller's queue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QueueResponse"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    clear: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pending items cleared */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    advance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Runner tick triggered */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    pause: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Queue paused */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    resume: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Queue resumed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancel_item: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Item cancelled */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Item not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
