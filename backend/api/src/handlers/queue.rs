@@ -839,19 +839,19 @@ async fn try_activate_next(state: &AppState, user_id: &UserId) -> Result<()> {
     let item_id = item.raw_id();
     let book_id = item.audiobook_raw();
 
-    // Atomically flip queued → running. Using a conditional UPDATE on
-    // the state column protects against a second runner instance
-    // racing us (in the singleton case there's only one, but the
-    // check costs nothing and makes the intent explicit).
-    let claimed: Vec<(String,)> = state
+    // Atomically flip queued → running. The conditional `WHERE` makes
+    // this idempotent against a racing claim — only one runner will
+    // see a non-empty result vector. SurrealDB's `RETURN AFTER` (the
+    // default for UPDATE) returns the updated rows; we only need the
+    // non-empty check, not the contents.
+    let claimed: Vec<DbQueueItem> = state
         .db()
         .inner()
         .query(format!(
             "UPDATE audiobook_queue:`{item_id}` SET \
                 state = 'running', \
                 started_at = time::now() \
-             WHERE state = 'queued' \
-             RETURN AFTER VALUE state"
+             WHERE state = 'queued'"
         ))
         .await
         .map_err(|e| Error::Database(format!("queue activate claim: {e}")))?
