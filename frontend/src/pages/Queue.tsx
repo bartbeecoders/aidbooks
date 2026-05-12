@@ -52,6 +52,10 @@ export function Queue(): JSX.Element {
     mutationFn: (id: string) => queue.retry(id),
     onSuccess: invalidate,
   });
+  const remove = useMutation({
+    mutationFn: (id: string) => queue.remove(id),
+    onSuccess: invalidate,
+  });
 
   const data = q.data;
   const items = data?.items ?? [];
@@ -136,6 +140,7 @@ export function Queue(): JSX.Element {
             item={running}
             onCancel={() => cancel.mutate(running.id)}
             onRetry={null}
+            onRemove={null}
             retrying={false}
           />
         </QueueSection>
@@ -149,6 +154,7 @@ export function Queue(): JSX.Element {
               item={it}
               onCancel={() => cancel.mutate(it.id)}
               onRetry={null}
+              onRemove={() => remove.mutate(it.id)}
               retrying={false}
             />
           ))}
@@ -167,6 +173,7 @@ export function Queue(): JSX.Element {
                   ? () => retry.mutate(it.id)
                   : null
               }
+              onRemove={() => remove.mutate(it.id)}
               retrying={retry.isPending && retry.variables === it.id}
             />
           ))}
@@ -212,11 +219,13 @@ function QueueRow({
   item,
   onCancel,
   onRetry,
+  onRemove,
   retrying,
 }: {
   item: QueueItem;
   onCancel: (() => void) | null;
   onRetry: (() => void) | null;
+  onRemove: (() => void) | null;
   retrying: boolean;
 }): JSX.Element {
   const isLive = item.state === "queued" || item.state === "running";
@@ -250,10 +259,10 @@ function QueueRow({
         <div className="flex shrink-0 items-center gap-2">
           <Link
             to={`/app/book/${item.audiobook_id}`}
-            className="rounded-md border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs text-slate-300 hover:border-slate-600 hover:text-slate-100"
-            title="Open the book detail + logs"
+            className="rounded-md border border-sky-700 bg-sky-700/10 px-2.5 py-1 text-xs font-medium text-sky-200 hover:border-sky-500"
+            title="Open the audiobook detail page (chapters, audio, logs, settings)"
           >
-            Logs
+            Detail
           </Link>
           {onRetry && (
             <button
@@ -272,15 +281,32 @@ function QueueRow({
                   window.confirm(
                     item.state === "running"
                       ? "Cancel the currently-running generation? Live jobs will be killed."
-                      : "Remove this item from the queue?",
+                      : "Stop this queued item? It'll move to history as cancelled.",
                   )
                 ) {
                   onCancel();
                 }
               }}
-              className="rounded-md border border-rose-700 bg-rose-700/10 px-2.5 py-1 text-xs font-medium text-rose-200 hover:border-rose-500"
+              className="rounded-md border border-amber-700 bg-amber-700/10 px-2.5 py-1 text-xs font-medium text-amber-200 hover:border-amber-500"
             >
               Cancel
+            </button>
+          )}
+          {onRemove && (
+            <button
+              onClick={() => {
+                if (
+                  window.confirm(
+                    "Delete this row from the queue? The audiobook itself stays — open Detail and delete it from there to remove the book.",
+                  )
+                ) {
+                  onRemove();
+                }
+              }}
+              className="rounded-md border border-rose-700 bg-rose-700/10 px-2.5 py-1 text-xs font-medium text-rose-200 hover:border-rose-500"
+              title="Remove this row from the queue. The audiobook itself isn't deleted."
+            >
+              Remove
             </button>
           )}
         </div>

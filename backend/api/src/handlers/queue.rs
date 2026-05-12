@@ -356,6 +356,49 @@ pub async fn cancel_item(
 }
 
 #[utoipa::path(
+    delete,
+    path = "/queue/{item_id}",
+    tag = "queue",
+    params(("item_id" = String, Path)),
+    responses(
+        (status = 204, description = "Item removed"),
+        (status = 404, description = "Item not found"),
+        (status = 409, description = "Item is currently running")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn remove_item(
+    State(state): State<AppState>,
+    Authenticated(user): Authenticated,
+    Path(item_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let item = load_item(&state, &item_id).await?;
+    if item.owner.id.to_raw() != user.id.0 {
+        return Err(Error::NotFound {
+            resource: format!("audiobook_queue:{item_id}"),
+        }
+        .into());
+    }
+    // Running items have live jobs we'd orphan; force the user
+    // through cancel first so we can shut the jobs down cleanly.
+    if QueueItemState::parse(&item.state) == Some(QueueItemState::Running) {
+        return Err(Error::Conflict(
+            "item is running — cancel it first, then remove".into(),
+        )
+        .into());
+    }
+    state
+        .db()
+        .inner()
+        .query(format!("DELETE audiobook_queue:`{item_id}`"))
+        .await
+        .map_err(|e| Error::Database(format!("queue remove: {e}")))?
+        .check()
+        .map_err(|e| Error::Database(format!("queue remove: {e}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
     post,
     path = "/queue/{item_id}/retry",
     tag = "queue",

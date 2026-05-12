@@ -481,6 +481,12 @@ export const queue = {
     apiFetch<void>(`/queue/${encodeURIComponent(itemId)}/retry`, {
       method: "POST",
     }),
+  /** Hard-delete a queue row. 409s if the item is currently running —
+   * the caller must cancel first so live jobs are shut down cleanly. */
+  remove: (itemId: string) =>
+    apiFetch<void>(`/queue/${encodeURIComponent(itemId)}`, {
+      method: "DELETE",
+    }),
   /** Drop every queued item (the running one is left alone). */
   clear: () => apiFetch<void>("/queue", { method: "DELETE" }),
   /** Kick the runner — useful right after the user removes a stuck item. */

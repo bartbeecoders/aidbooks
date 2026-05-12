@@ -3996,6 +3996,40 @@
         ]
       }
     },
+    "/queue/{item_id}": {
+      "delete": {
+        "tags": [
+          "queue"
+        ],
+        "operationId": "remove_item",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Item removed"
+          },
+          "404": {
+            "description": "Item not found"
+          },
+          "409": {
+            "description": "Item is currently running"
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ]
+      }
+    },
     "/queue/{item_id}/cancel": {
       "post": {
         "tags": [

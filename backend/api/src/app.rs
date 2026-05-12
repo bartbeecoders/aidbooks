@@ -343,6 +343,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/queue/resume", post(handlers::queue::resume))
         .route("/queue/advance", post(handlers::queue::advance))
         .route(
+            "/queue/:item_id",
+            axum::routing::delete(handlers::queue::remove_item),
+        )
+        .route(
             "/queue/:item_id/cancel",
             post(handlers::queue::cancel_item),
         )
