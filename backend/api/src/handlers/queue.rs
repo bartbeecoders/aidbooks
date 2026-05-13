@@ -882,14 +882,161 @@ async fn try_settle_running(state: &AppState, user_id: &UserId) -> Result<()> {
         .next()
         .map(|(s,)| s)
         .unwrap_or_else(|| "failed".into());
+    // The queue row's `error` may already be populated by
+    // `kick_off_pipeline`'s catch-block before this tick runs (race:
+    // activation spawns a detached task that flips state→failed +
+    // writes the real outline/cascade error). When that's the case we
+    // must NOT clobber it — that's the most specific message we have.
+    let existing_error = item.error.clone();
+    let preserved_existing = existing_error
+        .as_ref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+
+    // In-progress audiobook statuses — the pipeline is still working,
+    // just not via a `job` row this instant. Outline runs synchronously
+    // inside `kick_off_pipeline`'s spawned task (no job row) and sets
+    // `audiobook.status = "outline_pending"` for the duration. Similar
+    // gaps exist around chapter cascade hops. Settling here would kill
+    // a perfectly healthy run mid-flight.
+    //
+    // We trust the actual failure paths to flip status to `failed`
+    // (outline.rs:145/167, chapter.rs:95, jobs/handlers.rs:805, …) or
+    // to a terminal-ready state. The settler's job is to react to
+    // those transitions, not to invent them.
+    if matches!(
+        status.as_str(),
+        "outline_pending" | "chapters_running"
+    ) {
+        return Ok(());
+    }
+
+    let activated_for = item
+        .started_at
+        .map(|t| (chrono::Utc::now() - t).num_seconds())
+        .unwrap_or(0);
+
+    // Post-activation grace: kick_off_pipeline is a detached task and
+    // hasn't necessarily reached `set_audiobook_status` yet. During
+    // this window the audiobook may still carry stale state from a
+    // prior run (most commonly `failed` after a /queue/{id}/retry, but
+    // also `draft` between activation and the first status mutation).
+    // Settling here would clobber a healthy retry on its first tick.
+    //
+    // Terminal-success statuses bypass the grace: outline_ready /
+    // text_ready / audio_ready are reliably set by the actual pipeline
+    // — there's no risk of them being stale.
+    const POST_ACTIVATION_GRACE_SECS: i64 = 30;
+    let terminal_ok = matches!(
+        status.as_str(),
+        "outline_ready" | "text_ready" | "audio_ready"
+    );
+    if !terminal_ok && activated_for < POST_ACTIVATION_GRACE_SECS {
+        return Ok(());
+    }
+
+    // Brief window between queue activation (state=running set) and
+    // the outline task setting status=outline_pending. Audiobook is
+    // still in `draft`. Same logic — don't settle yet, but cap the
+    // wait so a crashed activation doesn't pin the queue forever.
+    if status == "draft" {
+        const DRAFT_GRACE_SECS: i64 = 600;
+        if activated_for < DRAFT_GRACE_SECS {
+            return Ok(());
+        }
+        // Past the grace window: the activation task is dead. Settle
+        // as failed using whatever diagnostics are available.
+        if preserved_existing {
+            let msg = existing_error.clone().unwrap();
+            warn!(
+                user = user_id.0,
+                queue_item = item_id,
+                audiobook = book_id,
+                status = "draft",
+                activated_for,
+                error = msg.as_str(),
+                "queue settle: draft grace exceeded, preserving existing error",
+            );
+            return write_settled(state, &item_id, "failed", Some(msg)).await;
+        }
+        let detail = match summarise_failed_jobs(state, &book_id).await {
+            Some(d) => Some(d),
+            None => latest_generation_error(state, &book_id).await,
+        };
+        let fallback = detail
+            .map(|d| format!(
+                "audiobook never left draft after {activated_for}s — \
+                 activation likely crashed. {d}"
+            ))
+            .unwrap_or_else(|| {
+                format!(
+                    "audiobook never left draft after {activated_for}s — \
+                     activation task likely crashed (no diagnostics \
+                     persisted; check api logs around the queue \
+                     activation for this item)"
+                )
+            });
+        warn!(
+            user = user_id.0,
+            queue_item = item_id,
+            audiobook = book_id,
+            status = "draft",
+            activated_for,
+            error = fallback.as_str(),
+            "queue settle: draft grace exceeded, marking as failed",
+        );
+        return write_settled(state, &item_id, "failed", Some(fallback)).await;
+    }
+
     let (new_state, err) = match status.as_str() {
         "outline_ready" | "text_ready" | "audio_ready" => ("completed", None),
-        "draft" => (
-            "failed",
-            Some("audiobook never left draft — outline likely failed".to_string()),
-        ),
-        _ => ("failed", Some(format!("audiobook status = {status}"))),
+        _ => {
+            // status == "failed" (most common) or any unexpected
+            // non-terminal status we couldn't classify.
+            //
+            // Order of preference for the error message:
+            //   1. queue row's existing `error` (written by the
+            //      kick_off_pipeline catch-block — most specific).
+            //   2. summarise_failed_jobs (per-job last_error rows).
+            //   3. latest generation_event with error != none
+            //      (catches synchronous LLM failures from outline).
+            //   4. generic "no diagnostics" message.
+            let msg = if preserved_existing {
+                existing_error.clone().unwrap()
+            } else if let Some(jobs) = summarise_failed_jobs(state, &book_id).await {
+                format!("audiobook status = {status}. {jobs}")
+            } else if let Some(gen_err) = latest_generation_error(state, &book_id).await {
+                format!("audiobook status = {status}. {gen_err}")
+            } else {
+                format!(
+                    "audiobook status = {status} (no failed-job rows or \
+                     generation events with errors found — the failure \
+                     likely happened in a synchronous step that did not \
+                     persist its error; check api logs around the \
+                     activation of queue_item={item_id})"
+                )
+            };
+            warn!(
+                user = user_id.0,
+                queue_item = item_id,
+                audiobook = book_id,
+                status = status.as_str(),
+                error = msg.as_str(),
+                preserved_existing,
+                "queue settle: marking as failed",
+            );
+            ("failed", Some(msg))
+        }
     };
+    write_settled(state, &item_id, new_state, err).await
+}
+
+async fn write_settled(
+    state: &AppState,
+    item_id: &str,
+    new_state: &str,
+    err: Option<String>,
+) -> Result<()> {
     let sql = format!(
         "UPDATE audiobook_queue:`{item_id}` SET \
             state = $state, \
@@ -907,6 +1054,122 @@ async fn try_settle_running(state: &AppState, user_id: &UserId) -> Result<()> {
         .check()
         .map_err(|e| Error::Database(format!("queue settle update: {e}")))?;
     Ok(())
+}
+
+/// Inspect the `job` table for failed/dead rows tied to this audiobook
+/// and return a compact human-readable summary suitable for the queue
+/// row's `error` field (and operator logs).
+///
+/// Returns `None` when no failed/dead jobs exist — caller decides what
+/// to say in that case. The summary is bounded so a chapter cascade
+/// with 30 failed chapter jobs doesn't blow up the column: we report
+/// up to 5 distinct (kind, chapter) lines, prefixed with the total
+/// count.
+async fn summarise_failed_jobs(state: &AppState, audiobook_id: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct FailedJob {
+        kind: String,
+        #[serde(default)]
+        status: Option<String>,
+        #[serde(default)]
+        chapter_number: Option<i64>,
+        #[serde(default)]
+        attempts: Option<i64>,
+        #[serde(default)]
+        max_attempts: Option<i64>,
+        #[serde(default)]
+        last_error: Option<String>,
+    }
+    let rows: Vec<FailedJob> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT kind, status, chapter_number, attempts, \
+                    max_attempts, last_error \
+             FROM job \
+             WHERE audiobook = audiobook:`{audiobook_id}` \
+               AND status IN ['failed', 'dead'] \
+             ORDER BY finished_at DESC LIMIT 20"
+        ))
+        .await
+        .and_then(|mut r| r.take(0))
+        .ok()?;
+    if rows.is_empty() {
+        return None;
+    }
+    let total = rows.len();
+    let lines: Vec<String> = rows
+        .iter()
+        .take(5)
+        .map(|j| {
+            let mut who = j.kind.clone();
+            if let Some(n) = j.chapter_number {
+                who.push_str(&format!(" (ch {n})"));
+            }
+            let attempts = match (j.attempts, j.max_attempts) {
+                (Some(a), Some(m)) => format!(" [attempts {a}/{m}]"),
+                _ => String::new(),
+            };
+            let status = j.status.as_deref().unwrap_or("failed");
+            let err = j
+                .last_error
+                .as_deref()
+                .map(|s| truncate(s, 240))
+                .unwrap_or("(no last_error)");
+            format!("- {who} [{status}]{attempts}: {err}")
+        })
+        .collect();
+    let suffix = if total > 5 {
+        format!("\n…and {} more failed/dead job(s).", total - 5)
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "{total} failed/dead job(s):\n{}{suffix}",
+        lines.join("\n")
+    ))
+}
+
+fn truncate(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    // Slice on a char boundary so we don't panic on multi-byte chars.
+    let mut end = max;
+    while !s.is_char_boundary(end) && end > 0 {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Look at the most recent `generation_event` rows for this audiobook
+/// and return the newest one whose `error` field is populated. Our
+/// fallback diagnostic for synchronous LLM/parse failures that don't
+/// create a `job` row (most notably outline).
+async fn latest_generation_error(state: &AppState, audiobook_id: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct EventRow {
+        #[serde(default)]
+        role: Option<String>,
+        #[serde(default)]
+        error: Option<String>,
+    }
+    let rows: Vec<EventRow> = state
+        .db()
+        .inner()
+        .query(format!(
+            "SELECT role, error FROM generation_event \
+             WHERE audiobook = audiobook:`{audiobook_id}` \
+               AND error != NONE \
+             ORDER BY created_at DESC LIMIT 1"
+        ))
+        .await
+        .and_then(|mut r| r.take(0))
+        .ok()?;
+    let row = rows.into_iter().next()?;
+    let role = row.role.as_deref().unwrap_or("generation");
+    let err = row.error.as_deref()?;
+    Some(format!("{role} error: {}", truncate(err, 600)))
 }
 
 /// Pick the next `queued` item (lowest position) and activate it by
@@ -987,8 +1250,14 @@ async fn try_activate_next(state: &AppState, user_id: &UserId) -> Result<()> {
         match audiobook::kick_off_pipeline(&state_clone, &user_id_clone, &book_id_clone).await {
             Ok(()) => {}
             Err(e) => {
-                warn!(error = %e, audiobook = book_id_clone, "queue activation: kick_off_pipeline failed");
-                let msg = format!("{e}");
+                let msg = format!("kick_off_pipeline failed: {e}");
+                warn!(
+                    user = user_id_clone.0,
+                    queue_item = item_id_clone,
+                    audiobook = book_id_clone,
+                    error = %e,
+                    "queue activation: kick_off_pipeline failed",
+                );
                 let _ = state_clone
                     .db()
                     .inner()

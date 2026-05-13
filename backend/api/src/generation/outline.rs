@@ -142,6 +142,35 @@ pub async fn run(
     let response = match state.llm().chat(&req).await {
         Ok(r) => r,
         Err(e) => {
+            // Persist the upstream LLM error so the queue settler (and
+            // anyone inspecting generation_event) can recover *why* the
+            // outline failed instead of seeing just status=failed.
+            let err_msg = format!("outline LLM call failed: {e}");
+            warn!(
+                audiobook = audiobook_id,
+                llm = %picked.llm_id,
+                error = %e,
+                "outline: LLM call failed"
+            );
+            // Synthetic response so we can log a generation_event with
+            // the upstream error attached. Costs are zero — we never
+            // got a billed response from the provider.
+            let synthetic = crate::llm::ChatResponse {
+                content: String::new(),
+                image_base64: None,
+                usage: crate::llm::ChatUsage::default(),
+                mocked: false,
+            };
+            let _ = log_generation_event(
+                state,
+                user,
+                Some(audiobook_id),
+                &picked.llm_id,
+                prompt_role,
+                &synthetic,
+                Some(&err_msg),
+            )
+            .await;
             set_audiobook_status(state, audiobook_id, "failed")
                 .await
                 .ok();
@@ -163,7 +192,22 @@ pub async fn run(
     let outline = match parse_outline(&response.content) {
         Ok(o) => o,
         Err(msg) => {
+            let err_msg = format!(
+                "outline parse failed: {msg}. Model produced non-JSON; \
+                 first 300 chars: {}",
+                truncate(&response.content, 300)
+            );
             warn!(content_preview = %truncate(&response.content, 300), "{OUTLINE_MODEL_FALLBACK_HINT}");
+            let _ = log_generation_event(
+                state,
+                user,
+                Some(audiobook_id),
+                &picked.llm_id,
+                prompt_role,
+                &response,
+                Some(&err_msg),
+            )
+            .await;
             set_audiobook_status(state, audiobook_id, "failed")
                 .await
                 .ok();
