@@ -51,6 +51,9 @@ use crate::handlers::podcasts::{
     CreatePodcastRequest, PodcastList, PodcastRow, PreviewPodcastImageRequest,
     PreviewPodcastImageResponse, SyncPodcastResponse, UpdatePodcastRequest,
 };
+use crate::handlers::songbook::{
+    PreviewSnippetItem, PreviewSnippetsRequest, PreviewSnippetsResponse,
+};
 use crate::handlers::topic_templates::{
     CreateTopicTemplateRequest, TopicTemplate, TopicTemplateList, UpdateTopicTemplateRequest,
 };
@@ -176,6 +179,9 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         crate::handlers::podcasts::preview_image,
         crate::handlers::podcasts::image,
         crate::handlers::podcasts::sync_youtube,
+        // --- Songbook previews ---
+        crate::handlers::songbook::preview_snippets,
+        crate::handlers::songbook::preview_audio,
         // --- Phase 9: topic templates ---
         crate::handlers::topic_templates::list_public,
         crate::handlers::topic_templates::list_admin,
@@ -312,6 +318,10 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         PreviewPodcastImageRequest,
         PreviewPodcastImageResponse,
         SyncPodcastResponse,
+        // songbook
+        PreviewSnippetsRequest,
+        PreviewSnippetItem,
+        PreviewSnippetsResponse,
         // ideas
         IdeaRow,
         IdeaList,
@@ -337,6 +347,7 @@ use crate::handlers::topics::{RandomTopicRequest, RandomTopicResponse};
         (name = "podcasts", description = "Podcasts: owner-scoped audiobook groupings with AI cover art."),
         (name = "queue", description = "Sequential multi-audiobook generation queue (one book at a time per user)."),
         (name = "ideas", description = "Audiobook idea backlog + LLM trend suggestions."),
+        (name = "songbook", description = "Songbook lyric snippet previews (Tinyfish + yt-dlp)."),
     ),
 )]
 pub struct ApiDoc;
