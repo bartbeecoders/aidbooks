@@ -205,6 +205,14 @@ pub fn build_router(state: AppState) -> Router {
             "/admin/llm/:id",
             axum::routing::patch(handlers::admin::patch_llm).delete(handlers::admin::delete_llm),
         )
+        .route(
+            "/admin/llm/:id/pull-model",
+            post(handlers::admin::pull_mold_model),
+        )
+        .route(
+            "/admin/llm/:id/unload-models",
+            post(handlers::admin::unload_mold_models),
+        )
         .route("/admin/voice", get(handlers::admin::list_voices))
         .route(
             "/admin/voice/:id",
@@ -227,6 +235,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/jobs/:id/retry", post(handlers::admin::retry_job))
         .route("/admin/jobs/:id/cancel", post(handlers::admin::cancel_job))
         .route("/admin/test/llm", post(handlers::admin::test_llm))
+        .route(
+            "/admin/test/image-llm",
+            post(handlers::admin::test_image_llm),
+        )
         .route("/admin/test/voice", post(handlers::admin::test_voice))
         .route(
             "/admin/openrouter/models",
@@ -236,6 +248,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/admin/xai/image-models",
             get(handlers::admin::list_xai_image_models),
+        )
+        .route(
+            "/admin/openai/models",
+            post(handlers::admin::list_openai_compat_models),
         )
         .route(
             "/admin/youtube-settings",

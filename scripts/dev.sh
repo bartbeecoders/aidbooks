@@ -7,9 +7,13 @@ LOG_DIR="$ROOT/.logs"
 BACKEND_PID_FILE="$PID_DIR/backend.pid"
 FRONTEND_PID_FILE="$PID_DIR/frontend.pid"
 MCP_PID_FILE="$PID_DIR/mcp.pid"
+MOLD_PID_FILE="$PID_DIR/mold.pid"
+MOLD_SERVICE_PID_FILE="$PID_DIR/mold-service.pid"
 BACKEND_LOG_FILE="$LOG_DIR/backend.log"
 FRONTEND_LOG_FILE="$LOG_DIR/frontend.log"
 MCP_LOG_FILE="$LOG_DIR/mcp.log"
+MOLD_LOG_FILE="$LOG_DIR/mold.log"
+MOLD_SERVICE_LOG_FILE="$LOG_DIR/mold-service.log"
 
 mkdir -p "$PID_DIR" "$LOG_DIR"
 
@@ -34,6 +38,24 @@ fi
 # (Authorization: Bearer <jwt> or `_token` arg).
 : "${LISTENAI_MCP_BIND:=0.0.0.0:8788}"
 export LISTENAI_MCP_BIND
+
+# Self-hosted mold image-gen server. Bound to loopback by default — the
+# admin LLM rows talk to it via `base_url`, so there's no reason to
+# expose it to the LAN unless you're sharing the GPU. Override with
+# LISTENAI_MOLD_BIND / LISTENAI_MOLD_PORT in .env to widen.
+: "${LISTENAI_MOLD_BIND:=127.0.0.1}"
+: "${LISTENAI_MOLD_PORT:=7680}"
+export LISTENAI_MOLD_BIND LISTENAI_MOLD_PORT
+
+# mold-service — AidBooks' HTTP wrapper around `mold serve`. Owns the
+# GPU semaphore, OOM cooldown, default model/steps/guidance, and the
+# 9:16 shorts policy. The backend's `llm` rows with `provider = "mold"`
+# should set `base_url = http://<bind>:<port>` here (not at mold serve
+# directly). Override the bind/port with LISTENAI_MOLD_SERVICE_BIND /
+# LISTENAI_MOLD_SERVICE_PORT in .env.
+: "${LISTENAI_MOLD_SERVICE_BIND:=127.0.0.1}"
+: "${LISTENAI_MOLD_SERVICE_PORT:=7681}"
+export LISTENAI_MOLD_SERVICE_BIND LISTENAI_MOLD_SERVICE_PORT
 
 # Phase G — Manim diagram render path (STEM only). Re-sync the venv
 # on every boot so newly-added console scripts (e.g. `listenai-manim-
@@ -120,6 +142,56 @@ sync_manim_venv() {
 
 sync_manim_venv
 
+# Lifted from `mold/scripts/examples.sh`. If `mold` is linked against a
+# different CUDA major than the system has installed (binary built against
+# CUDA 12 on a CUDA 13 host, etc.), look for a compatible libcublas
+# alongside common pip-installed nvidia packages and prepend their lib
+# dirs to LD_LIBRARY_PATH. Skipped entirely when `mold version` already
+# runs cleanly — which it does on this host today, so this is defensive.
+ensure_mold_cuda_libs() {
+    if mold version >/dev/null 2>&1; then
+        return 0
+    fi
+    local err
+    err=$(mold version 2>&1 || true)
+    [[ "$err" == *"libcublas.so."* ]] || return 0
+
+    local needed
+    needed=$(echo "$err" | grep -oE 'libcublas\.so\.[0-9]+' | head -1)
+    echo "↪ mold needs $needed — searching for a compatible copy..." >&2
+
+    local search_roots=(
+        "$HOME/.local"
+        "$HOME/miniconda3" "$HOME/anaconda3" "$HOME/.conda"
+        "/opt" "/usr/local"
+        "/run/media"
+    )
+    local found
+    found=$(find "${search_roots[@]}" -maxdepth 8 -type f -name "$needed" \
+        -path '*/nvidia/cublas/lib/*' 2>/dev/null | head -1)
+    if [ -z "$found" ]; then
+        found=$(find "${search_roots[@]}" -maxdepth 8 -type f -name "$needed" 2>/dev/null | head -1)
+    fi
+    if [ -z "$found" ]; then
+        echo "  ✗ no $needed found — mold serve will not start." >&2
+        echo "      Install a matching CUDA, or rebuild mold against the system CUDA." >&2
+        return 1
+    fi
+
+    local cublas_dir nvidia_root extra=()
+    cublas_dir=$(dirname "$found")
+    if [[ "$cublas_dir" == */nvidia/cublas/lib ]]; then
+        nvidia_root=$(dirname "$(dirname "$cublas_dir")")
+        for d in "$nvidia_root"/*/lib; do
+            [ -d "$d" ] && extra+=("$d")
+        done
+    fi
+    local prepend
+    prepend=$(IFS=:; echo "${extra[*]:-$cublas_dir}")
+    export LD_LIBRARY_PATH="$prepend${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    echo "  ✓ using $cublas_dir" >&2
+}
+
 stop_server() {
     local name="$1"
     local pid_file="$2"
@@ -151,6 +223,8 @@ stop_all() {
     stop_server "backend" "$BACKEND_PID_FILE"
     stop_server "frontend" "$FRONTEND_PID_FILE"
     stop_server "mcp" "$MCP_PID_FILE"
+    stop_server "mold-service" "$MOLD_SERVICE_PID_FILE"
+    stop_server "mold" "$MOLD_PID_FILE"
     # Belt-and-braces: anything with the same binary name that the PID file
     # didn't catch (orphan from a previous run whose shell died, or a manual
     # `cargo run` started outside this script) would still hold the RocksDB
@@ -191,6 +265,8 @@ stop_all
 : > "$BACKEND_LOG_FILE"
 : > "$FRONTEND_LOG_FILE"
 : > "$MCP_LOG_FILE"
+: > "$MOLD_LOG_FILE"
+: > "$MOLD_SERVICE_LOG_FILE"
 
 echo "Starting backend..."
 cd "$ROOT/backend"
@@ -200,6 +276,54 @@ cd "$ROOT/backend"
 BACKEND_PID=$!
 echo "$BACKEND_PID" > "$BACKEND_PID_FILE"
 echo "Backend started (PID $BACKEND_PID, logs: $BACKEND_LOG_FILE)."
+
+# Self-hosted image-gen server. Independent of the backend — the API
+# only contacts it on-demand when an `llm` row with `provider = "mold"`
+# is selected, so a failed-to-start mold doesn't break the rest of
+# dev.sh. We warm it up in parallel with the backend so model load
+# (lazy, on first request) doesn't block the first generation.
+MOLD_PID=""
+if command -v mold >/dev/null 2>&1; then
+    ensure_mold_cuda_libs
+    echo "Starting mold serve on $LISTENAI_MOLD_BIND:$LISTENAI_MOLD_PORT..."
+    cd "$ROOT"
+    {
+        mold serve \
+            --bind "$LISTENAI_MOLD_BIND" \
+            --port "$LISTENAI_MOLD_PORT" \
+            --log-format text \
+            2>&1 | tee -a "$MOLD_LOG_FILE"
+    } &
+    MOLD_PID=$!
+    echo "$MOLD_PID" > "$MOLD_PID_FILE"
+    echo "mold serve started (PID $MOLD_PID, logs: $MOLD_LOG_FILE)."
+else
+    echo "Note: mold not on PATH — skipping mold serve."
+    echo "  Image-gen via mold-provider LLM rows will fail until it's installed."
+fi
+
+# mold-service: HTTP wrapper that the backend talks to instead of
+# hitting mold serve directly. Owns the GPU semaphore + OOM cooldown +
+# default model/steps/guidance/dimensions. Skips when the crate isn't
+# present (e.g. on a clean clone before `mold-service` is added) so the
+# rest of dev.sh still works.
+MOLD_SERVICE_PID=""
+if [[ -f "$ROOT/mold-service/Cargo.toml" ]]; then
+    echo "Starting mold-service on $LISTENAI_MOLD_SERVICE_BIND:$LISTENAI_MOLD_SERVICE_PORT..."
+    cd "$ROOT/mold-service"
+    {
+        MOLD_SERVICE_BIND="$LISTENAI_MOLD_SERVICE_BIND" \
+        MOLD_SERVICE_PORT="$LISTENAI_MOLD_SERVICE_PORT" \
+        MOLD_UPSTREAM_URL="http://$LISTENAI_MOLD_BIND:$LISTENAI_MOLD_PORT" \
+            cargo run --release 2>&1 | tee -a "$MOLD_SERVICE_LOG_FILE"
+    } &
+    MOLD_SERVICE_PID=$!
+    echo "$MOLD_SERVICE_PID" > "$MOLD_SERVICE_PID_FILE"
+    echo "mold-service started (PID $MOLD_SERVICE_PID, logs: $MOLD_SERVICE_LOG_FILE)."
+    cd "$ROOT"
+else
+    echo "Note: mold-service/ not present — skipping."
+fi
 
 # The MCP server fetches /openapi.json at boot and exits fatally if the api
 # is not yet listening. Wait for the api to be reachable before launching it.
@@ -243,5 +367,15 @@ echo "Tail logs in another terminal with:"
 echo "  tail -f $BACKEND_LOG_FILE"
 echo "  tail -f $MCP_LOG_FILE"
 echo "  tail -f $FRONTEND_LOG_FILE"
+if [[ -n "$MOLD_PID" ]]; then
+    echo "  tail -f $MOLD_LOG_FILE"
+fi
+if [[ -n "$MOLD_SERVICE_PID" ]]; then
+    echo "  tail -f $MOLD_SERVICE_LOG_FILE"
+fi
 
-wait $BACKEND_PID $MCP_PID $FRONTEND_PID
+# `wait` accepts a list of PIDs but cannot take an empty arg — only
+# include each optional PID when it actually started.
+wait $BACKEND_PID $MCP_PID $FRONTEND_PID \
+    ${MOLD_PID:+$MOLD_PID} \
+    ${MOLD_SERVICE_PID:+$MOLD_SERVICE_PID}

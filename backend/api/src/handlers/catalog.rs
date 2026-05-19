@@ -437,6 +437,9 @@ fn parse_provider(s: &str) -> Result<LlmProvider> {
     Ok(match s {
         "open_router" => LlmProvider::OpenRouter,
         "xai" => LlmProvider::Xai,
+        "openai" => LlmProvider::Openai,
+        "mold" => LlmProvider::Mold,
+        "fal" => LlmProvider::Fal,
         other => return Err(Error::Database(format!("unknown provider `{other}`"))),
     })
 }

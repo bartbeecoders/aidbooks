@@ -1,14 +1,25 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { admin, ApiError } from "../../api";
 import type { AdminLlmRow } from "../../api";
 import { ErrorPane, LlmDialog, Loading, Toggle } from "./AdminLlms";
 import { useDragReorder, DRAG_HANDLE_GLYPH } from "../../lib/llm-reorder";
 
+// Format a per-image USD cost for the test result chip. Always uses 4
+// decimals so a sub-cent fal/OpenRouter call doesn't read as `$0.00`
+// and self-hosted mold rows without `cost_per_megapixel` still render
+// as `$0.0000` (admin sees the row priced at zero rather than wondering
+// if the field is missing).
+function formatTestCost(cost: number): string {
+  if (!Number.isFinite(cost) || cost <= 0) return "$0.0000";
+  return `$${cost.toFixed(4)}`;
+}
+
 export function AdminImageLlms(): JSX.Element {
   const qc = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<AdminLlmRow | null>(null);
+  const [testing, setTesting] = useState<AdminLlmRow | null>(null);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["admin", "llm"],
@@ -24,6 +35,18 @@ export function AdminImageLlms(): JSX.Element {
   const remove = useMutation({
     mutationFn: (row: AdminLlmRow) => admin.llms.remove(row.id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin", "llm"] }),
+  });
+
+  // Pull mutation is keyed on `row.id` via `variables` so we can spinner
+  // the matching row's button and show its own error inline. Mold pulls
+  // can be slow (multi-GB), so the mutation may stay pending for minutes.
+  const pull = useMutation({
+    mutationFn: (row: AdminLlmRow) => admin.llms.pullModel(row.id),
+  });
+  // Server-wide unload — frees VRAM. Near-instant; capped at 30s in the
+  // backend client. Same per-row UX as pull (spinner on the firing row).
+  const unload = useMutation({
+    mutationFn: (row: AdminLlmRow) => admin.llms.unloadModels(row.id),
   });
 
   const sorted = useMemo(() => {
@@ -128,6 +151,68 @@ export function AdminImageLlms(): JSX.Element {
                     <div className="flex justify-end gap-2">
                       <button
                         type="button"
+                        onClick={() => setTesting(row)}
+                        className="rounded-md border border-emerald-900 bg-emerald-950/40 px-2 py-1 text-xs text-emerald-200 hover:border-emerald-800"
+                        title="Generate a small probe image to verify the provider"
+                      >
+                        Test
+                      </button>
+                      {row.provider === "mold" && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              // Confirm because multi-GB families can take
+                              // tens of minutes and there's no cancel UI.
+                              if (
+                                window.confirm(
+                                  `Pull "${row.model_id}" on the mold server? This can take several minutes for multi-GB models.`,
+                                )
+                              ) {
+                                pull.mutate(row);
+                              }
+                            }}
+                            disabled={
+                              pull.isPending && pull.variables?.id === row.id
+                            }
+                            className="rounded-md border border-indigo-900 bg-indigo-950/40 px-2 py-1 text-xs text-indigo-200 hover:border-indigo-800 disabled:opacity-50"
+                            title={`Pull ${row.model_id} on the mold server`}
+                          >
+                            {pull.isPending && pull.variables?.id === row.id
+                              ? "Pulling…"
+                              : "Pull"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              // Server-wide effect — warn the admin
+                              // they're flushing every model from this
+                              // mold instance's GPU cache, not just the
+                              // one tied to this row.
+                              if (
+                                window.confirm(
+                                  `Unload all models from mold serve at ${row.base_url}? This frees VRAM for every row pointing at the same server. The next generation will reload from disk (slower).`,
+                                )
+                              ) {
+                                unload.mutate(row);
+                              }
+                            }}
+                            disabled={
+                              unload.isPending &&
+                              unload.variables?.id === row.id
+                            }
+                            className="rounded-md border border-amber-900 bg-amber-950/40 px-2 py-1 text-xs text-amber-200 hover:border-amber-800 disabled:opacity-50"
+                            title="Drop every model from the mold server's GPU cache (frees VRAM)"
+                          >
+                            {unload.isPending &&
+                            unload.variables?.id === row.id
+                              ? "Unloading…"
+                              : "Unload"}
+                          </button>
+                        </>
+                      )}
+                      <button
+                        type="button"
                         onClick={() => setEditing(row)}
                         className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 hover:border-slate-600"
                       >
@@ -168,6 +253,42 @@ export function AdminImageLlms(): JSX.Element {
             : "Action failed"}
         </p>
       )}
+      {pull.isPending && (
+        <p className="mt-3 rounded-md border border-indigo-900 bg-indigo-950/30 px-3 py-2 text-sm text-indigo-200">
+          Pulling <span className="font-mono">{pull.variables?.model_id}</span>{" "}
+          on the mold server — keep this tab open. Multi-GB families can take
+          several minutes.
+        </p>
+      )}
+      {pull.error && (
+        <pre className="mt-3 whitespace-pre-wrap break-words rounded-md border border-rose-900 bg-rose-950/30 px-3 py-2 text-sm text-rose-300">
+          {pull.error instanceof ApiError
+            ? pull.error.message
+            : (pull.error as Error).message}
+        </pre>
+      )}
+      {pull.data && !pull.isPending && (
+        <p className="mt-3 rounded-md border border-emerald-900 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-200">
+          {pull.data.message}
+        </p>
+      )}
+      {unload.isPending && (
+        <p className="mt-3 rounded-md border border-amber-900 bg-amber-950/30 px-3 py-2 text-sm text-amber-200">
+          Unloading models from mold serve…
+        </p>
+      )}
+      {unload.error && (
+        <pre className="mt-3 whitespace-pre-wrap break-words rounded-md border border-rose-900 bg-rose-950/30 px-3 py-2 text-sm text-rose-300">
+          {unload.error instanceof ApiError
+            ? unload.error.message
+            : (unload.error as Error).message}
+        </pre>
+      )}
+      {unload.data && !unload.isPending && (
+        <p className="mt-3 rounded-md border border-emerald-900 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-200">
+          {unload.data.message || "Models unloaded."}
+        </p>
+      )}
 
       {addOpen && (
         <LlmDialog
@@ -192,6 +313,161 @@ export function AdminImageLlms(): JSX.Element {
           }}
         />
       )}
+      {testing && (
+        <TestImageLlmDialog
+          row={testing}
+          onClose={() => setTesting(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Generates a single probe image against the selected row and renders the
+ * result inline. The default prompt is a deliberately neutral subject so
+ * admins can see colour, composition, and prompt adherence at a glance.
+ * The prompt is editable so admins can swap in something specific (e.g.
+ * a brand-style probe) and re-fire.
+ */
+function TestImageLlmDialog({
+  row,
+  onClose,
+}: {
+  row: AdminLlmRow;
+  onClose: () => void;
+}): JSX.Element {
+  const DEFAULT_PROMPT =
+    "A single red apple resting on a clean white surface, soft daylight, photographic, no text";
+  const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
+  const [isShort, setIsShort] = useState(false);
+
+  const test = useMutation({
+    mutationFn: () =>
+      admin.test.image_llm({
+        llm_id: row.id,
+        prompt,
+        is_short: isShort,
+      }),
+  });
+
+  // Auto-fire once on mount with the default prompt. Subsequent retries
+  // go through the "Run again" button.
+  useEffect(() => {
+    test.mutate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const dataUrl = test.data
+    ? `data:${test.data.content_type};base64,${test.data.image_base64}`
+    : null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-xl rounded-xl border border-slate-800 bg-slate-950 p-5 shadow-xl"
+      >
+        <h2 className="text-base font-semibold text-slate-100">
+          Test {row.name}
+        </h2>
+        <p className="mt-1 text-xs text-slate-400">
+          <span className="text-slate-500">{row.provider}</span>
+          {" · "}
+          <span className="font-mono">{row.model_id}</span>
+          {row.base_url && (
+            <>
+              {" · "}
+              <span className="font-mono text-slate-500">{row.base_url}</span>
+            </>
+          )}
+        </p>
+
+        <label className="mt-3 block text-xs font-medium text-slate-300">
+          Prompt
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            rows={2}
+            className="mt-1 block w-full rounded-md border border-slate-800 bg-slate-900 px-2 py-1.5 text-xs text-slate-100 focus:border-slate-600 focus:outline-none"
+          />
+        </label>
+        <label className="mt-2 flex items-center gap-2 text-xs text-slate-300">
+          <input
+            type="checkbox"
+            checked={isShort}
+            onChange={(e) => setIsShort(e.target.checked)}
+            className="h-3.5 w-3.5"
+          />
+          Vertical 9:16 (YouTube Short)
+        </label>
+
+        <div className="mt-4 flex min-h-[260px] items-center justify-center rounded-md border border-slate-800 bg-slate-900/40 p-3">
+          {test.isPending && (
+            <p className="text-sm text-slate-400">
+              Generating image — this can take 5–60 seconds…
+            </p>
+          )}
+          {!test.isPending && test.error && (
+            <pre className="max-w-full whitespace-pre-wrap break-words text-sm text-rose-300">
+              {test.error instanceof ApiError
+                ? test.error.message
+                : (test.error as Error).message}
+            </pre>
+          )}
+          {!test.isPending && dataUrl && (
+            <div className="flex flex-col items-center gap-2">
+              <img
+                src={dataUrl}
+                alt="Probe result"
+                className={`rounded border border-slate-800 ${
+                  isShort ? "max-h-[360px]" : "max-h-[300px]"
+                }`}
+              />
+              <p className="text-[11px] text-slate-500">
+                {test.data?.content_type}
+                <span className="ml-2 font-mono text-slate-300">
+                  {formatTestCost(test.data?.cost ?? 0)}
+                </span>
+                {test.data?.mocked && (
+                  <span className="ml-2 rounded bg-amber-900/40 px-1.5 py-0.5 text-amber-300">
+                    mocked
+                  </span>
+                )}
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => test.mutate()}
+            disabled={test.isPending || prompt.trim().length === 0}
+            className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:border-slate-600 disabled:opacity-50"
+          >
+            Run again
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-500"
+          >
+            Close
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

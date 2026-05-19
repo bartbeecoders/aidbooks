@@ -20,3 +20,5 @@ When generating text or images through openrouter, can you get the actual cost a
 This will enable us to show the user the cost of the generation.
 
 When uploading to youtube, the preview image of each chapter is always the same, it should be the image of the chapter.
+
+Seems that we sometimes loose the conenction to the youtube channel, whe I then reconnect, I can work again, but connection is again lost after some time

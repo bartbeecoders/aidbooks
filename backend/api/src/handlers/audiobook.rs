@@ -2885,7 +2885,9 @@ pub async fn test_chapter_manim_llm(
     };
 
     // Resolve LLM by id. Inline the query so we don't have to expose
-    // admin's `load_llm` to non-admin handlers.
+    // admin's `load_llm` to non-admin handlers. We also pull the
+    // openai-compat routing fields here so a per-row LMStudio/OpenAI host
+    // dispatches correctly from this test path.
     #[derive(Deserialize)]
     struct LlmRow {
         name: String,
@@ -2895,6 +2897,10 @@ pub async fn test_chapter_manim_llm(
         cost_prompt_per_1k: f64,
         #[serde(default)]
         cost_completion_per_1k: f64,
+        #[serde(default)]
+        base_url: Option<String>,
+        #[serde(default)]
+        api_key_enc: Option<String>,
     }
     let llm_id = body.llm_id.trim();
     if !llm_id
@@ -2907,7 +2913,8 @@ pub async fn test_chapter_manim_llm(
         .db()
         .inner()
         .query(format!(
-            "SELECT name, provider, model_id, cost_prompt_per_1k, cost_completion_per_1k \
+            "SELECT name, provider, model_id, cost_prompt_per_1k, cost_completion_per_1k, \
+                    base_url, api_key_enc \
              FROM llm:`{llm_id}`"
         ))
         .await
@@ -2919,6 +2926,15 @@ pub async fn test_chapter_manim_llm(
         .ok_or_else(|| Error::NotFound {
             resource: format!("llm:{llm_id}"),
         })?;
+    let openai_base_url = llm.base_url.clone().filter(|s| !s.trim().is_empty());
+    let openai_api_key = llm.api_key_enc.as_deref().and_then(|enc| {
+        crate::youtube::encrypt::decrypt_with_domain(
+            enc,
+            state.config().password_pepper.as_bytes(),
+            crate::youtube::encrypt::LLM_API_KEY_DOMAIN,
+        )
+        .ok()
+    });
 
     // Render the manim_code prompt with the same vars the production
     // code-gen path uses; only `theme` and `run_seconds` differ in
@@ -2964,6 +2980,8 @@ pub async fn test_chapter_manim_llm(
         json_mode: Some(true),
         modalities: None,
         provider: Some(llm.provider.clone()),
+        openai_base_url: openai_base_url.clone(),
+        openai_api_key: openai_api_key.clone(),
     };
     let started = std::time::Instant::now();
     let resp = state.llm().chat(&req).await?;

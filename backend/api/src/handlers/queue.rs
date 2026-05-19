@@ -637,8 +637,11 @@ async fn derive_step(state: &AppState, audiobook_id: &str, qstate: &str) -> (Str
     }
 
     // No running jobs — fall back to audiobook status for a hint
-    // about where the pipeline left off.
-    let status_rows: Vec<(String,)> = state
+    // about where the pipeline left off. `SELECT VALUE status` returns
+    // raw scalars, so this decodes as `Vec<String>` (NOT `Vec<(String,)>`
+    // — a tuple decode silently fails and would default the label to
+    // "draft" forever, masking real progress).
+    let status_rows: Vec<String> = match state
         .db()
         .inner()
         .query(format!(
@@ -646,11 +649,20 @@ async fn derive_step(state: &AppState, audiobook_id: &str, qstate: &str) -> (Str
         ))
         .await
         .and_then(|mut r| r.take(0))
-        .unwrap_or_default();
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(
+                error = %e,
+                audiobook_id,
+                "queue derive_step: status fetch/decode failed; defaulting label",
+            );
+            Vec::new()
+        }
+    };
     let status = status_rows
         .into_iter()
         .next()
-        .map(|(s,)| s)
         .unwrap_or_else(|| "draft".into());
     let pct = match status.as_str() {
         "draft" => 0.0,
@@ -868,7 +880,17 @@ async fn try_settle_running(state: &AppState, user_id: &UserId) -> Result<()> {
     //   draft        → activation never happened; mark failed so we
     //                  don't get stuck forever pointing at a row
     //                  whose outline crashed before any job spawned
-    let status: Vec<(String,)> = state
+    // `SELECT VALUE status` returns raw scalars, so decode as
+    // `Vec<String>`. The previous `Vec<(String,)>` shape silently failed
+    // to decode and the `.unwrap_or_default()` fall-through then made
+    // every healthy run look like `status = "failed"` to the settler —
+    // marking completed audiobooks as failed queue items with no
+    // diagnostic trail because no job/event ever actually failed.
+    //
+    // On a real fetch/decode error we now bail rather than defaulting:
+    // settling a fresh audiobook as failed because the DB blipped is
+    // worse than waiting one more tick.
+    let status_rows: Vec<String> = match state
         .db()
         .inner()
         .query(format!(
@@ -876,12 +898,40 @@ async fn try_settle_running(state: &AppState, user_id: &UserId) -> Result<()> {
         ))
         .await
         .and_then(|mut r| r.take(0))
-        .unwrap_or_default();
-    let status = status
-        .into_iter()
-        .next()
-        .map(|(s,)| s)
-        .unwrap_or_else(|| "failed".into());
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(
+                error = %e,
+                user = user_id.0,
+                queue_item = item_id,
+                audiobook = book_id,
+                "queue settle: audiobook status fetch failed; deferring settlement",
+            );
+            return Ok(());
+        }
+    };
+    let Some(status) = status_rows.into_iter().next() else {
+        // Audiobook row gone (e.g. user deleted it mid-run). Settle the
+        // queue item as failed so the runner moves on instead of looping
+        // on a row whose target has vanished.
+        warn!(
+            user = user_id.0,
+            queue_item = item_id,
+            audiobook = book_id,
+            "queue settle: audiobook row missing; marking item failed",
+        );
+        return write_settled(
+            state,
+            &item_id,
+            "failed",
+            Some(format!(
+                "audiobook:{book_id} not found — was it deleted while \
+                 the queue item was running?"
+            )),
+        )
+        .await;
+    };
     // The queue row's `error` may already be populated by
     // `kick_off_pipeline`'s catch-block before this tick runs (race:
     // activation spawns a detached task that flips state→failed +

@@ -268,8 +268,13 @@ export type Voice = S["Voice"];
 // into a no-op once the schema catches up.
 export type ExtraLlmRole = "manim_code" | "translate" | "voice_extract";
 export type LlmRole = S["LlmRole"] | ExtraLlmRole;
-export type Llm = Omit<S["Llm"], "default_for"> & {
+// `provider` is widened off the cached schema enum (`"open_router" | "xai"`)
+// because the backend now also emits `"openai"` for self-hosted /
+// OpenAI-compat rows. Re-running `npm run gen:api` collapses this once
+// the openapi.json snapshot picks up the new variant.
+export type Llm = Omit<S["Llm"], "default_for" | "provider"> & {
   default_for: LlmRole[];
+  provider: "open_router" | "xai" | "openai" | "mold" | "fal";
   function?: string | null;
   languages?: string[];
   priority?: number;
@@ -320,8 +325,16 @@ type LlmExtra = {
   priority?: number | null;
   /** Per-megapixel price for image-generation models. */
   cost_per_megapixel?: number | null;
-  /** Upstream provider — `open_router` (default) or `xai`. */
+  /** Upstream provider — `open_router` (default), `xai`, `openai`, `mold`, or `fal`. */
   provider?: string | null;
+  /** Base URL for `provider = "openai"` / `provider = "mold"` rows (and
+   *  optionally `provider = "fal"`, which defaults to `https://fal.run`). */
+  base_url?: string | null;
+  /** API key for `provider = "openai"` / `provider = "mold"` / `provider = "fal"`
+   *  rows (write-only). */
+  api_key?: string | null;
+  /** Read-only flag from list/get: whether the row has an api_key stored. */
+  has_api_key?: boolean;
 };
 type LlmPatchExtra = LlmExtra & {
   model_id?: string | null;
@@ -397,6 +410,20 @@ export interface XaiImageModelRow {
 
 export interface XaiImageModelList {
   items: XaiImageModelRow[];
+}
+
+// --- OpenAI-compatible catalog (LMStudio / Ollama / OpenAI proper) -------
+// Hand-written; mirrors
+// `backend/api/src/handlers/admin.rs::list_openai_compat_models`.
+
+export interface OpenAiCompatModelRow {
+  id: string;
+  owned_by: string | null;
+  context_length: number | null;
+}
+
+export interface OpenAiCompatModelList {
+  items: OpenAiCompatModelRow[];
 }
 
 // --- YouTube settings ----------------------------------------------------
@@ -692,6 +719,35 @@ export interface TestLlmResponse {
   completion_tokens: number;
   mocked: boolean;
 }
+export interface TestImageLlmRequest {
+  llm_id: string;
+  prompt: string;
+  is_short?: boolean | null;
+}
+export interface TestImageLlmResponse {
+  /** Standard base64 (no `data:` prefix). */
+  image_base64: string;
+  /** `image/png`, `image/jpeg`, or `image/webp`. */
+  content_type: string;
+  /** USD cost charged for this image, same value as the
+   *  `generation_event.cost` ledger entry. 0 when the row has no
+   *  price configured. */
+  cost: number;
+  mocked: boolean;
+}
+/** Result of `POST /admin/llm/{id}/pull-model`. Only meaningful for
+ * `provider = "mold"` rows. */
+export interface PullMoldModelResponse {
+  /** Plain-text success line from mold (e.g. `"model 'flux-dev:q4' pulled successfully"`). */
+  message: string;
+  /** The model slug that was pulled. */
+  model: string;
+}
+/** Result of `POST /admin/llm/{id}/unload-models`. Drops every model
+ * from the mold server's GPU cache (server-wide, not per-row). */
+export interface UnloadMoldModelsResponse {
+  message: string;
+}
 export interface TestVoiceRequest {
   voice_id: string;
   text: string;
@@ -899,6 +955,10 @@ export interface YoutubeVideoRow {
   view_count: number;
   like_count: number;
   comment_count: number;
+  is_short: boolean;
+  is_songbook: boolean;
+  /** Per-video share of the source audiobook's generation cost. */
+  cost_usd: number;
 }
 
 export interface YoutubeVideoList {
@@ -906,6 +966,7 @@ export interface YoutubeVideoList {
   total_views: number;
   total_likes: number;
   total_comments: number;
+  total_cost_usd: number;
 }
 
 export interface YoutubeReportPoint {

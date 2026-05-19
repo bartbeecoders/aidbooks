@@ -11,6 +11,22 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+/// Render a reqwest error with its full cause chain. reqwest's `Display`
+/// only prints the top-level wrapper ("error sending request for url ..."),
+/// which hides the actual reason (timeout / connection refused / TLS
+/// handshake / DNS / …). Walking `source()` gives the operator the one
+/// line they need to triage.
+fn fmt_chain<E: std::error::Error>(e: &E) -> String {
+    let mut out = e.to_string();
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = e.source();
+    while let Some(s) = cur {
+        out.push_str(": ");
+        out.push_str(&s.to_string());
+        cur = s.source();
+    }
+    out
+}
+
 /// Messages in the OpenAI-compatible shape OpenRouter consumes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -46,10 +62,21 @@ pub struct ChatRequest {
     /// to text-only when `None`.
     pub modalities: Option<Vec<String>>,
     /// Which upstream to dispatch this request to. `None` or
-    /// `Some("open_router")` = OpenRouter; `Some("xai")` = native xAI host.
-    /// Skipped on the wire — controls routing only.
+    /// `Some("open_router")` = OpenRouter; `Some("xai")` = native xAI host;
+    /// `Some("openai")` = OpenAI-compatible host using the per-call
+    /// `openai_base_url` + `openai_api_key`. Skipped on the wire — controls
+    /// routing only.
     #[serde(skip_serializing)]
     pub provider: Option<String>,
+    /// Base URL for `provider = "openai"` calls (e.g.
+    /// `http://localhost:1234/v1` for LMStudio). Required when provider is
+    /// `openai`. Ignored otherwise. Skipped on the wire.
+    #[serde(skip_serializing)]
+    pub openai_base_url: Option<String>,
+    /// Bearer token for `provider = "openai"` calls. `None` is fine for
+    /// LMStudio's default no-auth mode. Skipped on the wire.
+    #[serde(skip_serializing)]
+    pub openai_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -146,6 +173,26 @@ impl LlmClient {
                 self.call_chat(req, &self.xai_base_url, &self.xai_api_key, false)
                     .await
             }
+            // OpenAI-compatible per-row host (LMStudio / Ollama / OpenAI
+            // proper). Routing is fully driven by the picked row's
+            // `base_url` + (optional) `api_key` — there's no global
+            // openai_* config on the client, so each row brings its own.
+            Some("openai") => {
+                let Some(base) = req.openai_base_url.as_deref() else {
+                    return Err(Error::Validation(
+                        "openai provider requires `openai_base_url` on the request".into(),
+                    ));
+                };
+                let key = req.openai_api_key.as_deref().unwrap_or("");
+                tracing::info!(
+                    provider = "openai",
+                    base_url = base,
+                    has_key = !key.is_empty(),
+                    model = %req.model,
+                    "llm chat dispatch"
+                );
+                self.call_chat(req, base, key, false).await
+            }
             // None or `Some("open_router")` — anything else falls through to
             // the legacy OpenRouter path so unknown values fail loudly there.
             other => {
@@ -164,6 +211,50 @@ impl LlmClient {
                     .await
             }
         }
+    }
+
+    /// List models exposed by an OpenAI-compatible host at `<base>/models`.
+    /// Used by the admin "browse" tab so an LMStudio user doesn't have to
+    /// hand-type model slugs. Bearer auth is sent only when `api_key` is
+    /// non-empty so LMStudio's default no-auth mode still works.
+    pub async fn list_openai_compat_models(
+        &self,
+        base_url: &str,
+        api_key: &str,
+    ) -> Result<Vec<OpenAiCompatModel>> {
+        let trimmed = base_url.trim_end_matches('/');
+        let url = format!("{trimmed}/models");
+        let mut req = self.inner.get(&url);
+        if !api_key.trim().is_empty() {
+            req = req.bearer_auth(api_key);
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| Error::Upstream(format!("openai-compat models: {}", fmt_chain(&e))))?;
+        let status = resp.status();
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| Error::Upstream(format!("openai-compat models read: {}", fmt_chain(&e))))?;
+        if !status.is_success() {
+            let preview = String::from_utf8_lossy(&bytes);
+            return Err(Error::Upstream(format!(
+                "openai-compat models {status}: {}",
+                preview.chars().take(400).collect::<String>()
+            )));
+        }
+        // OpenAI's contract is `{ "object": "list", "data": [Model, …] }`.
+        // LMStudio + Ollama follow the same envelope. We treat `data` as
+        // the only required key.
+        #[derive(Deserialize)]
+        struct Envelope {
+            #[serde(default)]
+            data: Vec<OpenAiCompatModel>,
+        }
+        let env: Envelope = serde_json::from_slice(&bytes)
+            .map_err(|e| Error::Upstream(format!("openai-compat models json: {e}")))?;
+        Ok(env.data)
     }
 
     /// List the OpenRouter model catalog. The endpoint is public — no API
@@ -393,6 +484,21 @@ pub struct XaiImageModel {
     pub max_prompt_length: Option<u64>,
 }
 
+/// Subset of an OpenAI-compatible `/models` response. The spec ships
+/// `{ id, object, created, owned_by }`; LMStudio adds extras like context
+/// length on some models. We accept anything but only surface `id` +
+/// the common-ish fields.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OpenAiCompatModel {
+    pub id: String,
+    #[serde(default)]
+    pub owned_by: Option<String>,
+    /// Some implementations (LMStudio loaded models, vLLM) report this
+    /// as `context_length` or `max_context_length`. We accept either.
+    #[serde(default, alias = "max_context_length")]
+    pub context_length: Option<u64>,
+}
+
 /// Subset of OpenRouter's `/models` response that we surface to admins.
 /// All upstream fields the picker needs are optional — older / newer models
 /// occasionally drop or rename pieces, and we'd rather lose pricing on one
@@ -458,7 +564,24 @@ impl LlmClient {
             body["max_tokens"] = json!(m);
         }
         if req.json_mode == Some(true) {
-            body["response_format"] = json!({ "type": "json_object" });
+            // OpenAI's chat-completions accepts either `json_object` (legacy)
+            // or `json_schema` (structured outputs). LMStudio + some Ollama
+            // builds only accept `json_schema` / `text`, so for the openai
+            // provider we always emit `json_schema` with a permissive
+            // `{"type": "object"}` schema — that's structurally equivalent
+            // to json_object on every backend we care about, and is what
+            // LMStudio expects on the wire.
+            body["response_format"] = if req.provider.as_deref() == Some("openai") {
+                json!({
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "response",
+                        "schema": { "type": "object" }
+                    }
+                })
+            } else {
+                json!({ "type": "json_object" })
+            };
         }
         if let Some(mods) = &req.modalities {
             body["modalities"] = json!(mods);
@@ -479,32 +602,39 @@ impl LlmClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::Upstream(format!("chat: {e}")))?;
+            .map_err(|e| Error::Upstream(format!("chat: {}", fmt_chain(&e))))?;
 
+        // Provider label for error messages — `req.provider` is the
+        // routing key the caller picked; without it we're either on the
+        // OpenRouter default path or a legacy call with no override, so
+        // `openrouter` is the right fallback.
+        let provider_label = req.provider.as_deref().unwrap_or("openrouter");
         let status = resp.status();
         let bytes = resp
             .bytes()
             .await
-            .map_err(|e| Error::Upstream(format!("openrouter read: {e}")))?;
+            .map_err(|e| Error::Upstream(format!("{provider_label} read: {e}")))?;
         if !status.is_success() {
             let preview = String::from_utf8_lossy(&bytes);
             return Err(Error::Upstream(format!(
-                "openrouter returned {status}: {}",
+                "{provider_label} returned {status}: {}",
                 preview.chars().take(400).collect::<String>()
             )));
         }
 
         let parsed: Value = serde_json::from_slice(&bytes)
-            .map_err(|e| Error::Upstream(format!("openrouter json: {e}")))?;
+            .map_err(|e| Error::Upstream(format!("{provider_label} json: {e}")))?;
 
         let choice = parsed
             .get("choices")
             .and_then(Value::as_array)
             .and_then(|arr| arr.first())
-            .ok_or_else(|| Error::Upstream("openrouter: missing choices[0]".into()))?;
-        let message = choice
-            .get("message")
-            .ok_or_else(|| Error::Upstream("openrouter: missing choices[0].message".into()))?;
+            .ok_or_else(|| {
+                Error::Upstream(format!("{provider_label}: missing choices[0]"))
+            })?;
+        let message = choice.get("message").ok_or_else(|| {
+            Error::Upstream(format!("{provider_label}: missing choices[0].message"))
+        })?;
 
         let (content, image_base64) = extract_message(message);
 
@@ -515,7 +645,10 @@ impl LlmClient {
             //       content+images when a chapter excerpt brushes its
             //       safety policy.
             //   (2) `finish_reason: "length"` — `max_tokens` was hit
-            //       before the model emitted the image payload.
+            //       before the model emitted any actual content. On
+            //       reasoning-mode local models (QwQ, DeepSeek-R1, …)
+            //       this is the *thinking phase* eating the entire
+            //       budget; the answer never gets a turn.
             //   (3) Transient upstream glitch — retry succeeds.
             // Log the body + finish reason so we can tell them apart,
             // and surface whichever signal upstream gave us.
@@ -528,6 +661,18 @@ impl LlmClient {
                 .get("error")
                 .and_then(|e| e.get("message"))
                 .and_then(Value::as_str);
+            // Some local reasoning models park their chain-of-thought in
+            // a `reasoning_content` (Qwen, DeepSeek) or `reasoning`
+            // (OpenAI o-series via compat servers) field and only emit
+            // `content` after thinking finishes. When `content` is empty
+            // but `reasoning_content` is huge, the model was still
+            // thinking when max_tokens ran out — surface that explicitly.
+            let thinking_len = message
+                .get("reasoning_content")
+                .or_else(|| message.get("reasoning"))
+                .and_then(Value::as_str)
+                .map(str::len)
+                .unwrap_or(0);
 
             let preview = serde_json::to_string(&parsed)
                 .unwrap_or_default()
@@ -535,22 +680,37 @@ impl LlmClient {
                 .take(600)
                 .collect::<String>();
             tracing::warn!(
+                provider = provider_label,
                 model = %req.model,
                 finish_reason = ?reason,
                 refusal = ?refusal,
                 upstream_error = ?upstream_error,
+                thinking_chars = thinking_len,
                 body = %preview,
-                "openrouter: empty response payload",
+                "llm: empty response payload",
             );
 
+            let max_tokens_hint = match req.max_tokens {
+                Some(n) => format!(" (max_tokens was {n}; try raising it, or disable the model's thinking mode in LMStudio/Ollama)"),
+                None => " (try lowering the request's reasoning budget or disabling thinking mode on the model)".into(),
+            };
             let detail = match (reason, refusal, upstream_error) {
                 (_, Some(r), _) if !r.is_empty() => format!("model refused: {r}"),
+                (Some("length"), _, _) if thinking_len > 0 => format!(
+                    "finish_reason=length — model spent the whole budget on \
+                     reasoning tokens ({thinking_len} chars of `reasoning_content`) \
+                     before emitting an answer.{max_tokens_hint}"
+                ),
+                (Some("length"), _, _) => format!(
+                    "finish_reason=length — model ran out of tokens before \
+                     emitting any content.{max_tokens_hint}"
+                ),
                 (Some(r), _, Some(e)) => format!("finish_reason={r}, error={e}"),
                 (Some(r), _, _) => format!("finish_reason={r}"),
                 (_, _, Some(e)) => format!("upstream error: {e}"),
                 _ => "no text or image returned".into(),
             };
-            return Err(Error::Upstream(format!("openrouter: {detail}")));
+            return Err(Error::Upstream(format!("{provider_label}: {detail}")));
         }
 
         let usage = parsed
@@ -573,6 +733,12 @@ impl LlmClient {
 ///   1. `message.images[i].image_url.url`           — Gemini image format
 ///   2. `message.content[i]` array w/ `image_url`   — multi-modal block
 ///   3. `message.content` plain string              — text-only fallback
+///   4. `message.reasoning_content` / `message.reasoning` — last-resort
+///      fallback for reasoning-mode local models (Qwen 3, DeepSeek-R1,
+///      …) that emit the final answer into the thinking channel and
+///      leave `content` empty. Stripped of any `<think>…</think>` block
+///      before being returned, since the parsers downstream want only
+///      the answer.
 ///
 /// `data:image/...;base64,...` URLs are stripped to the raw base64 payload
 /// so callers don't have to re-parse them.
@@ -622,13 +788,62 @@ fn extract_message(message: &Value) -> (String, Option<String>) {
         .and_then(Value::as_str)
         .map(str::to_string);
 
-    let text = if !text_parts.is_empty() {
+    let mut text = if !text_parts.is_empty() {
         text_parts.join("")
     } else {
         plain.unwrap_or_default()
     };
 
+    // 4. Reasoning-content fallback. When `content` is empty *and* the
+    // message carries a non-empty `reasoning_content` (Qwen, DeepSeek)
+    // or `reasoning` (OpenAI o-series via compat servers) field, the
+    // model parked its final answer in the thinking channel. Lift it
+    // back out so downstream parsers see the JSON they expect.
+    if text.trim().is_empty() {
+        let reasoning = message
+            .get("reasoning_content")
+            .or_else(|| message.get("reasoning"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if !reasoning.is_empty() {
+            text = strip_think_blocks(reasoning).to_string();
+        }
+    }
+
     (text, from_images.or(from_content_image))
+}
+
+/// Strip any leading `<think>…</think>` (or `<thinking>…</thinking>`)
+/// blocks from a model response. Reasoning-mode local models sometimes
+/// emit `<think>internal reasoning</think>{ "json": "answer" }` inline;
+/// the parsers downstream want just the answer portion.
+fn strip_think_blocks(s: &str) -> &str {
+    let mut rest = s.trim_start();
+    loop {
+        let lower = rest.to_ascii_lowercase();
+        let opened_at = if lower.starts_with("<think>") {
+            Some("<think>".len())
+        } else if lower.starts_with("<thinking>") {
+            Some("<thinking>".len())
+        } else {
+            None
+        };
+        let Some(open_len) = opened_at else { break };
+        let after_open = &rest[open_len..];
+        let after_open_lower = after_open.to_ascii_lowercase();
+        let close_idx = after_open_lower
+            .find("</think>")
+            .map(|i| (i, "</think>".len()))
+            .or_else(|| {
+                after_open_lower
+                    .find("</thinking>")
+                    .map(|i| (i, "</thinking>".len()))
+            });
+        let Some((idx, close_len)) = close_idx else { break };
+        rest = after_open[idx + close_len..].trim_start();
+    }
+    rest
 }
 
 fn strip_data_url(url: &str) -> String {
@@ -766,6 +981,50 @@ fn take_phrase_after(haystack: &str, needle: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn extract_message_falls_back_to_reasoning_content() {
+        // Real-world payload from Qwen 3.6 / Unsloth via LMStudio when
+        // the model runs in reasoning mode: the final JSON answer
+        // lands in `reasoning_content`, leaving `content` empty.
+        let msg = json!({
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "{\"topic\":\"x\"}\n",
+        });
+        let (text, image) = extract_message(&msg);
+        assert_eq!(text, "{\"topic\":\"x\"}");
+        assert!(image.is_none());
+    }
+
+    #[test]
+    fn extract_message_strips_leading_think_block_in_reasoning() {
+        // Some local models wrap their thinking inside <think>…</think>
+        // and then emit the answer — when that whole thing lands in
+        // reasoning_content with empty `content`, the fallback should
+        // peel the thinking off so parse_outline doesn't choke.
+        let msg = json!({
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "<think>let me think hard</think>{\"topic\":\"x\"}",
+        });
+        let (text, _) = extract_message(&msg);
+        assert_eq!(text, "{\"topic\":\"x\"}");
+    }
+
+    #[test]
+    fn extract_message_prefers_content_when_present() {
+        // Sanity check: a normal response with real content stays
+        // unchanged even if reasoning_content is also present.
+        let msg = json!({
+            "role": "assistant",
+            "content": "hello",
+            "reasoning_content": "internal monologue",
+        });
+        let (text, _) = extract_message(&msg);
+        assert_eq!(text, "hello");
+    }
+
+
     #[tokio::test]
     async fn mock_mode_outline_is_valid_json() {
         let c = LlmClient::new("", "http://unused", "", "http://unused", 5).unwrap();
@@ -781,6 +1040,8 @@ mod tests {
                 json_mode: Some(true),
                 modalities: None,
                 provider: None,
+                openai_base_url: None,
+                openai_api_key: None,
             })
             .await
             .unwrap();
@@ -803,6 +1064,8 @@ mod tests {
                 json_mode: None,
                 modalities: None,
                 provider: None,
+                openai_base_url: None,
+                openai_api_key: None,
             })
             .await
             .unwrap();

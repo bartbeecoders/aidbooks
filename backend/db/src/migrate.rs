@@ -205,6 +205,18 @@ const MIGRATIONS: &[Migration] = &[
         name: "0047_audiobook_queue",
         sql: include_str!("../migrations/0047_audiobook_queue.surql"),
     },
+    Migration {
+        name: "0048_llm_provider_openai",
+        sql: include_str!("../migrations/0048_llm_provider_openai.surql"),
+    },
+    Migration {
+        name: "0049_llm_provider_mold",
+        sql: include_str!("../migrations/0049_llm_provider_mold.surql"),
+    },
+    Migration {
+        name: "0050_llm_provider_fal",
+        sql: include_str!("../migrations/0050_llm_provider_fal.surql"),
+    },
 ];
 
 /// Run any pending migrations. Safe to call on every startup.

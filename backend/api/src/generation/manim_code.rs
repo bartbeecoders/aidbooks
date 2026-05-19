@@ -130,6 +130,8 @@ pub async fn generate_manim_code(
             json_mode: Some(true),
             modalities: None,
             provider: Some(picked.provider.clone()),
+            openai_base_url: picked.base_url.clone(),
+            openai_api_key: picked.api_key.clone(),
         };
 
         let resp = match state.llm().chat(&req).await {

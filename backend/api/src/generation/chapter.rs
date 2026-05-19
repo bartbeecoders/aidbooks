@@ -188,6 +188,8 @@ async fn run_one(
         json_mode: Some(false),
         modalities: None,
         provider: Some(picked.provider.clone()),
+        openai_base_url: picked.base_url.clone(),
+        openai_api_key: picked.api_key.clone(),
     };
 
     let response = match state.llm().chat(&req).await {

@@ -222,6 +222,75 @@ pub async fn list_openrouter_models(
 }
 
 // =========================================================================
+// OpenAI-compatible catalog (per-row endpoint)
+// =========================================================================
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct OpenAiModelsRequest {
+    /// Base URL of the OpenAI-compatible host, e.g. `http://localhost:1234/v1`
+    /// for LMStudio.
+    #[validate(length(min = 8, max = 500))]
+    pub base_url: String,
+    /// Optional bearer token. LMStudio's default no-auth mode leaves this
+    /// empty.
+    #[validate(length(max = 500))]
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpenAiCompatModelRow {
+    pub id: String,
+    pub owned_by: Option<String>,
+    pub context_length: Option<u32>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct OpenAiCompatModelList {
+    pub items: Vec<OpenAiCompatModelRow>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/admin/openai/models",
+    tag = "admin",
+    request_body = OpenAiModelsRequest,
+    responses(
+        (status = 200, body = OpenAiCompatModelList),
+        (status = 400, description = "Invalid base_url"),
+        (status = 403),
+        (status = 502, description = "Upstream unreachable")
+    ),
+    security(("bearer" = []))
+)]
+pub async fn list_openai_compat_models(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    Json(body): Json<OpenAiModelsRequest>,
+) -> ApiResult<Json<OpenAiCompatModelList>> {
+    body.validate()
+        .map_err(|e| Error::Validation(e.to_string()))?;
+    let base = body.base_url.trim();
+    if !base.starts_with("http://") && !base.starts_with("https://") {
+        return Err(Error::Validation(
+            "base_url must start with http:// or https://".into(),
+        )
+        .into());
+    }
+    let key = body.api_key.as_deref().unwrap_or("");
+    let models = state.llm().list_openai_compat_models(base, key).await?;
+    let items = models
+        .into_iter()
+        .map(|m| OpenAiCompatModelRow {
+            id: m.id,
+            owned_by: m.owned_by,
+            context_length: m.context_length.map(|n| n.min(u32::MAX as u64) as u32),
+        })
+        .collect();
+    Ok(Json(OpenAiCompatModelList { items }))
+}
+
+// =========================================================================
 // LLM admin
 // =========================================================================
 
@@ -245,6 +314,16 @@ pub struct AdminLlmRow {
     pub languages: Vec<String>,
     /// Picker tiebreaker; lower wins.
     pub priority: i32,
+    /// Base URL for OpenAI-compatible providers (e.g. `http://localhost:1234/v1`
+    /// for LMStudio). Only set when `provider = "openai"`. `None` for legacy
+    /// OpenRouter/xAI rows.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// `true` when the row has an API key configured (encrypted server-side).
+    /// The key itself is never round-tripped to the frontend — admins can
+    /// only set it or clear it.
+    #[serde(default)]
+    pub has_api_key: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -278,6 +357,20 @@ pub struct UpdateLlmRequest {
     pub languages: Option<Vec<String>>,
     #[validate(range(min = 0, max = 1_000_000))]
     pub priority: Option<i32>,
+    /// Switch the provider on an existing row. Only `open_router`, `xai`,
+    /// and `openai` are accepted.
+    #[validate(length(max = 32))]
+    pub provider: Option<String>,
+    /// Base URL for OpenAI-compatible rows. `Some("")` clears it; omitted
+    /// leaves it unchanged. Validation in the handler enforces a sensible
+    /// `http(s)://…` shape.
+    #[validate(length(max = 500))]
+    pub base_url: Option<String>,
+    /// New API key for the row. Encrypted server-side. `Some("")` clears
+    /// the stored key; omitted leaves it unchanged so the admin can edit
+    /// any other field without re-pasting the secret.
+    #[validate(length(max = 500))]
+    pub api_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]
@@ -309,11 +402,24 @@ pub struct CreateLlmRequest {
     pub languages: Option<Vec<String>>,
     #[validate(range(min = 0, max = 1_000_000))]
     pub priority: Option<i32>,
-    /// Wire identifier for the upstream provider (`open_router` | `xai`).
-    /// Defaults to `open_router` when omitted, matching legacy clients.
+    /// Wire identifier for the upstream provider (`open_router` | `xai` |
+    /// `openai`). Defaults to `open_router` when omitted, matching legacy
+    /// clients. `openai` routes per-row through `base_url` + `api_key`
+    /// against any OpenAI-compatible host (OpenAI, LMStudio, Ollama, …).
     #[serde(default)]
     #[validate(length(max = 32))]
     pub provider: Option<String>,
+    /// Base URL for `provider = "openai"` rows, e.g.
+    /// `http://localhost:1234/v1` (LMStudio default). Ignored for other
+    /// providers.
+    #[serde(default)]
+    #[validate(length(max = 500))]
+    pub base_url: Option<String>,
+    /// API key for `provider = "openai"` rows. Encrypted at rest with the
+    /// password pepper. Ignored for other providers.
+    #[serde(default)]
+    #[validate(length(max = 500))]
+    pub api_key: Option<String>,
 }
 
 fn is_valid_llm_id(s: &str) -> bool {
@@ -341,6 +447,12 @@ struct DbLlm {
     languages: Vec<String>,
     #[serde(default = "default_priority")]
     priority: i64,
+    #[serde(default)]
+    base_url: Option<String>,
+    /// Encrypted API key blob for openai-compat rows. Decoded server-side
+    /// only — never round-tripped to the frontend.
+    #[serde(default)]
+    api_key_enc: Option<String>,
 }
 
 fn default_priority() -> i64 {
@@ -412,13 +524,80 @@ pub async fn patch_llm(
         sets.push("default_for = $df");
     }
     if body.function.is_some() {
-        sets.push("function = $function");
+        sets.push("`function` = $function");
     }
     if body.languages.is_some() {
         sets.push("languages = $languages");
     }
     if body.priority.is_some() {
         sets.push("priority = $priority");
+    }
+    // `provider` switches the row's routing. Validated below so a typo
+    // here can't quietly disable the row at chat time.
+    let provider_arg = match body
+        .provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        None => None,
+        Some("open_router") => Some("open_router".to_string()),
+        Some("xai") => Some("xai".to_string()),
+        Some("openai") => Some("openai".to_string()),
+        Some("mold") => Some("mold".to_string()),
+        Some("fal") => Some("fal".to_string()),
+        Some(other) => {
+            return Err(Error::Validation(format!("unknown provider `{other}`")).into());
+        }
+    };
+    if provider_arg.is_some() {
+        sets.push("provider = $provider");
+    }
+    // `base_url`: omitted → leave alone. `Some("")` → clear. Non-empty
+    // string must look like a URL so a typo can't quietly route chat
+    // requests to nowhere.
+    let base_url_arg: Option<Option<String>> = match body.base_url.as_deref() {
+        None => None,
+        Some(s) => {
+            let t = s.trim().to_string();
+            if t.is_empty() {
+                Some(None)
+            } else {
+                if !t.starts_with("http://") && !t.starts_with("https://") {
+                    return Err(Error::Validation(
+                        "base_url must start with http:// or https://".into(),
+                    )
+                    .into());
+                }
+                Some(Some(t))
+            }
+        }
+    };
+    if base_url_arg.is_some() {
+        sets.push("base_url = $base_url");
+    }
+    // `api_key`: omitted → leave alone (don't force the admin to re-paste
+    // the secret when editing other fields). `Some("")` → clear. Non-empty
+    // string → encrypt + persist.
+    let api_key_arg: Option<Option<String>> = match body.api_key.as_deref() {
+        None => None,
+        Some(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                Some(None)
+            } else {
+                let enc = crate::youtube::encrypt::encrypt_with_domain(
+                    t,
+                    state.config().password_pepper.as_bytes(),
+                    crate::youtube::encrypt::LLM_API_KEY_DOMAIN,
+                )
+                .map_err(|e| Error::Other(anyhow::anyhow!("encrypt api_key: {e}")))?;
+                Some(Some(enc))
+            }
+        }
+    };
+    if api_key_arg.is_some() {
+        sets.push("api_key_enc = $api_key_enc");
     }
     if sets.is_empty() {
         return Err(Error::Validation("no fields to update".into()).into());
@@ -450,6 +629,9 @@ pub async fn patch_llm(
         .bind(("function", function_arg))
         .bind(("languages", body.languages))
         .bind(("priority", body.priority.map(|n| n as i64)))
+        .bind(("provider", provider_arg))
+        .bind(("base_url", base_url_arg.unwrap_or(None)))
+        .bind(("api_key_enc", api_key_arg.unwrap_or(None)))
         .await
         .map_err(|e| Error::Database(format!("admin patch_llm: {e}")))?
         .check()
@@ -521,9 +703,64 @@ pub async fn create_llm(
     {
         Some("open_router") | None => "open_router".to_string(),
         Some("xai") => "xai".to_string(),
+        Some("openai") => "openai".to_string(),
+        Some("mold") => "mold".to_string(),
+        Some("fal") => "fal".to_string(),
         Some(other) => {
             return Err(Error::Validation(format!("unknown provider `{other}`")).into());
         }
+    };
+    let base_url = body
+        .base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if provider == "openai" {
+        let Some(url) = base_url.as_deref() else {
+            return Err(Error::Validation(
+                "openai provider requires `base_url` (e.g. http://localhost:1234/v1)".into(),
+            )
+            .into());
+        };
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(Error::Validation(
+                "base_url must start with http:// or https://".into(),
+            )
+            .into());
+        }
+    }
+    if provider == "mold" {
+        let Some(url) = base_url.as_deref() else {
+            return Err(Error::Validation(
+                "mold provider requires `base_url` (e.g. http://localhost:7680)".into(),
+            )
+            .into());
+        };
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(Error::Validation(
+                "base_url must start with http:// or https://".into(),
+            )
+            .into());
+        }
+    }
+    // Encrypt the API key with the pepper before persistence. Empty/None
+    // leaves the column NONE — useful for LMStudio's default no-auth mode.
+    let api_key_enc = match body
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(plain) => Some(
+            crate::youtube::encrypt::encrypt_with_domain(
+                plain,
+                state.config().password_pepper.as_bytes(),
+                crate::youtube::encrypt::LLM_API_KEY_DOMAIN,
+            )
+            .map_err(|e| Error::Other(anyhow::anyhow!("encrypt api_key: {e}")))?,
+        ),
+        None => None,
     };
 
     state
@@ -542,7 +779,9 @@ pub async fn create_llm(
                 default_for: $df,
                 function: $function,
                 languages: $languages,
-                priority: $priority
+                priority: $priority,
+                base_url: $base_url,
+                api_key_enc: $api_key_enc
             }}"#,
             body.id
         ))
@@ -558,6 +797,8 @@ pub async fn create_llm(
         .bind(("function", function))
         .bind(("languages", languages))
         .bind(("priority", priority))
+        .bind(("base_url", base_url))
+        .bind(("api_key_enc", api_key_enc))
         .await
         .map_err(|e| Error::Database(format!("create_llm: {e}")))?
         .check()
@@ -595,6 +836,114 @@ pub async fn delete_llm(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PullMoldModelResponse {
+    /// Mold's success message (typically `"model '<slug>' pulled
+    /// successfully"`).
+    pub message: String,
+    /// The model slug that was pulled.
+    pub model: String,
+}
+
+#[utoipa::path(
+    post, path = "/admin/llm/{id}/pull-model", tag = "admin",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, body = PullMoldModelResponse),
+        (status = 400, description = "Not a mold-provider row, or invalid id"),
+        (status = 404, description = "LLM not found"),
+        (status = 502, description = "Mold server returned an error"),
+        (status = 403),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn pull_mold_model(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    Path(id): Path<String>,
+) -> ApiResult<Json<PullMoldModelResponse>> {
+    if !is_valid_llm_id(&id) {
+        return Err(Error::Validation("invalid llm id".into()).into());
+    }
+    let llm = load_llm(&state, &id).await?;
+    if llm.provider != "mold" {
+        return Err(Error::Validation(format!(
+            "llm `{id}` has provider `{}` — pull is only supported for mold rows",
+            llm.provider
+        ))
+        .into());
+    }
+    let Some(base_url) = llm.base_url.as_deref().filter(|s| !s.trim().is_empty()) else {
+        return Err(Error::Validation(format!(
+            "mold llm `{id}` has no base_url configured"
+        ))
+        .into());
+    };
+    let (_routing_base, api_key) = load_llm_routing(&state, &id).await?;
+
+    let model = llm.model_id.clone();
+    tracing::info!(
+        llm_id = %id,
+        base_url = %base_url,
+        model = %model,
+        "admin: triggering mold pull"
+    );
+    let message = crate::llm::mold::pull(base_url, api_key.as_deref(), &model).await?;
+    Ok(Json(PullMoldModelResponse { message, model }))
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UnloadMoldModelsResponse {
+    /// Plain-text status message from mold (e.g. `"unloaded model 'flux2-klein:q8'"`
+    /// or `"no model loaded"`).
+    pub message: String,
+}
+
+#[utoipa::path(
+    post, path = "/admin/llm/{id}/unload-models", tag = "admin",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, body = UnloadMoldModelsResponse),
+        (status = 400, description = "Not a mold-provider row, or invalid id"),
+        (status = 404, description = "LLM not found"),
+        (status = 502, description = "Mold server returned an error"),
+        (status = 403),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn unload_mold_models(
+    State(state): State<AppState>,
+    _admin: RequireAdmin,
+    Path(id): Path<String>,
+) -> ApiResult<Json<UnloadMoldModelsResponse>> {
+    if !is_valid_llm_id(&id) {
+        return Err(Error::Validation("invalid llm id".into()).into());
+    }
+    let llm = load_llm(&state, &id).await?;
+    if llm.provider != "mold" {
+        return Err(Error::Validation(format!(
+            "llm `{id}` has provider `{}` — unload is only supported for mold rows",
+            llm.provider
+        ))
+        .into());
+    }
+    let Some(base_url) = llm.base_url.as_deref().filter(|s| !s.trim().is_empty()) else {
+        return Err(Error::Validation(format!(
+            "mold llm `{id}` has no base_url configured"
+        ))
+        .into());
+    };
+    let (_routing_base, api_key) = load_llm_routing(&state, &id).await?;
+
+    tracing::info!(
+        llm_id = %id,
+        base_url = %base_url,
+        "admin: triggering mold unload (server-wide)"
+    );
+    let message = crate::llm::mold::unload(base_url, api_key.as_deref()).await?;
+    Ok(Json(UnloadMoldModelsResponse { message }))
+}
+
 async fn load_llm(state: &AppState, id: &str) -> Result<AdminLlmRow> {
     let rows: Vec<DbLlm> = state
         .db()
@@ -613,6 +962,11 @@ async fn load_llm(state: &AppState, id: &str) -> Result<AdminLlmRow> {
 }
 
 fn row_to_llm(r: DbLlm) -> AdminLlmRow {
+    let has_api_key = r
+        .api_key_enc
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
     AdminLlmRow {
         id: LlmId(r.id.id.to_raw()),
         name: r.name,
@@ -627,6 +981,8 @@ fn row_to_llm(r: DbLlm) -> AdminLlmRow {
         function: r.function.filter(|s| !s.trim().is_empty()),
         languages: r.languages,
         priority: r.priority as i32,
+        base_url: r.base_url.filter(|s| !s.trim().is_empty()),
+        has_api_key,
     }
 }
 
@@ -1483,7 +1839,12 @@ pub async fn test_llm(
 ) -> ApiResult<Json<TestLlmResponse>> {
     body.validate()
         .map_err(|e| Error::Validation(e.to_string()))?;
+    // Read the raw row directly so we can decrypt the openai-compat
+    // api_key for this test call. `load_llm` returns the admin DTO which
+    // intentionally never round-trips the secret, so we can't reuse it
+    // here.
     let llm = load_llm(&state, &body.llm_id).await?;
+    let (base_url, api_key) = load_llm_routing(&state, &body.llm_id).await?;
 
     let mut messages: Vec<ChatMessage> = Vec::new();
     if let Some(sys) = body
@@ -1504,6 +1865,8 @@ pub async fn test_llm(
         json_mode: None,
         modalities: None,
         provider: Some(llm.provider),
+        openai_base_url: base_url,
+        openai_api_key: api_key,
     };
     let resp = state.llm().chat(&req).await?;
     Ok(Json(TestLlmResponse {
@@ -1512,6 +1875,132 @@ pub async fn test_llm(
         completion_tokens: resp.usage.completion_tokens,
         mocked: resp.mocked,
     }))
+}
+
+#[derive(Debug, Deserialize, Validate, ToSchema)]
+pub struct TestImageLlmRequest {
+    /// Admin LLM row id. Must be enabled and tagged as an image-output
+    /// model (the picker would normally route to it via `cover_art`).
+    #[validate(length(min = 1, max = 120))]
+    pub llm_id: String,
+    /// Raw prompt sent to the provider as-is. No cover/chapter wrapping —
+    /// admin probes use whatever phrasing they want.
+    #[validate(length(min = 1, max = 4000))]
+    pub prompt: String,
+    /// `true` requests a vertical 9:16 frame (mold maps this to explicit
+    /// width/height; chat-shaped providers honour the prompt clause).
+    /// Defaults to `false` (square).
+    #[serde(default)]
+    pub is_short: Option<bool>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TestImageLlmResponse {
+    /// Standard base64 (no `data:` prefix). Combine with `content_type`
+    /// for an `<img src="data:..." />` preview.
+    pub image_base64: String,
+    /// `image/png`, `image/jpeg`, or `image/webp` — sniffed from the
+    /// returned bytes.
+    pub content_type: String,
+    /// USD cost charged for this test image — same value that goes into
+    /// the `generation_event.cost` ledger entry. Comes from the
+    /// provider's reported usage (OpenRouter/Gemini), the row's
+    /// `cost_per_megapixel` treated as $/image (xAI / fal), or
+    /// $/megapixel × actual megapixels (mold). Reported as 0 when the
+    /// admin hasn't set a price on the row.
+    pub cost: f64,
+    /// `true` when the provider was in mock mode (empty key / dev path),
+    /// so the admin sees they got a placeholder back, not a real render.
+    pub mocked: bool,
+}
+
+#[utoipa::path(
+    post, path = "/admin/test/image-llm", tag = "admin",
+    request_body = TestImageLlmRequest,
+    responses(
+        (status = 200, body = TestImageLlmResponse),
+        (status = 400), (status = 403), (status = 404), (status = 502),
+    ),
+    security(("bearer" = []))
+)]
+pub async fn test_image_llm(
+    State(state): State<AppState>,
+    admin: RequireAdmin,
+    Json(body): Json<TestImageLlmRequest>,
+) -> ApiResult<Json<TestImageLlmResponse>> {
+    use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+
+    body.validate()
+        .map_err(|e| Error::Validation(e.to_string()))?;
+    if !is_valid_llm_id(&body.llm_id) {
+        return Err(Error::Validation("invalid llm_id".into()).into());
+    }
+    let is_short = body.is_short.unwrap_or(false);
+
+    let result = crate::generation::cover::generate_with_prompt(
+        &state,
+        &admin.0.id,
+        &body.llm_id,
+        &body.prompt,
+        is_short,
+    )
+    .await?;
+
+    let mime = crate::handlers::cover::detect_mime(&result.bytes).to_string();
+    let image_base64 = B64.encode(&result.bytes);
+    // `mocked` here is best-effort. The only provider that flips into
+    // mock mode is OpenRouter / xAI with an empty key — both surface a
+    // 1×1 transparent PNG. The mold and OpenAI-compat paths can't be
+    // mocked from this side, so we report `false` for them.
+    let mocked = state.llm().is_mock() && result.bytes.len() < 200;
+
+    Ok(Json(TestImageLlmResponse {
+        image_base64,
+        content_type: mime,
+        cost: result.cost,
+        mocked,
+    }))
+}
+
+/// Look up the per-row routing fields for an openai-compat LLM (`base_url`
+/// + decrypted `api_key`). Returns `(None, None)` for legacy OpenRouter /
+/// xAI rows. Used by the test rig + any other path that needs to fire a
+/// chat against a single named LLM without going through the picker.
+async fn load_llm_routing(
+    state: &AppState,
+    id: &str,
+) -> Result<(Option<String>, Option<String>)> {
+    if !is_valid_llm_id(id) {
+        return Ok((None, None));
+    }
+    #[derive(Debug, Deserialize)]
+    struct Row {
+        #[serde(default)]
+        base_url: Option<String>,
+        #[serde(default)]
+        api_key_enc: Option<String>,
+    }
+    let rows: Vec<Row> = state
+        .db()
+        .inner()
+        .query(format!("SELECT base_url, api_key_enc FROM llm:`{id}`"))
+        .await
+        .map_err(|e| Error::Database(format!("load_llm_routing: {e}")))?
+        .take(0)
+        .map_err(|e| Error::Database(format!("load_llm_routing (decode): {e}")))?;
+    let Some(row) = rows.into_iter().next() else {
+        return Ok((None, None));
+    };
+    let base_url = row.base_url.filter(|s| !s.trim().is_empty());
+    let api_key = row.api_key_enc.as_deref().and_then(|enc| {
+        crate::youtube::encrypt::decrypt_with_domain(
+            enc,
+            state.config().password_pepper.as_bytes(),
+            crate::youtube::encrypt::LLM_API_KEY_DOMAIN,
+        )
+        .ok()
+    });
+    Ok((base_url, api_key))
 }
 
 #[derive(Debug, Deserialize, Validate, ToSchema)]

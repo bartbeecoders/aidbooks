@@ -504,6 +504,18 @@ pub struct YoutubeVideoRow {
     pub view_count: u64,
     pub like_count: u64,
     pub comment_count: u64,
+    /// `true` when the source audiobook was generated as a YouTube
+    /// Short (one chapter, ≤ 90 s narration). Mutually exclusive with
+    /// `is_songbook` — drives the grouping on the analytics page.
+    pub is_short: bool,
+    /// `true` when the source audiobook was generated from a song
+    /// (lyrics-driven outline + snippet splicing).
+    pub is_songbook: bool,
+    /// Per-video share of the source audiobook's total generation cost:
+    /// audiobook cost divided by the number of videos published from
+    /// that audiobook. Summing this column equals the sum of each
+    /// audiobook's full cost (no double-counting on playlist mode).
+    pub cost_usd: f64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -514,6 +526,9 @@ pub struct YoutubeVideoList {
     pub total_views: u64,
     pub total_likes: u64,
     pub total_comments: u64,
+    /// Total generation cost across all audiobooks that produced a
+    /// video in this list (each audiobook counted once).
+    pub total_cost_usd: f64,
 }
 
 #[utoipa::path(
@@ -580,33 +595,81 @@ pub async fn youtube_videos(
         .take(0)
         .map_err(|e| Error::Database(format!("yt videos playlist (decode): {e}")))?;
 
-    // Pull audiobook titles for the rows we're about to surface.
+    // Pull audiobook title + the type flags the analytics page groups
+    // on (`is_short`, `is_songbook`). Older rows that pre-date the
+    // songbook/short migrations may have these fields absent — default
+    // to false so they fall into the plain "Audiobooks" bucket.
     #[derive(Debug, Deserialize)]
-    struct TitleRow {
+    struct BookRow {
         id: Thing,
         title: String,
+        #[serde(default)]
+        is_short: Option<bool>,
+        #[serde(default)]
+        is_songbook: Option<bool>,
     }
     let book_ids: Vec<String> = single
         .iter()
         .map(|s| s.audiobook.id.to_raw())
         .chain(playlist.iter().map(|p| p.audiobook.id.to_raw()))
         .collect();
-    let mut titles: HashMap<String, String> = HashMap::new();
+    struct BookMeta {
+        title: String,
+        is_short: bool,
+        is_songbook: bool,
+    }
+    let mut books: HashMap<String, BookMeta> = HashMap::new();
     if !book_ids.is_empty() {
-        let rows: Vec<TitleRow> = state
+        let rows: Vec<BookRow> = state
             .db()
             .inner()
             .query(
-                "SELECT id, title FROM audiobook \
+                "SELECT id, title, is_short, is_songbook FROM audiobook \
                  WHERE record::id(id) INSIDE $ids",
             )
-            .bind(("ids", book_ids))
+            .bind(("ids", book_ids.clone()))
             .await
             .map_err(|e| Error::Database(format!("yt videos titles: {e}")))?
             .take(0)
             .map_err(|e| Error::Database(format!("yt videos titles (decode): {e}")))?;
         for r in rows {
-            titles.insert(r.id.id.to_raw(), r.title);
+            books.insert(
+                r.id.id.to_raw(),
+                BookMeta {
+                    title: r.title,
+                    is_short: r.is_short.unwrap_or(false),
+                    is_songbook: r.is_songbook.unwrap_or(false),
+                },
+            );
+        }
+    }
+
+    // Total generation_event cost per audiobook for the books in this
+    // result. We sum once per book and (further down) split that total
+    // across the videos published from it so playlist-mode rows don't
+    // double-count the cost in the table footer.
+    #[derive(Debug, Deserialize)]
+    struct CostRow {
+        audiobook: Thing,
+        #[serde(default)]
+        cost_usd: f64,
+    }
+    let mut book_cost: HashMap<String, f64> = HashMap::new();
+    if !book_ids.is_empty() {
+        let rows: Vec<CostRow> = state
+            .db()
+            .inner()
+            .query(
+                "SELECT audiobook, cost_usd FROM generation_event \
+                 WHERE record::id(audiobook) INSIDE $ids",
+            )
+            .bind(("ids", book_ids))
+            .await
+            .map_err(|e| Error::Database(format!("yt videos costs: {e}")))?
+            .take(0)
+            .map_err(|e| Error::Database(format!("yt videos costs (decode): {e}")))?;
+        for r in rows {
+            *book_cost.entry(r.audiobook.id.to_raw()).or_insert(0.0) += r.cost_usd;
         }
     }
 
@@ -617,33 +680,39 @@ pub async fn youtube_videos(
         audiobook_title: String,
         chapter_number: Option<i64>,
         published_at: Option<DateTime<Utc>>,
+        is_short: bool,
+        is_songbook: bool,
     }
     let mut meta: HashMap<String, Meta> = HashMap::new();
     for s in single {
         let Some(vid) = s.video_id else { continue };
         let book_id = s.audiobook.id.to_raw();
-        let title = titles.get(&book_id).cloned().unwrap_or_default();
+        let book = books.get(&book_id);
         meta.insert(
             vid,
             Meta {
                 audiobook_id: book_id,
-                audiobook_title: title,
+                audiobook_title: book.map(|b| b.title.clone()).unwrap_or_default(),
                 chapter_number: None,
                 published_at: s.published_at,
+                is_short: book.map(|b| b.is_short).unwrap_or(false),
+                is_songbook: book.map(|b| b.is_songbook).unwrap_or(false),
             },
         );
     }
     for p in playlist {
         let Some(vid) = p.video_id else { continue };
         let book_id = p.audiobook.id.to_raw();
-        let title = titles.get(&book_id).cloned().unwrap_or_default();
+        let book = books.get(&book_id);
         meta.insert(
             vid,
             Meta {
                 audiobook_id: book_id,
-                audiobook_title: title,
+                audiobook_title: book.map(|b| b.title.clone()).unwrap_or_default(),
                 chapter_number: Some(p.chapter_number),
                 published_at: p.published_at,
+                is_short: book.map(|b| b.is_short).unwrap_or(false),
+                is_songbook: book.map(|b| b.is_songbook).unwrap_or(false),
             },
         );
     }
@@ -654,7 +723,17 @@ pub async fn youtube_videos(
             total_views: 0,
             total_likes: 0,
             total_comments: 0,
+            total_cost_usd: 0.0,
         }));
+    }
+
+    // Count videos per audiobook in the visible result so we can split
+    // the audiobook's cost evenly across its rows. A single-mode video
+    // is one row → full cost; a 10-chapter playlist is ten rows → 1/10
+    // each. Summing the column then equals the audiobook total.
+    let mut book_video_count: HashMap<String, u32> = HashMap::new();
+    for m in meta.values() {
+        *book_video_count.entry(m.audiobook_id.clone()).or_insert(0) += 1;
     }
 
     // YouTube's videos.list caps at 50 ids per call; chunk and
@@ -679,6 +758,7 @@ pub async fn youtube_videos(
     let mut total_views = 0u64;
     let mut total_likes = 0u64;
     let mut total_comments = 0u64;
+    let mut total_cost_usd = 0.0f64;
     let mut items: Vec<YoutubeVideoRow> = meta
         .into_iter()
         .map(|(vid, m)| {
@@ -689,6 +769,14 @@ pub async fn youtube_videos(
             total_views += views;
             total_likes += likes;
             total_comments += comments;
+            let book_total = book_cost.get(&m.audiobook_id).copied().unwrap_or(0.0);
+            let share_denom = book_video_count
+                .get(&m.audiobook_id)
+                .copied()
+                .unwrap_or(1)
+                .max(1) as f64;
+            let row_cost = book_total / share_denom;
+            total_cost_usd += row_cost;
             YoutubeVideoRow {
                 video_id: vid,
                 audiobook_id: m.audiobook_id,
@@ -698,6 +786,9 @@ pub async fn youtube_videos(
                 view_count: views,
                 like_count: likes,
                 comment_count: comments,
+                is_short: m.is_short,
+                is_songbook: m.is_songbook,
+                cost_usd: row_cost,
             }
         })
         .collect();
@@ -710,6 +801,7 @@ pub async fn youtube_videos(
         total_views,
         total_likes,
         total_comments,
+        total_cost_usd,
     }))
 }
 

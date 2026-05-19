@@ -115,9 +115,7 @@ pub async fn translate_audiobook(
             state,
             user,
             audiobook_id,
-            &picked.llm_id,
-            &picked.provider,
-            &picked.model_id,
+            &picked,
             source_label,
             target_label,
             &ch.title,
@@ -129,9 +127,7 @@ pub async fn translate_audiobook(
                     state,
                     user,
                     audiobook_id,
-                    &picked.llm_id,
-                    &picked.provider,
-                    &picked.model_id,
+                    &picked,
                     source_label,
                     target_label,
                     s,
@@ -144,9 +140,7 @@ pub async fn translate_audiobook(
             state,
             user,
             audiobook_id,
-            &picked.llm_id,
-            &picked.provider,
-            &picked.model_id,
+            &picked,
             source_label,
             target_label,
             &body,
@@ -192,20 +186,18 @@ pub async fn translate_audiobook(
     Ok(created)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn call_translate(
     state: &AppState,
     user: &UserId,
     audiobook_id: &str,
-    llm_id: &str,
-    provider: &str,
-    model: &str,
+    picked: &crate::llm::PickedLlm,
     source: &str,
     target: &str,
     text: &str,
 ) -> Result<String> {
+    let llm_id = picked.llm_id.as_str();
     let req = ChatRequest {
-        model: model.to_string(),
+        model: picked.model_id.clone(),
         messages: vec![
             ChatMessage::system(format!(
                 "You are a literary translator. Translate the user's text from {source} \
@@ -218,7 +210,9 @@ async fn call_translate(
         max_tokens: Some(500),
         json_mode: None,
         modalities: None,
-        provider: Some(provider.to_string()),
+        provider: Some(picked.provider.clone()),
+        openai_base_url: picked.base_url.clone(),
+        openai_api_key: picked.api_key.clone(),
     };
     let resp = state.llm().chat(&req).await?;
     log_generation_event(
@@ -235,23 +229,21 @@ async fn call_translate(
     Ok(resp.content.trim().to_string())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn call_translate_prose(
     state: &AppState,
     user: &UserId,
     audiobook_id: &str,
-    llm_id: &str,
-    provider: &str,
-    model: &str,
+    picked: &crate::llm::PickedLlm,
     source: &str,
     target: &str,
     text: &str,
 ) -> Result<String> {
+    let llm_id = picked.llm_id.as_str();
     // For the long body we ask the model to return JSON `{"translation": "..."}`
     // so quote-stripping isn't needed and a stray "Here is the translation:"
     // prefix can't slip through.
     let req = ChatRequest {
-        model: model.to_string(),
+        model: picked.model_id.clone(),
         messages: vec![
             ChatMessage::system(format!(
                 "You are a literary translator. Translate the user's prose from {source} \
@@ -265,7 +257,9 @@ async fn call_translate_prose(
         max_tokens: Some(8_000),
         json_mode: Some(true),
         modalities: None,
-        provider: Some(provider.to_string()),
+        provider: Some(picked.provider.clone()),
+        openai_base_url: picked.base_url.clone(),
+        openai_api_key: picked.api_key.clone(),
     };
     let resp = state.llm().chat(&req).await?;
     log_generation_event(

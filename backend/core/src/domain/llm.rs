@@ -9,6 +9,20 @@ pub enum LlmProvider {
     /// xAI native API (Grok models). Uses the same OpenAI-compatible
     /// chat-completions wire shape as OpenRouter, just a different host.
     Xai,
+    /// Any OpenAI-compatible host (OpenAI proper, LMStudio, Ollama, vLLM…).
+    /// Each row carries its own `base_url` + (optional) `api_key`; there
+    /// is no global config for this provider.
+    Openai,
+    /// Self-hosted [`mold`](https://github.com/utensils/mold) image-gen
+    /// server (CUDA/Metal). Each row points at `mold serve` via `base_url`
+    /// and stores the optional `MOLD_API_KEY` in `api_key`. `model_id`
+    /// carries the mold model slug (e.g. `flux2-klein:q8`).
+    Mold,
+    /// [fal.ai](https://fal.ai/docs/documentation) hosted image-gen API.
+    /// Each row stores the `FAL_KEY` in `api_key`; `base_url` is optional
+    /// and defaults to `https://fal.run` (sync mode). `model_id` carries
+    /// the fal model slug (e.g. `fal-ai/flux/dev`, `fal-ai/flux/schnell`).
+    Fal,
 }
 
 /// Where this LLM is allowed to be used by default.

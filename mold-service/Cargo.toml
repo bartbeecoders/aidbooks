@@ -1,0 +1,32 @@
+[package]
+name = "mold-service"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+publish = false
+description = "AidBooks-flavored HTTP wrapper around utensils/mold's `mold serve`. Owns the GPU semaphore, OOM cooldown, default model/steps/guidance, and dimensions-for-shorts policy."
+
+[[bin]]
+name = "mold-service"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tower-http = { version = "0.6", features = ["trace"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+thiserror = "1"
+anyhow = "1"
+base64 = "0.22"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

@@ -30,6 +30,7 @@ import type {
   AudiobookCategoryNameList,
   AudiobookCategoryRow,
   CreateAudiobookCategoryRequest,
+  OpenAiCompatModelList,
   OpenRouterModelList,
   UpdateAudiobookCategoryRequest,
   UpsertYoutubeFooterRequest,
@@ -65,8 +66,12 @@ import type {
   RegisterRequest,
   RevokeSessionsResponse,
   SystemOverview,
+  PullMoldModelResponse,
+  UnloadMoldModelsResponse,
   TestLlmRequest,
   TestLlmResponse,
+  TestImageLlmRequest,
+  TestImageLlmResponse,
   TestVoiceRequest,
   TestVoiceResponse,
   UpdateAudiobookRequest,
@@ -549,6 +554,20 @@ export const admin = {
       apiFetch<AdminLlmRow>(`/admin/llm/${id}`, { method: "PATCH", body }),
     remove: (id: string) =>
       apiFetch<void>(`/admin/llm/${id}`, { method: "DELETE" }),
+    /** Tell a `provider = "mold"` row's mold server to download the
+     * configured `model_id`. Blocks until the pull finishes (may be
+     * many minutes for multi-GB families). 400 for non-mold rows. */
+    pullModel: (id: string) =>
+      apiFetch<PullMoldModelResponse>(`/admin/llm/${id}/pull-model`, {
+        method: "POST",
+      }),
+    /** Drop every model from the mold server's GPU cache to free VRAM
+     * (server-wide — affects every row pointing at the same `base_url`).
+     * 400 for non-mold rows. */
+    unloadModels: (id: string) =>
+      apiFetch<UnloadMoldModelsResponse>(`/admin/llm/${id}/unload-models`, {
+        method: "POST",
+      }),
   },
   voices: {
     list: () => apiFetch<AdminVoiceList>("/admin/voice"),
@@ -589,6 +608,11 @@ export const admin = {
   test: {
     llm: (body: TestLlmRequest) =>
       apiFetch<TestLlmResponse>("/admin/test/llm", { method: "POST", body }),
+    image_llm: (body: TestImageLlmRequest) =>
+      apiFetch<TestImageLlmResponse>("/admin/test/image-llm", {
+        method: "POST",
+        body,
+      }),
     voice: (body: TestVoiceRequest) =>
       apiFetch<TestVoiceResponse>("/admin/test/voice", { method: "POST", body }),
   },
@@ -615,6 +639,18 @@ export const admin = {
     models: () => apiFetch<XaiModelList>("/admin/xai/models"),
     /** xAI's `/image-generation-models` catalog (Grok-2-Image et al). */
     imageModels: () => apiFetch<XaiImageModelList>("/admin/xai/image-models"),
+  },
+  openai: {
+    /**
+     * Proxy GET `<base_url>/models` on the user's OpenAI-compatible host
+     * (LMStudio, Ollama, OpenAI proper). API key is optional — LMStudio's
+     * default no-auth mode leaves it blank.
+     */
+    models: (body: { base_url: string; api_key?: string }) =>
+      apiFetch<OpenAiCompatModelList>("/admin/openai/models", {
+        method: "POST",
+        body,
+      }),
   },
   youtubeSettings: {
     list: () => apiFetch<YoutubeFooterList>("/admin/youtube-settings"),

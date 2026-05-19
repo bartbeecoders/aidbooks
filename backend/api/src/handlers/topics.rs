@@ -85,6 +85,8 @@ pub async fn random(
         json_mode: Some(true),
         modalities: None,
         provider: Some(picked.provider.clone()),
+        openai_base_url: picked.base_url.clone(),
+        openai_api_key: picked.api_key.clone(),
     };
 
     let response = state.llm().chat(&req).await?;

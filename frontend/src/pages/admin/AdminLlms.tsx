@@ -4,6 +4,7 @@ import { admin, ApiError } from "../../api";
 import type {
   AdminLlmRow,
   CreateLlmRequest,
+  OpenAiCompatModelRow,
   OpenRouterModelRow,
   UpdateLlmRequest,
   XaiImageModelRow,
@@ -61,6 +62,7 @@ export function AdminLlms(): JSX.Element {
   const qc = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<AdminLlmRow | null>(null);
+  const [testing, setTesting] = useState<AdminLlmRow | null>(null);
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["admin", "llm"],
@@ -186,6 +188,14 @@ export function AdminLlms(): JSX.Element {
                   <div className="flex justify-end gap-2">
                     <button
                       type="button"
+                      onClick={() => setTesting(row)}
+                      className="rounded-md border border-emerald-900 bg-emerald-950/40 px-2 py-1 text-xs text-emerald-200 hover:border-emerald-800"
+                      title="Send a tiny probe to verify connectivity"
+                    >
+                      Test
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setEditing(row)}
                       className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-200 hover:border-slate-600"
                     >
@@ -245,6 +255,136 @@ export function AdminLlms(): JSX.Element {
           }}
         />
       )}
+      {testing && (
+        <TestLlmDialog row={testing} onClose={() => setTesting(null)} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Connectivity probe for one LLM row. Fires `admin.test.llm` with a
+ * minimal prompt the moment the dialog opens, then renders the result
+ * (success → response + token counts, failure → upstream error). Useful
+ * to confirm a freshly-added OpenAI-compat row reaches LMStudio / Ollama
+ * without having to kick off a full generation.
+ */
+function TestLlmDialog({
+  row,
+  onClose,
+}: {
+  row: AdminLlmRow;
+  onClose: () => void;
+}): JSX.Element {
+  const PROMPT = "Reply with the single word: OK.";
+  // Reasoning-mode local models (QwQ, DeepSeek-R1, etc.) spend hundreds
+  // of tokens on a `<think>` block before they get to the actual answer,
+  // so a 32-token cap reliably returns `finish_reason=length` with empty
+  // content. 512 is generous enough for any reasonable thinking budget
+  // without making a slow model wait forever on a bad config.
+  const test = useMutation({
+    mutationFn: () =>
+      admin.test.llm({
+        llm_id: row.id,
+        prompt: PROMPT,
+        max_tokens: 512,
+        temperature: 0,
+      }),
+  });
+
+  useEffect(() => {
+    // Auto-fire once on mount. Subsequent retries go through "Run again".
+    test.mutate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-xl rounded-xl border border-slate-800 bg-slate-950 p-5 shadow-xl"
+      >
+        <h2 className="text-base font-semibold text-slate-100">
+          Test {row.name}
+        </h2>
+        <p className="mt-1 text-xs text-slate-400">
+          <span className="text-slate-500">{row.provider}</span>
+          {" · "}
+          <span className="font-mono">{row.model_id}</span>
+          {row.base_url && (
+            <>
+              {" · "}
+              <span className="font-mono text-slate-500">{row.base_url}</span>
+            </>
+          )}
+        </p>
+        <p className="mt-3 text-xs text-slate-500">
+          Prompt:
+          <span className="ml-1 font-mono text-slate-300">
+            “{PROMPT}”
+          </span>
+        </p>
+
+        <div className="mt-4 min-h-[80px] rounded-md border border-slate-800 bg-slate-900/40 p-3 text-sm">
+          {test.isPending && (
+            <p className="text-slate-400">Calling the model…</p>
+          )}
+          {test.error && (
+            <pre className="whitespace-pre-wrap break-words text-rose-300">
+              {test.error instanceof ApiError
+                ? test.error.message
+                : (test.error as Error).message}
+            </pre>
+          )}
+          {test.data && (
+            <>
+              <p className="font-mono text-slate-100">
+                {test.data.content.trim() || "(empty response)"}
+              </p>
+              <p className="mt-2 text-[11px] text-slate-500">
+                tokens in / out:{" "}
+                <span className="tabular-nums">
+                  {test.data.prompt_tokens} / {test.data.completion_tokens}
+                </span>
+                {test.data.mocked && (
+                  <span className="ml-2 rounded bg-amber-900/40 px-1.5 py-0.5 text-amber-300">
+                    mocked
+                  </span>
+                )}
+              </p>
+            </>
+          )}
+        </div>
+
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => test.mutate()}
+            disabled={test.isPending}
+            className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:border-slate-600 disabled:opacity-50"
+          >
+            Run again
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md bg-sky-600 px-3 py-2 text-sm font-medium text-white hover:bg-sky-500"
+          >
+            Close
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -317,12 +457,27 @@ export function LlmDialog({
   const [languages, setLanguages] = useState<string[]>(initial?.languages ?? []);
   const [priority, setPriority] = useState<number>(initial?.priority ?? 100);
   // Which provider tab is active in the picker. Defaults to whatever
-  // provider the row currently uses (or open_router for new rows). xAI
-  // doesn't ship image models, so the tab is hidden in image kind.
-  type ProviderTab = "open_router" | "xai";
+  // provider the row currently uses (or open_router for new rows).
+  // `openai` covers any OpenAI-compatible host (LMStudio, Ollama, OpenAI
+  // proper) by carrying its own `base_url` + (optional) `api_key`.
+  type ProviderTab = "open_router" | "xai" | "openai" | "mold" | "fal";
   const initialTab: ProviderTab =
     (initial?.provider as ProviderTab | undefined) ?? "open_router";
   const [providerTab, setProviderTab] = useState<ProviderTab>(initialTab);
+  // OpenAI-compat / mold per-row routing fields. Both providers carry their
+  // own `base_url` + optional `api_key`, so the same two state slots back
+  // both tabs — the field labels and validation differ but the wire shape
+  // is identical.
+  const [openaiBaseUrl, setOpenaiBaseUrl] = useState<string>(
+    initial?.base_url ?? "",
+  );
+  // `apiKey` is write-only. On edit we leave it empty by default — the
+  // backend keeps the previously-stored key unless the admin types a new
+  // one (or types nothing + ticks "clear" via the explicit clear button).
+  const [openaiApiKey, setOpenaiApiKey] = useState<string>("");
+  // Tracks whether the user explicitly cleared the saved key on edit
+  // (sends `""` to the patch endpoint instead of leaving it untouched).
+  const [openaiApiKeyCleared, setOpenaiApiKeyCleared] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -333,6 +488,12 @@ export function LlmDialog({
   }, [onClose]);
 
   const isImage = kind === "image";
+  const isOpenAi = providerTab === "openai";
+  const isMold = providerTab === "mold";
+  const isFal = providerTab === "fal";
+  // `openai`, `mold`, and `fal` all route per-row via `base_url` + `api_key`.
+  // (For fal the base_url is optional and defaults to https://fal.run.)
+  const usesPerRowRouting = isOpenAi || isMold || isFal;
   const save = useMutation({
     mutationFn: async () => {
       if (mode === "create") {
@@ -352,9 +513,16 @@ export function LlmDialog({
           languages,
           priority,
           provider: providerTab,
+          base_url: usesPerRowRouting ? openaiBaseUrl.trim() : null,
+          // Empty string is fine for LMStudio's default no-auth mode and
+          // for a `mold serve` instance running without MOLD_API_KEY.
+          api_key: usesPerRowRouting ? openaiApiKey : null,
         };
         return admin.llms.create(body);
       } else {
+        // Patch semantics: `api_key` omitted leaves the stored secret
+        // alone, `""` clears it, anything else replaces it. The provider
+        // tab dictates which routing fields we even send.
         const body: UpdateLlmRequest = {
           name: name.trim(),
           model_id: modelId.trim(),
@@ -366,7 +534,26 @@ export function LlmDialog({
           function: func,
           languages,
           priority,
+          provider: providerTab,
         };
+        if (usesPerRowRouting) {
+          body.base_url = openaiBaseUrl.trim();
+          if (openaiApiKey.trim().length > 0) {
+            body.api_key = openaiApiKey;
+          } else if (openaiApiKeyCleared) {
+            body.api_key = "";
+          }
+        } else if (
+          initial?.provider === "openai" ||
+          initial?.provider === "mold" ||
+          initial?.provider === "fal"
+        ) {
+          // Switching away from a per-row-routed provider → drop the
+          // routing fields so a stale base_url doesn't quietly route
+          // the next chat to nowhere.
+          body.base_url = "";
+          body.api_key = "";
+        }
         return admin.llms.patch(initial!.id, body);
       }
     },
@@ -374,6 +561,16 @@ export function LlmDialog({
   });
 
   const idValid = mode === "edit" || /^[a-z0-9_]+$/.test(id);
+  // OpenAI-compat and mold rows MUST carry a base URL — there's no global
+  // fallback host for those providers. fal rows MAY carry one but default
+  // to https://fal.run when blank, so they only fail validation if the
+  // admin typed something that isn't a URL.
+  const baseUrlTrimmed = openaiBaseUrl.trim();
+  const openaiUrlValid =
+    !usesPerRowRouting ||
+    (isFal
+      ? baseUrlTrimmed.length === 0 || /^https?:\/\/\S+/.test(baseUrlTrimmed)
+      : /^https?:\/\/\S+/.test(baseUrlTrimmed));
   const valid =
     idValid &&
     name.trim().length > 0 &&
@@ -381,7 +578,8 @@ export function LlmDialog({
     contextWindow >= 1 &&
     costPrompt >= 0 &&
     costCompletion >= 0 &&
-    (!isImage || costPerMp >= 0);
+    (!isImage || costPerMp >= 0) &&
+    openaiUrlValid;
 
   // Roles offered for selection — filtered when the function is `image`
   // since text-content roles wouldn't sensibly route to an image model.
@@ -480,7 +678,7 @@ export function LlmDialog({
                 </span>
               </p>
               <div className="flex rounded-md border border-slate-800 bg-slate-950 p-0.5 text-xs">
-                {(["open_router", "xai"] as const).map((p) => (
+                {(["open_router", "xai", "openai", "mold", "fal"] as const).map((p) => (
                   <button
                     key={p}
                     type="button"
@@ -491,12 +689,101 @@ export function LlmDialog({
                         : "text-slate-400 hover:text-slate-200"
                     }`}
                   >
-                    {p === "open_router" ? "OpenRouter" : "xAI"}
+                    {p === "open_router"
+                      ? "OpenRouter"
+                      : p === "xai"
+                        ? "xAI"
+                        : p === "openai"
+                          ? "OpenAI"
+                          : p === "mold"
+                            ? "Mold"
+                            : "fal.ai"}
                   </button>
                 ))}
               </div>
             </div>
-            {providerTab === "xai" && isImage ? (
+            {providerTab === "fal" ? (
+              <FalModelPicker
+                modelId={modelId}
+                baseUrl={openaiBaseUrl}
+                apiKey={openaiApiKey}
+                hasStoredKey={
+                  mode === "edit" &&
+                  initial?.has_api_key === true &&
+                  !openaiApiKeyCleared
+                }
+                onModelIdChange={(v) => {
+                  setModelId(v);
+                  if (!name.trim()) setName(v);
+                }}
+                onBaseUrlChange={setOpenaiBaseUrl}
+                onApiKeyChange={(v) => {
+                  setOpenaiApiKey(v);
+                  if (v.length > 0) setOpenaiApiKeyCleared(false);
+                }}
+                onClearStoredKey={() => {
+                  setOpenaiApiKey("");
+                  setOpenaiApiKeyCleared(true);
+                }}
+              />
+            ) : providerTab === "mold" ? (
+              <MoldModelPicker
+                modelId={modelId}
+                baseUrl={openaiBaseUrl}
+                apiKey={openaiApiKey}
+                hasStoredKey={
+                  mode === "edit" &&
+                  initial?.has_api_key === true &&
+                  !openaiApiKeyCleared
+                }
+                onModelIdChange={(v) => {
+                  setModelId(v);
+                  if (!name.trim()) setName(v);
+                }}
+                onBaseUrlChange={setOpenaiBaseUrl}
+                onApiKeyChange={(v) => {
+                  setOpenaiApiKey(v);
+                  if (v.length > 0) setOpenaiApiKeyCleared(false);
+                }}
+                onClearStoredKey={() => {
+                  setOpenaiApiKey("");
+                  setOpenaiApiKeyCleared(true);
+                }}
+              />
+            ) : providerTab === "openai" ? (
+              <OpenAiCompatModelPicker
+                value={modelId}
+                baseUrl={openaiBaseUrl}
+                apiKey={openaiApiKey}
+                hasStoredKey={
+                  mode === "edit" &&
+                  initial?.has_api_key === true &&
+                  !openaiApiKeyCleared
+                }
+                onBaseUrlChange={setOpenaiBaseUrl}
+                onApiKeyChange={(v) => {
+                  setOpenaiApiKey(v);
+                  if (v.length > 0) setOpenaiApiKeyCleared(false);
+                }}
+                onClearStoredKey={() => {
+                  setOpenaiApiKey("");
+                  setOpenaiApiKeyCleared(true);
+                }}
+                onPick={(m) => {
+                  setModelId(m.id);
+                  if (!name.trim()) setName(m.id);
+                  if (m.context_length && m.context_length > 0) {
+                    setContextWindow(m.context_length);
+                  }
+                  // Self-hosted endpoints don't ship pricing in the
+                  // /models response. Default both to 0 — the admin can
+                  // tweak per-token costs manually if they want cost
+                  // tracking against an OpenAI proper account.
+                  setCostPrompt(0);
+                  setCostCompletion(0);
+                }}
+              />
+            ) : providerTab === "xai" && isImage ? (
               <XaiImageModelPicker
                 value={modelId}
                 onPick={(m) => {
@@ -940,6 +1227,402 @@ function XaiModelPicker({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function OpenAiCompatModelPicker({
+  value,
+  baseUrl,
+  apiKey,
+  hasStoredKey,
+  onBaseUrlChange,
+  onApiKeyChange,
+  onClearStoredKey,
+  onPick,
+}: {
+  /** Currently-picked model id (so the row highlights). */
+  value: string;
+  baseUrl: string;
+  apiKey: string;
+  /** `true` on edit when a saved key exists and hasn't been cleared. */
+  hasStoredKey: boolean;
+  onBaseUrlChange: (v: string) => void;
+  onApiKeyChange: (v: string) => void;
+  onClearStoredKey: () => void;
+  onPick: (model: OpenAiCompatModelRow) => void;
+}): JSX.Element {
+  const qc = useQueryClient();
+  const [fetched, setFetched] = useState(false);
+  const trimmedBase = baseUrl.trim();
+  const baseValid = /^https?:\/\/\S+/.test(trimmedBase);
+  // Lazy fetch — we only ping the host after the admin clicks "List
+  // models" so a half-typed URL doesn't fire a noisy POST.
+  const queryKey = [
+    "admin",
+    "openai-compat",
+    "models",
+    trimmedBase,
+    // Don't key on the real api_key value (we don't want it in dev
+    // tools); a length signal is enough to distinguish "with key" vs
+    // "without".
+    apiKey.length > 0 ? "with-key" : "no-key",
+  ];
+  const { data, isLoading, error } = useQuery({
+    queryKey,
+    enabled: fetched && baseValid,
+    queryFn: () =>
+      admin.openai.models({
+        base_url: trimmedBase,
+        api_key: apiKey || undefined,
+      }),
+    retry: false,
+    staleTime: 60 * 1000,
+  });
+
+  const filtered = useMemo(() => {
+    const items = data?.items ?? [];
+    return items.slice(0, 200);
+  }, [data]);
+
+  return (
+    <div className="space-y-2">
+      <Labelled label="Base URL" hint="OpenAI-compatible endpoint">
+        <input
+          type="url"
+          value={baseUrl}
+          onChange={(e) => onBaseUrlChange(e.target.value)}
+          placeholder="http://localhost:1234/v1"
+          className={`${inputCls} font-mono text-xs`}
+        />
+      </Labelled>
+      <Labelled
+        label="API key"
+        hint={
+          hasStoredKey
+            ? "Saved key on file — leave empty to keep, type to replace"
+            : "Optional (LMStudio defaults to no auth)"
+        }
+      >
+        <div className="flex items-center gap-2">
+          <input
+            type="password"
+            value={apiKey}
+            onChange={(e) => onApiKeyChange(e.target.value)}
+            placeholder={hasStoredKey ? "•••••••• (stored)" : "sk-…"}
+            className={`${inputCls} font-mono text-xs`}
+            autoComplete="off"
+          />
+          {hasStoredKey && (
+            <button
+              type="button"
+              onClick={onClearStoredKey}
+              className="rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:border-slate-600"
+              title="Remove the stored API key"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </Labelled>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          disabled={!baseValid}
+          onClick={() => {
+            // Cache the in-flight result against the current creds.
+            qc.invalidateQueries({ queryKey });
+            setFetched(true);
+          }}
+          className="rounded-md bg-slate-800 px-3 py-1.5 text-xs text-slate-100 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          List models
+        </button>
+        <span className="text-[11px] text-slate-500">
+          Hits <code className="text-slate-400">{trimmedBase || "<base>"}/models</code>.
+        </span>
+      </div>
+      <div className="max-h-56 overflow-y-auto rounded-md border border-slate-800 bg-slate-950">
+        {!fetched && (
+          <p className="p-3 text-xs text-slate-500">
+            Enter the base URL of your OpenAI-compatible host and click
+            “List models”. You can also type the model id manually below.
+          </p>
+        )}
+        {fetched && isLoading && (
+          <p className="p-3 text-xs text-slate-500">Loading…</p>
+        )}
+        {fetched && error && (
+          <p className="p-3 text-xs text-rose-400">
+            {error instanceof ApiError
+              ? error.message
+              : "Could not reach the endpoint."}
+          </p>
+        )}
+        {fetched && !isLoading && !error && filtered.length === 0 && (
+          <p className="p-3 text-xs text-slate-500">
+            No models reported by the host.
+          </p>
+        )}
+        {filtered.map((m) => {
+          const active = m.id === value;
+          const ctx = m.context_length
+            ? `${Math.round(m.context_length / 1000)}k ctx`
+            : null;
+          return (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => onPick(m)}
+              className={`flex w-full flex-col items-start gap-0.5 border-b border-slate-800 px-3 py-2 text-left last:border-b-0 ${
+                active ? "bg-sky-900/30" : "hover:bg-slate-900"
+              }`}
+            >
+              <span className="font-mono text-xs text-slate-200">{m.id}</span>
+              <span className="text-[11px] text-slate-400">
+                {m.owned_by || "—"}
+                {ctx && (
+                  <>
+                    <span className="mx-1 text-slate-600">·</span>
+                    {ctx}
+                  </>
+                )}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/// Picker for self-hosted [mold](https://github.com/utensils/mold) servers.
+/// Mold doesn't expose a `/models` endpoint we can browse, so the model id
+/// is typed manually. We surface a handful of common slugs as quick-pick
+/// chips to save typing for the common case.
+function MoldModelPicker({
+  modelId,
+  baseUrl,
+  apiKey,
+  hasStoredKey,
+  onModelIdChange,
+  onBaseUrlChange,
+  onApiKeyChange,
+  onClearStoredKey,
+}: {
+  modelId: string;
+  baseUrl: string;
+  apiKey: string;
+  hasStoredKey: boolean;
+  onModelIdChange: (v: string) => void;
+  onBaseUrlChange: (v: string) => void;
+  onApiKeyChange: (v: string) => void;
+  onClearStoredKey: () => void;
+}): JSX.Element {
+  // Curated quick-pick list. Trimmed to the families most useful for
+  // chapter art: fast, low-VRAM, good prompt adherence.
+  const suggestions = [
+    "flux2-klein:q8",
+    "flux-dev:q4",
+    "flux-schnell:q8",
+    "sdxl-base:fp16",
+    "z-image-turbo:bf16",
+    "qwen-image:q8",
+  ];
+  return (
+    <div className="space-y-2">
+      <Labelled label="Base URL" hint="mold serve endpoint">
+        <input
+          type="url"
+          value={baseUrl}
+          onChange={(e) => onBaseUrlChange(e.target.value)}
+          placeholder="http://gpu-host:7680"
+          className={`${inputCls} font-mono text-xs`}
+        />
+      </Labelled>
+      <Labelled
+        label="API key"
+        hint={
+          hasStoredKey
+            ? "Saved MOLD_API_KEY on file — leave empty to keep, type to replace"
+            : "Optional (set when mold serve has MOLD_API_KEY)"
+        }
+      >
+        <div className="flex items-center gap-2">
+          <input
+            type="password"
+            value={apiKey}
+            onChange={(e) => onApiKeyChange(e.target.value)}
+            placeholder={hasStoredKey ? "•••••••• (stored)" : ""}
+            className={`${inputCls} font-mono text-xs`}
+            autoComplete="off"
+          />
+          {hasStoredKey && (
+            <button
+              type="button"
+              onClick={onClearStoredKey}
+              className="rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:border-slate-600"
+              title="Remove the stored API key"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </Labelled>
+      <Labelled
+        label="Model id"
+        hint="mold slug (model:variant) — type or pick below"
+      >
+        <input
+          type="text"
+          value={modelId}
+          onChange={(e) => onModelIdChange(e.target.value)}
+          placeholder="flux2-klein:q8"
+          className={`${inputCls} font-mono text-xs`}
+        />
+      </Labelled>
+      <div className="flex flex-wrap gap-1.5">
+        {suggestions.map((s) => {
+          const active = s === modelId;
+          return (
+            <button
+              key={s}
+              type="button"
+              onClick={() => onModelIdChange(s)}
+              className={`rounded-md border px-2 py-1 font-mono text-[11px] ${
+                active
+                  ? "border-sky-700 bg-sky-900/40 text-sky-100"
+                  : "border-slate-700 text-slate-300 hover:border-slate-600"
+              }`}
+            >
+              {s}
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-slate-500">
+        Mold runs locally on the GPU host — no per-token cost. Set
+        “$/MP” above to a non-zero value only if you want to track a
+        notional internal cost.
+      </p>
+    </div>
+  );
+}
+
+/// Picker for [fal.ai](https://fal.ai) hosted image-gen models. fal doesn't
+/// expose a public catalog endpoint we can browse without an API key, so the
+/// model slug is typed manually. We surface a curated set of common slugs as
+/// quick-pick chips. Pricing is per image — set the `$ / megapixel` column to
+/// fal's per-image rate (it's used as $/img by the cover-gen ledger).
+function FalModelPicker({
+  modelId,
+  baseUrl,
+  apiKey,
+  hasStoredKey,
+  onModelIdChange,
+  onBaseUrlChange,
+  onApiKeyChange,
+  onClearStoredKey,
+}: {
+  modelId: string;
+  baseUrl: string;
+  apiKey: string;
+  hasStoredKey: boolean;
+  onModelIdChange: (v: string) => void;
+  onBaseUrlChange: (v: string) => void;
+  onApiKeyChange: (v: string) => void;
+  onClearStoredKey: () => void;
+}): JSX.Element {
+  // Curated quick-pick list. Trimmed to the families most useful for
+  // chapter art: fast (schnell), flagship (dev/pro), and prompt-strong
+  // alternatives (ideogram, nano-banana).
+  const suggestions = [
+    "fal-ai/flux/schnell",
+    "fal-ai/flux/dev",
+    "fal-ai/flux-pro/v1.1",
+    "fal-ai/flux-pro/v1.1-ultra",
+    "fal-ai/ideogram/v3",
+    "fal-ai/nano-banana",
+  ];
+  return (
+    <div className="space-y-2">
+      <Labelled
+        label="Base URL"
+        hint="Optional — defaults to https://fal.run (sync host)"
+      >
+        <input
+          type="url"
+          value={baseUrl}
+          onChange={(e) => onBaseUrlChange(e.target.value)}
+          placeholder="https://fal.run"
+          className={`${inputCls} font-mono text-xs`}
+        />
+      </Labelled>
+      <Labelled
+        label="API key"
+        hint={
+          hasStoredKey
+            ? "Saved FAL_KEY on file — leave empty to keep, type to replace"
+            : "FAL_KEY from fal.ai dashboard"
+        }
+      >
+        <div className="flex items-center gap-2">
+          <input
+            type="password"
+            value={apiKey}
+            onChange={(e) => onApiKeyChange(e.target.value)}
+            placeholder={hasStoredKey ? "•••••••• (stored)" : ""}
+            className={`${inputCls} font-mono text-xs`}
+            autoComplete="off"
+          />
+          {hasStoredKey && (
+            <button
+              type="button"
+              onClick={onClearStoredKey}
+              className="rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:border-slate-600"
+              title="Remove the stored API key"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+      </Labelled>
+      <Labelled
+        label="Model id"
+        hint="fal slug (e.g. fal-ai/flux/dev) — type or pick below"
+      >
+        <input
+          type="text"
+          value={modelId}
+          onChange={(e) => onModelIdChange(e.target.value)}
+          placeholder="fal-ai/flux/dev"
+          className={`${inputCls} font-mono text-xs`}
+        />
+      </Labelled>
+      <div className="flex flex-wrap gap-1.5">
+        {suggestions.map((s) => {
+          const active = s === modelId;
+          return (
+            <button
+              key={s}
+              type="button"
+              onClick={() => onModelIdChange(s)}
+              className={`rounded-md border px-2 py-1 font-mono text-[11px] ${
+                active
+                  ? "border-sky-700 bg-sky-900/40 text-sky-100"
+                  : "border-slate-700 text-slate-300 hover:border-slate-600"
+              }`}
+            >
+              {s}
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-slate-500">
+        fal bills per generated image — enter the per-image rate in
+        “$ / megapixel” above (the cover-gen ledger reads it as $/img for
+        fal rows, same as for xAI).
+      </p>
     </div>
   );
 }

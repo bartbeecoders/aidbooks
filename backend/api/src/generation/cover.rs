@@ -23,6 +23,17 @@ numbers — purely illustrative. Match the requested visual style precisely.";
 /// that haven't picked a style yet.
 pub const DEFAULT_ART_STYLE: &str = "cinematic";
 
+/// Bytes + USD cost of one generated image. The cost mirrors what we
+/// log into `generation_event.cost`: for chat-shaped providers it
+/// comes from the upstream usage block; for xAI / fal it's the row's
+/// `cost_per_megapixel` treated as $/image; for mold it's
+/// $/megapixel × actual megapixels.
+#[derive(Debug, Clone)]
+pub struct ImageResult {
+    pub bytes: Vec<u8>,
+    pub cost: f64,
+}
+
 /// Generate a cover image for the given topic + optional genre + style.
 /// Returns the raw image bytes (typically PNG).
 ///
@@ -52,19 +63,19 @@ pub async fn generate(
         return Err(Error::Validation("topic must not be empty".into()));
     }
 
-    let (llm_id, provider, model) = resolve_model(state, llm_id_override).await?;
+    let picked = resolve_model(state, llm_id_override).await?;
     let prompt = build_prompt(topic, genre, art_style, is_short);
     request_image(
         state,
         user,
         audiobook_id,
-        &llm_id,
+        &picked,
         PromptRole::Cover,
-        &provider,
-        model,
         &prompt,
+        is_short,
     )
     .await
+    .map(|r| r.bytes)
 }
 
 /// Generate a podcast-show cover image from a title + description.
@@ -81,19 +92,19 @@ pub async fn generate_podcast(
     if title.is_empty() {
         return Err(Error::Validation("title must not be empty".into()));
     }
-    let (llm_id, provider, model) = resolve_model(state, llm_id_override).await?;
+    let picked = resolve_model(state, llm_id_override).await?;
     let prompt = build_podcast_prompt(title, description);
     request_image(
         state,
         user,
         None,
-        &llm_id,
+        &picked,
         PromptRole::Cover,
-        &provider,
-        model,
         &prompt,
+        false,
     )
     .await
+    .map(|r| r.bytes)
 }
 
 fn build_podcast_prompt(title: &str, description: Option<&str>) -> String {
@@ -133,7 +144,7 @@ pub async fn generate_chapter_art(
     body_md: Option<&str>,
     is_short: bool,
 ) -> Result<Vec<u8>> {
-    let (llm_id, provider, model) = resolve_model(state, llm_id_override).await?;
+    let picked = resolve_model(state, llm_id_override).await?;
     let prompt = build_chapter_prompt(
         book_title,
         book_topic,
@@ -149,13 +160,13 @@ pub async fn generate_chapter_art(
         state,
         user,
         Some(audiobook_id),
-        &llm_id,
+        &picked,
         PromptRole::Cover,
-        &provider,
-        model,
         &prompt,
+        is_short,
     )
     .await
+    .map(|r| r.bytes)
 }
 
 /// Generate one paragraph-level illustration. `scene_description` should
@@ -184,7 +195,7 @@ pub async fn generate_paragraph_image(
             "invalid paragraph ordinal {ordinal}/{total_ordinals}"
         )));
     }
-    let (llm_id, provider, model) = resolve_model(state, llm_id_override).await?;
+    let picked = resolve_model(state, llm_id_override).await?;
     let prompt = build_paragraph_prompt(
         book_title,
         book_topic,
@@ -200,11 +211,42 @@ pub async fn generate_paragraph_image(
         state,
         user,
         Some(audiobook_id),
-        &llm_id,
+        &picked,
         PromptRole::ParagraphImage,
-        &provider,
-        model,
         &prompt,
+        false,
+    )
+    .await
+    .map(|r| r.bytes)
+}
+
+/// Admin-only image probe. Loads the LLM row via `resolve_model`, then
+/// dispatches the raw `prompt` through the same `request_image` path the
+/// real cover/chapter-art flow uses. No prompt-template wrapping — the
+/// caller (the admin test rig) is responsible for whatever text they
+/// want to send. `audiobook_id` is `None` so the generation_event row
+/// isn't tied to any book, and `PromptRole::Cover` is reused so the
+/// cost ledger still labels the row consistently.
+pub async fn generate_with_prompt(
+    state: &AppState,
+    user: &UserId,
+    llm_id: &str,
+    raw_prompt: &str,
+    is_short: bool,
+) -> Result<ImageResult> {
+    let prompt = raw_prompt.trim();
+    if prompt.is_empty() {
+        return Err(Error::Validation("prompt must not be empty".into()));
+    }
+    let picked = resolve_model(state, Some(llm_id)).await?;
+    request_image(
+        state,
+        user,
+        None,
+        &picked,
+        PromptRole::Cover,
+        prompt,
+        is_short,
     )
     .await
 }
@@ -214,12 +256,14 @@ async fn request_image(
     state: &AppState,
     user: &UserId,
     audiobook_id: Option<&str>,
-    llm_id: &str,
+    picked: &crate::llm::PickedLlm,
     role: PromptRole,
-    provider: &str,
-    model: String,
     prompt: &str,
-) -> Result<Vec<u8>> {
+    is_short: bool,
+) -> Result<ImageResult> {
+    let llm_id = picked.llm_id.as_str();
+    let provider = picked.provider.as_str();
+    let model = picked.model_id.clone();
     // Single high-level log per image so admins can trace which row the
     // picker chose. The chat-dispatch log fires later for OpenRouter, but
     // the xAI image branch bypasses that path — log here so both providers
@@ -245,8 +289,44 @@ async fn request_image(
         return xai_image(state, user, audiobook_id, llm_id, role, &model, prompt).await;
     }
 
+    // Self-hosted mold image-gen server. Talks to `mold serve` over HTTP
+    // (`POST /api/generate`) and returns raw image bytes. Not chat-shaped.
+    if provider == "mold" {
+        return mold_image(
+            state,
+            user,
+            audiobook_id,
+            picked,
+            role,
+            &model,
+            prompt,
+            is_short,
+        )
+        .await;
+    }
+
+    // fal.ai hosted image-gen. Sync REST host (`https://fal.run/<model>`)
+    // returns the image as a data URI when `sync_mode: true`. Per-image
+    // pricing comes from the row's `cost_per_megapixel` (we use it as
+    // $/image here, same as the xAI path).
+    if provider == "fal" {
+        return fal_image(
+            state,
+            user,
+            audiobook_id,
+            picked,
+            role,
+            &model,
+            prompt,
+            is_short,
+        )
+        .await;
+    }
+
     let messages = vec![ChatMessage::system(SYSTEM), ChatMessage::user(prompt)];
     let provider_owned = provider.to_string();
+    let openai_base = picked.base_url.clone();
+    let openai_key = picked.api_key.clone();
     let mk_req = |modalities: Vec<String>| ChatRequest {
         model: model.clone(),
         messages: messages.clone(),
@@ -259,6 +339,8 @@ async fn request_image(
         json_mode: None,
         modalities: Some(modalities),
         provider: Some(provider_owned.clone()),
+        openai_base_url: openai_base.clone(),
+        openai_api_key: openai_key.clone(),
     };
 
     // Most OpenRouter image models are chat-shaped and emit text alongside
@@ -314,7 +396,10 @@ async fn request_image(
     if bytes.is_empty() {
         return Err(Error::Upstream("openrouter: empty image payload".into()));
     }
-    Ok(bytes)
+    Ok(ImageResult {
+        bytes,
+        cost: resp.usage.cost,
+    })
 }
 
 /// xAI image-gen path. xAI charges per image; we read the LLM row's
@@ -330,10 +415,20 @@ async fn xai_image(
     role: PromptRole,
     model: &str,
     prompt: &str,
-) -> Result<Vec<u8>> {
+) -> Result<ImageResult> {
     let b64 = match state.llm().generate_xai_image(model, prompt).await {
         Ok(b) => b,
         Err(e) => {
+            let err = if is_xai_language_model_on_image_endpoint(&e.to_string()) {
+                Error::Validation(format!(
+                    "xAI model `{model}` (llm row `{llm_id}`) is a language \
+                     model — it can't be used for cover art. Open \
+                     Admin → Image LLMs, edit this row, switch the picker to \
+                     xAI, and pick a real image model (e.g. `grok-2-image-1212`)."
+                ))
+            } else {
+                e
+            };
             log_generation_event(
                 state,
                 user,
@@ -341,11 +436,11 @@ async fn xai_image(
                 llm_id,
                 role,
                 &empty_response(),
-                Some(&e.to_string()),
+                Some(&err.to_string()),
             )
             .await
             .ok();
-            return Err(e);
+            return Err(err);
         }
     };
 
@@ -371,7 +466,239 @@ async fn xai_image(
     if bytes.is_empty() {
         return Err(Error::Upstream("xai image gen: empty payload".into()));
     }
-    Ok(bytes)
+    Ok(ImageResult {
+        bytes,
+        cost: per_image,
+    })
+}
+
+/// Self-hosted mold image-gen path. Mold runs locally on a GPU box and
+/// returns raw image bytes from `POST /api/generate`. We resolve the per-row
+/// `base_url` + `api_key` from `PickedLlm`, translate `is_short` into
+/// explicit width/height (mold needs multiples of 16), and stamp the LLM
+/// row's `cost_per_megapixel` × MP onto the logged `ChatResponse` so the
+/// cost ledger stays consistent (usually $0 for self-hosted, but admins
+/// can set a notional GPU cost).
+#[allow(clippy::too_many_arguments)]
+async fn mold_image(
+    state: &AppState,
+    user: &UserId,
+    audiobook_id: Option<&str>,
+    picked: &crate::llm::PickedLlm,
+    role: PromptRole,
+    model: &str,
+    prompt: &str,
+    is_short: bool,
+) -> Result<ImageResult> {
+    use crate::llm::mold::{self, MoldRequest};
+
+    let Some(base_url) = picked.base_url.as_deref().filter(|s| !s.trim().is_empty()) else {
+        let e = Error::Validation(format!(
+            "mold llm `{}` has no base_url configured",
+            picked.llm_id
+        ));
+        log_generation_event(
+            state,
+            user,
+            audiobook_id,
+            &picked.llm_id,
+            role,
+            &empty_response(),
+            Some(&e.to_string()),
+        )
+        .await
+        .ok();
+        return Err(e);
+    };
+
+    let model_slug = if model.trim().is_empty() {
+        None
+    } else {
+        Some(model.to_string())
+    };
+    let req = MoldRequest {
+        prompt: prompt.to_string(),
+        model: model_slug,
+        is_short: Some(is_short),
+        output_format: Some("png".into()),
+        ..MoldRequest::default()
+    };
+
+    let resp = match mold::generate(base_url, picked.api_key.as_deref(), &req).await {
+        Ok(r) => r,
+        Err(e) => {
+            log_generation_event(
+                state,
+                user,
+                audiobook_id,
+                &picked.llm_id,
+                role,
+                &empty_response(),
+                Some(&e.to_string()),
+            )
+            .await
+            .ok();
+            return Err(e);
+        }
+    };
+
+    // Megapixel-based notional cost so the cost ledger keeps a non-zero
+    // signal when admins set `cost_per_megapixel` (e.g. to bill internal
+    // GPU time). 1024×1024 → 1.048576 MP. Dimensions come from
+    // mold-service's response because the request may have left them
+    // empty for the service to fill in from policy.
+    let megapixels = (resp.width as f64 * resp.height as f64) / 1_048_576.0;
+    let per_mp = lookup_cost_per_image(state, &picked.llm_id).await.unwrap_or(0.0);
+    let cost = per_mp * megapixels;
+
+    let b64 = mold::bytes_to_b64(&resp.bytes);
+    let chat_resp = ChatResponse {
+        content: String::new(),
+        image_base64: Some(b64),
+        usage: crate::llm::ChatUsage {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            cost,
+        },
+        mocked: false,
+    };
+    log_generation_event(
+        state,
+        user,
+        audiobook_id,
+        &picked.llm_id,
+        role,
+        &chat_resp,
+        None,
+    )
+    .await
+    .ok();
+
+    if let Some(seed) = resp.seed_used {
+        tracing::info!(
+            llm_id = %picked.llm_id,
+            model = %resp.model,
+            width = resp.width,
+            height = resp.height,
+            steps = resp.steps,
+            seed_used = seed,
+            content_type = %resp.content_type,
+            "mold image gen: ok"
+        );
+    }
+
+    Ok(ImageResult {
+        bytes: resp.bytes,
+        cost,
+    })
+}
+
+/// fal.ai image-gen path. Hits the sync REST host so a single POST
+/// returns the image inline as a base64 data URI. fal bills per image,
+/// so the row's `cost_per_megapixel` is used as the $/image multiplier —
+/// same convention as the xAI image path. `base_url` is optional and
+/// defaults to `https://fal.run` (sync host) when the admin left it blank.
+#[allow(clippy::too_many_arguments)]
+async fn fal_image(
+    state: &AppState,
+    user: &UserId,
+    audiobook_id: Option<&str>,
+    picked: &crate::llm::PickedLlm,
+    role: PromptRole,
+    model: &str,
+    prompt: &str,
+    is_short: bool,
+) -> Result<ImageResult> {
+    use crate::llm::fal::{self, FalRequest};
+
+    let Some(api_key) = picked.api_key.as_deref().filter(|s| !s.trim().is_empty()) else {
+        let e = Error::Validation(format!(
+            "fal llm `{}` has no api_key configured (FAL_KEY)",
+            picked.llm_id
+        ));
+        log_generation_event(
+            state,
+            user,
+            audiobook_id,
+            &picked.llm_id,
+            role,
+            &empty_response(),
+            Some(&e.to_string()),
+        )
+        .await
+        .ok();
+        return Err(e);
+    };
+
+    let req = FalRequest {
+        prompt: prompt.to_string(),
+        image_size: Some(fal::image_size_for(is_short).to_string()),
+        num_inference_steps: None,
+        guidance_scale: None,
+        num_images: Some(1),
+        seed: None,
+        sync_mode: true,
+    };
+    let resp = match fal::generate(picked.base_url.as_deref(), api_key, model, &req).await {
+        Ok(r) => r,
+        Err(e) => {
+            log_generation_event(
+                state,
+                user,
+                audiobook_id,
+                &picked.llm_id,
+                role,
+                &empty_response(),
+                Some(&e.to_string()),
+            )
+            .await
+            .ok();
+            return Err(e);
+        }
+    };
+
+    let per_image = lookup_cost_per_image(state, &picked.llm_id)
+        .await
+        .unwrap_or(0.0);
+    let b64 = B64.encode(&resp.bytes);
+    let chat_resp = ChatResponse {
+        content: String::new(),
+        image_base64: Some(b64),
+        usage: crate::llm::ChatUsage {
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            cost: per_image,
+        },
+        mocked: false,
+    };
+    log_generation_event(
+        state,
+        user,
+        audiobook_id,
+        &picked.llm_id,
+        role,
+        &chat_resp,
+        None,
+    )
+    .await
+    .ok();
+
+    if let Some(seed) = resp.seed_used {
+        tracing::info!(
+            llm_id = %picked.llm_id,
+            model = %model,
+            seed_used = seed,
+            content_type = %resp.content_type,
+            "fal image gen: ok"
+        );
+    }
+
+    Ok(ImageResult {
+        bytes: resp.bytes,
+        cost: per_image,
+    })
 }
 
 async fn lookup_cost_per_image(state: &AppState, llm_id: &str) -> Option<f64> {
@@ -513,13 +840,13 @@ fn resolve_style(art_style: Option<&str>) -> &str {
 /// If `llm_id_override` names an enabled LLM row, return that row's id and
 /// `model_id` — this is how the cover-art picker on the New Audiobook /
 /// Book Detail UI flows through. Otherwise fall back to the standard
-/// `pick_llm_for_role` path so legacy callers keep working.
-/// Returns `(llm_id, provider, model_id)` for the cover request — provider
-/// is needed at the chat layer to dispatch to the right host.
+/// `pick_llm_for_role` path so legacy callers keep working. Returns a
+/// `PickedLlm` so callers get the provider routing fields (base_url +
+/// api_key) for openai-compat rows without re-querying.
 async fn resolve_model(
     state: &AppState,
     llm_id_override: Option<&str>,
-) -> Result<(String, String, String)> {
+) -> Result<crate::llm::PickedLlm> {
     let id = llm_id_override.map(str::trim).filter(|s| !s.is_empty());
     if let Some(id) = id {
         if !is_safe_id(id) {
@@ -530,13 +857,20 @@ async fn resolve_model(
             model_id: String,
             enabled: bool,
             #[serde(default)]
+            function: Option<String>,
+            #[serde(default)]
             provider: Option<String>,
+            #[serde(default)]
+            base_url: Option<String>,
+            #[serde(default)]
+            api_key_enc: Option<String>,
         }
         let rows: Vec<Row> = state
             .db()
             .inner()
             .query(format!(
-                "SELECT model_id, enabled, provider FROM llm:`{id}`"
+                "SELECT model_id, enabled, function, provider, base_url, api_key_enc \
+                 FROM llm:`{id}`"
             ))
             .await
             .map_err(|e| Error::Database(format!("resolve cover model: {e}")))?
@@ -549,11 +883,36 @@ async fn resolve_model(
         if !row.enabled {
             return Err(Error::Validation(format!("llm `{id}` is disabled")));
         }
+        // Reject text/multimodal rows wired up as cover_llm_id. Without this
+        // guard a grok-4.3 (xai text) row gets routed to xAI's image endpoint
+        // and we only hear about it via a cryptic upstream 400.
+        let func = row.function.as_deref().unwrap_or("text").to_lowercase();
+        if func != "image" {
+            return Err(Error::Validation(format!(
+                "llm `{id}` is function=`{func}`, not an image model — \
+                 clear the book's cover LLM override or pick an Image LLM \
+                 row (Admin → Image LLMs)."
+            )));
+        }
         let provider = row.provider.unwrap_or_else(|| "open_router".into());
-        return Ok((id.to_string(), provider, row.model_id));
+        let base_url = row.base_url.filter(|s| !s.trim().is_empty());
+        let api_key = row.api_key_enc.as_deref().and_then(|enc| {
+            crate::youtube::encrypt::decrypt_with_domain(
+                enc,
+                state.config().password_pepper.as_bytes(),
+                crate::youtube::encrypt::LLM_API_KEY_DOMAIN,
+            )
+            .ok()
+        });
+        return Ok(crate::llm::PickedLlm {
+            llm_id: id.to_string(),
+            provider,
+            model_id: row.model_id,
+            base_url,
+            api_key,
+        });
     }
-    let picked = pick_llm_for_role(state, LlmRole::CoverArt).await?;
-    Ok((picked.llm_id, picked.provider, picked.model_id))
+    pick_llm_for_role(state, LlmRole::CoverArt).await
 }
 
 /// Empty `ChatResponse` for failure-path logging — keeps the log row's
@@ -574,6 +933,14 @@ fn empty_response() -> ChatResponse {
 /// for image-only models when we ask for image+text.
 fn is_modality_mismatch(msg: &str) -> bool {
     msg.contains("No endpoints found that support the requested output modalities")
+}
+
+/// xAI returns 400 with `"is a language model and is therefore not available
+/// on this endpoint"` when a chat model is sent to `/images/generations`.
+/// Catch that here so the admin sees an actionable error instead of the raw
+/// upstream body.
+fn is_xai_language_model_on_image_endpoint(msg: &str) -> bool {
+    msg.contains("is a language model") && msg.contains("Please use a compatible endpoint")
 }
 
 /// Same charset rule as `is_valid_llm_id` in the admin module — keeps

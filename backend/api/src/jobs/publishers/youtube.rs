@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::state::AppState;
-use crate::youtube::{encrypt, oauth, playlist, subtitles, upload};
+use crate::youtube::{account, playlist, subtitles, upload};
 
 pub struct PublishYoutubeHandler(pub AppState);
 
@@ -3900,28 +3900,15 @@ async fn load_chapters(
 }
 
 async fn resolve_access_token(state: &AppState, user: &UserId) -> Result<String> {
-    #[derive(Debug, Deserialize)]
-    struct Row {
-        refresh_token_enc: String,
+    // Delegate to the shared helper so the publish path benefits from
+    // refresh-token rotation persistence and the auto-drop-on-
+    // invalid_grant behaviour. `None` (no row) maps to Unauthorized so
+    // the publish job surfaces the same "please reconnect" outcome it
+    // did before.
+    match account::access_token(state, user).await? {
+        Some(t) => Ok(t),
+        None => Err(Error::Unauthorized),
     }
-    let rows: Vec<Row> = state
-        .db()
-        .inner()
-        .query(format!(
-            "SELECT refresh_token_enc FROM youtube_account WHERE owner = user:`{}` LIMIT 1",
-            user.0
-        ))
-        .await
-        .map_err(|e| Error::Database(format!("yt token load: {e}")))?
-        .take(0)
-        .map_err(|e| Error::Database(format!("yt token load (decode): {e}")))?;
-    let row = rows.into_iter().next().ok_or(Error::Unauthorized)?;
-    let pepper = state.config().password_pepper.as_bytes();
-    let refresh = encrypt::decrypt(&row.refresh_token_enc, pepper)?;
-    let cfg = state.config();
-    let resp =
-        oauth::refresh_access(&cfg.youtube_client_id, &cfg.youtube_client_secret, &refresh).await?;
-    Ok(resp.access_token)
 }
 
 /// Best-effort: attempt to flip a playlist's `podcastStatus` to

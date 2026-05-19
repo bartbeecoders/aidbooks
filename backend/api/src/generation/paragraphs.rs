@@ -159,6 +159,8 @@ pub async fn extract_scenes(
         json_mode: Some(true),
         modalities: None,
         provider: Some(picked.provider.clone()),
+        openai_base_url: picked.base_url.clone(),
+        openai_api_key: picked.api_key.clone(),
     };
 
     let resp = match state.llm().chat(&req).await {
@@ -373,6 +375,8 @@ pub async fn extract_visual_kinds(
         json_mode: Some(true),
         modalities: None,
         provider: Some(picked.provider.clone()),
+        openai_base_url: picked.base_url.clone(),
+        openai_api_key: picked.api_key.clone(),
     };
 
     let resp = match state.llm().chat(&req).await {

@@ -448,12 +448,52 @@ function YoutubeReportSection({
 // Per-video stats table
 // ----------------------------------------------------------------------
 
+type VideoGroupKey = "audiobook" | "short" | "songbook";
+
+const VIDEO_GROUP_ORDER: { key: VideoGroupKey; title: string; subtitle: string }[] = [
+  {
+    key: "audiobook",
+    title: "Audiobooks",
+    subtitle: "Long-form audiobook publications.",
+  },
+  {
+    key: "short",
+    title: "YouTube Shorts",
+    subtitle: "Vertical Shorts cut from one-chapter audiobooks.",
+  },
+  {
+    key: "songbook",
+    title: "Songbooks",
+    subtitle: "Lyric-driven audiobooks spliced with song snippets.",
+  },
+];
+
+function classifyVideo(row: YoutubeVideoRow): VideoGroupKey {
+  // is_short / is_songbook are mutually exclusive at the audiobook
+  // create layer; short wins if both ever land true on legacy rows.
+  if (row.is_short) return "short";
+  if (row.is_songbook) return "songbook";
+  return "audiobook";
+}
+
 function YoutubeVideosSection(): JSX.Element {
   const { data, error, isLoading } = useQuery({
     queryKey: ["analytics", "yt-videos"],
     queryFn: () => analytics.youtubeVideos(),
     retry: false,
   });
+
+  const grouped = useMemo(() => {
+    const buckets: Record<VideoGroupKey, YoutubeVideoRow[]> = {
+      audiobook: [],
+      short: [],
+      songbook: [],
+    };
+    for (const v of data?.items ?? []) {
+      buckets[classifyVideo(v)].push(v);
+    }
+    return buckets;
+  }, [data]);
 
   if (error instanceof ApiError && error.status === 409) {
     return <></>;
@@ -463,7 +503,7 @@ function YoutubeVideosSection(): JSX.Element {
     <section className="space-y-3">
       <SectionHeader
         title="Videos"
-        subtitle="Every video published from this account, sorted by views."
+        subtitle="Every video published from this account, grouped by content type."
       />
       {error ? (
         <ErrorBanner error={error} />
@@ -472,44 +512,123 @@ function YoutubeVideosSection(): JSX.Element {
       ) : !data || data.items.length === 0 ? (
         <p className="text-sm text-slate-500">No videos published yet.</p>
       ) : (
-        <div className="overflow-hidden rounded-md border border-slate-800">
-          <table className="min-w-full divide-y divide-slate-800 text-sm">
-            <thead className="bg-slate-900 text-xs uppercase text-slate-400">
-              <tr>
-                <th className="px-3 py-2 text-left font-medium">Audiobook</th>
-                <th className="px-3 py-2 text-left font-medium">Chapter</th>
-                <th className="px-3 py-2 text-right font-medium">Views</th>
-                <th className="px-3 py-2 text-right font-medium">Likes</th>
-                <th className="px-3 py-2 text-right font-medium">Comments</th>
-                <th className="px-3 py-2 text-left font-medium">Published</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/50">
-              {data.items.map((v) => (
-                <VideoRow key={v.video_id} row={v} />
-              ))}
-            </tbody>
-            <tfoot className="bg-slate-900 text-xs text-slate-300">
-              <tr>
-                <td className="px-3 py-2" colSpan={2}>
-                  <span className="text-slate-500">Totals</span>
-                </td>
-                <td className="px-3 py-2 text-right">
-                  {data.total_views.toLocaleString()}
-                </td>
-                <td className="px-3 py-2 text-right">
-                  {data.total_likes.toLocaleString()}
-                </td>
-                <td className="px-3 py-2 text-right">
-                  {data.total_comments.toLocaleString()}
-                </td>
-                <td className="px-3 py-2" />
-              </tr>
-            </tfoot>
-          </table>
+        <div className="space-y-6">
+          {VIDEO_GROUP_ORDER.map((g) => {
+            const rows = grouped[g.key];
+            if (rows.length === 0) return null;
+            return (
+              <VideoGroupTable
+                key={g.key}
+                title={g.title}
+                subtitle={g.subtitle}
+                rows={rows}
+              />
+            );
+          })}
+          <div className="rounded-md border border-slate-800 bg-slate-900/40 px-4 py-3 text-sm text-slate-200">
+            <span className="text-xs uppercase tracking-wide text-slate-500">
+              All videos
+            </span>
+            <div className="mt-1 grid gap-3 sm:grid-cols-4">
+              <Tot label="Views" value={data.total_views.toLocaleString()} />
+              <Tot label="Likes" value={data.total_likes.toLocaleString()} />
+              <Tot
+                label="Comments"
+                value={data.total_comments.toLocaleString()}
+              />
+              <Tot
+                label="Total cost"
+                value={`$${data.total_cost_usd.toFixed(2)}`}
+              />
+            </div>
+          </div>
         </div>
       )}
     </section>
+  );
+}
+
+function Tot({ label, value }: { label: string; value: string }): JSX.Element {
+  return (
+    <div>
+      <div className="text-xs text-slate-500">{label}</div>
+      <div className="text-base font-semibold tabular-nums text-slate-100">
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function VideoGroupTable({
+  title,
+  subtitle,
+  rows,
+}: {
+  title: string;
+  subtitle: string;
+  rows: YoutubeVideoRow[];
+}): JSX.Element {
+  const subtotal = useMemo(() => {
+    const t = { views: 0, likes: 0, comments: 0, cost: 0 };
+    for (const r of rows) {
+      t.views += r.view_count;
+      t.likes += r.like_count;
+      t.comments += r.comment_count;
+      t.cost += r.cost_usd;
+    }
+    return t;
+  }, [rows]);
+
+  return (
+    <div className="overflow-hidden rounded-md border border-slate-800">
+      <div className="flex items-baseline justify-between border-b border-slate-800 bg-slate-900/70 px-3 py-2">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-200">{title}</h3>
+          <p className="text-xs text-slate-500">{subtitle}</p>
+        </div>
+        <span className="text-xs text-slate-500">
+          {rows.length} {rows.length === 1 ? "video" : "videos"}
+        </span>
+      </div>
+      <table className="min-w-full divide-y divide-slate-800 text-sm">
+        <thead className="bg-slate-900 text-xs uppercase text-slate-400">
+          <tr>
+            <th className="px-3 py-2 text-left font-medium">Audiobook</th>
+            <th className="px-3 py-2 text-left font-medium">Chapter</th>
+            <th className="px-3 py-2 text-right font-medium">Views</th>
+            <th className="px-3 py-2 text-right font-medium">Likes</th>
+            <th className="px-3 py-2 text-right font-medium">Comments</th>
+            <th className="px-3 py-2 text-right font-medium">Cost</th>
+            <th className="px-3 py-2 text-left font-medium">Published</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-800/50">
+          {rows.map((v) => (
+            <VideoRow key={v.video_id} row={v} />
+          ))}
+        </tbody>
+        <tfoot className="bg-slate-900 text-xs text-slate-300">
+          <tr>
+            <td className="px-3 py-2" colSpan={2}>
+              <span className="text-slate-500">Subtotal</span>
+            </td>
+            <td className="px-3 py-2 text-right tabular-nums">
+              {subtotal.views.toLocaleString()}
+            </td>
+            <td className="px-3 py-2 text-right tabular-nums">
+              {subtotal.likes.toLocaleString()}
+            </td>
+            <td className="px-3 py-2 text-right tabular-nums">
+              {subtotal.comments.toLocaleString()}
+            </td>
+            <td className="px-3 py-2 text-right tabular-nums">
+              ${subtotal.cost.toFixed(2)}
+            </td>
+            <td className="px-3 py-2" />
+          </tr>
+        </tfoot>
+      </table>
+    </div>
   );
 }
 
@@ -537,6 +656,9 @@ function VideoRow({ row }: { row: YoutubeVideoRow }): JSX.Element {
       </td>
       <td className="px-3 py-2 text-right tabular-nums">
         {row.comment_count.toLocaleString()}
+      </td>
+      <td className="px-3 py-2 text-right tabular-nums text-slate-300">
+        ${row.cost_usd.toFixed(2)}
       </td>
       <td className="px-3 py-2 text-slate-400">
         {row.published_at
